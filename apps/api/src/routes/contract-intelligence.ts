@@ -1,0 +1,8 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { prisma, Role } from '@oliveira/database';
+import { requireOrgRole } from '../lib/auth.js';
+import { audit } from '../lib/audit.js';
+import { getRepositoryIntelligenceCached } from '../lib/repositoryIntelligenceCache.js';
+import { getContractIntelligenceCached } from '../lib/contractIntelligenceCache.js';
+export async function contractIntelligenceRoutes(app:FastifyInstance){app.get('/:workspaceId',async request=>{const {workspaceId}=z.object({workspaceId:z.string().cuid()}).parse(request.params);const q=z.object({refresh:z.enum(['true','false']).optional().transform(v=>v==='true')}).parse(request.query??{});const ws=await prisma.workspace.findUnique({where:{id:workspaceId},include:{project:true}});if(!ws)throw Object.assign(new Error('WORKSPACE_NOT_FOUND'),{statusCode:404});const {user}=await requireOrgRole(request,ws.project.organizationId,Role.DEVELOPER);if(!ws.containerId)throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'),{statusCode:409});const repo=await getRepositoryIntelligenceCached({workspaceId:ws.id,containerId:ws.containerId,force:q.refresh});const result=await getContractIntelligenceCached({workspaceId:ws.id,containerId:ws.containerId,repository:repo.intelligence,force:q.refresh});await audit({userId:user.id,organizationId:ws.project.organizationId,action:result.cache.hit?'CONTRACT_INTELLIGENCE_CACHE_HIT':'CONTRACT_INTELLIGENCE_GENERATED',resource:'Workspace',resourceId:ws.id,ipAddress:request.ip,metadata:{contracts:result.intelligence.summary.contracts,consumers:result.intelligence.summary.consumers,issues:result.intelligence.summary.issues,highRisk:result.intelligence.summary.highRisk,cache:result.cache.reason}});return result})}

@@ -1,0 +1,9 @@
+CREATE TYPE "OrchestrationStatus" AS ENUM ('DRAFT','QUEUED','RUNNING','WAITING_REVIEW','COMPLETED','FAILED','CANCELLED');
+CREATE TYPE "OrchestrationStepType" AS ENUM ('AGENT','SYSTEM');
+CREATE TYPE "OrchestrationStepStatus" AS ENUM ('BLOCKED','QUEUED','RUNNING','COMPLETED','FAILED','CANCELLED','SKIPPED');
+CREATE TABLE "Orchestration" ("id" TEXT PRIMARY KEY,"workspaceId" TEXT NOT NULL,"title" TEXT NOT NULL,"objective" TEXT NOT NULL,"status" "OrchestrationStatus" NOT NULL DEFAULT 'DRAFT',"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"startedAt" TIMESTAMP(3),"finishedAt" TIMESTAMP(3),CONSTRAINT "Orchestration_workspaceId_fkey" FOREIGN KEY ("workspaceId") REFERENCES "Workspace"("id") ON DELETE CASCADE);
+CREATE TABLE "OrchestrationStep" ("id" TEXT PRIMARY KEY,"orchestrationId" TEXT NOT NULL,"key" TEXT NOT NULL,"title" TEXT NOT NULL,"type" "OrchestrationStepType" NOT NULL,"status" "OrchestrationStepStatus" NOT NULL DEFAULT 'BLOCKED',"agent" "AgentType","prompt" TEXT,"command" TEXT,"dependsOn" TEXT[] DEFAULT ARRAY[]::TEXT[],"agentTaskId" TEXT,"exitCode" INTEGER,"output" TEXT,"startedAt" TIMESTAMP(3),"finishedAt" TIMESTAMP(3),CONSTRAINT "OrchestrationStep_orchestrationId_fkey" FOREIGN KEY ("orchestrationId") REFERENCES "Orchestration"("id") ON DELETE CASCADE,CONSTRAINT "OrchestrationStep_agentTaskId_fkey" FOREIGN KEY ("agentTaskId") REFERENCES "AgentTask"("id") ON DELETE SET NULL);
+CREATE UNIQUE INDEX "OrchestrationStep_orchestrationId_key_key" ON "OrchestrationStep"("orchestrationId","key");
+CREATE UNIQUE INDEX "OrchestrationStep_agentTaskId_key" ON "OrchestrationStep"("agentTaskId");
+CREATE INDEX "Orchestration_workspaceId_status_idx" ON "Orchestration"("workspaceId","status");
+CREATE INDEX "OrchestrationStep_orchestrationId_status_idx" ON "OrchestrationStep"("orchestrationId","status");

@@ -1,0 +1,33 @@
+{
+  "name": "@oliveira/worker",
+  "version": "2.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "bullmq": "^5.34.10",
+    "ioredis": "^5.4.2",
+    "dotenv": "^16.4.7",
+    "@oliveira/database": "*",
+    "@oliveira/orchestrator-engine": "*",
+    "@oliveira/agent-engine": "*",
+    "@oliveira/git-engine": "*",
+    "dockerode": "^4.0.4",
+    "@oliveira/review-engine": "*",
+    "@oliveira/setup-queue": "*",
+    "@oliveira/setup-engine": "*",
+    "@oliveira/ide-engine": "*",
+    "@oliveira/secret-manager": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "@types/dockerode": "^3.3.34"
+  }
+}

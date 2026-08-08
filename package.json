@@ -1,0 +1,25 @@
+{
+  "name": "oliveira-devcloud",
+  "version": "2.4.0",
+  "private": true,
+  "packageManager": "npm@11.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n web,api,worker \"npm run dev -w @oliveira/web\" \"npm run dev -w @oliveira/api\" \"npm run dev -w @oliveira/worker\"",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:generate": "npm run generate -w @oliveira/database",
+    "db:migrate": "npm run migrate -w @oliveira/database"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.7"
+  }
+}

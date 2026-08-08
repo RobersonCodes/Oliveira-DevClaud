@@ -1,0 +1,6 @@
+{
+  "name": "@oliveira/shared",
+  "version": "0.7.0",
+  "private": true,
+  "main": "src/index.ts"
+}

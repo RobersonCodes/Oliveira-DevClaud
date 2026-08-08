@@ -1,0 +1,6 @@
+'use client';
+import { useEffect, useState } from 'react';
+const API=process.env.NEXT_PUBLIC_API_URL??'http://localhost:4000';
+export default function Projects(){const [orgs,setOrgs]=useState<any[]>([]);const [projects,setProjects]=useState<any[]>([]);const [status,setStatus]=useState('Carregando...');
+ useEffect(()=>{fetch(`${API}/api/v1/organizations`,{credentials:'include'}).then(async r=>{if(r.status===401){location.href='/login';return [];}return r.json();}).then(async o=>{setOrgs(o);if(o?.[0]){const p=await fetch(`${API}/api/v1/projects?organizationId=${o[0].id}`,{credentials:'include'});setProjects(await p.json());setStatus('');}}).catch(()=>setStatus('API indisponível'));},[]);
+ return <div className="simple-page"><p className="eyebrow">OLIVEIRA DEVCLOUD</p><h1>Projetos</h1><p>{status}</p>{orgs[0]&&<p className="muted">Organização: {orgs[0].name}</p>}<div className="project-list">{projects.map(p=><article key={p.id}><strong>{p.name}</strong><span>{p.repositoryUrl??'Sem repositório conectado'}</span><small>{p.defaultBranch} · {p._count?.workspaces??0} workspaces</small></article>)}{!status&&projects.length===0&&<article><strong>Nenhum projeto ainda</strong><span>A API de criação já está pronta em POST /api/v1/projects.</span></article>}</div><a href="/">← Overview</a></div>}

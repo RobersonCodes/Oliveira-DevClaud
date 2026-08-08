@@ -1,0 +1,21 @@
+node_modules/
+.next/
+dist/
+coverage/
+.turbo/
+*.tsbuildinfo
+
+# Never commit runtime credentials. Keep templates only.
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Runtime and local tooling
+*.log
+*.pid
+.DS_Store
+.claude/settings.local.json
+.worktrees/
+/workspaces/
+tmp/

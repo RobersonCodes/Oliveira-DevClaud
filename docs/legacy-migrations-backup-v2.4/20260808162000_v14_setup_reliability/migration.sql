@@ -1,0 +1,6 @@
+ALTER TYPE "SetupJobStatus" ADD VALUE IF NOT EXISTS 'CANCEL_REQUESTED';
+ALTER TYPE "SetupStage" ADD VALUE IF NOT EXISTS 'CANCELLED';
+ALTER TABLE "SetupJob" ADD COLUMN "heartbeatAt" TIMESTAMP(3), ADD COLUMN "attempt" INTEGER NOT NULL DEFAULT 1, ADD COLUMN "parentJobId" TEXT;
+CREATE TABLE "SetupJobLog" ("id" TEXT NOT NULL, "setupJobId" TEXT NOT NULL, "level" TEXT NOT NULL DEFAULT 'INFO', "message" TEXT NOT NULL, "stage" "SetupStage", "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT "SetupJobLog_pkey" PRIMARY KEY ("id"));
+CREATE INDEX "SetupJobLog_setupJobId_createdAt_idx" ON "SetupJobLog"("setupJobId", "createdAt");
+ALTER TABLE "SetupJobLog" ADD CONSTRAINT "SetupJobLog_setupJobId_fkey" FOREIGN KEY ("setupJobId") REFERENCES "SetupJob"("id") ON DELETE CASCADE ON UPDATE CASCADE;

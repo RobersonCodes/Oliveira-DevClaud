@@ -1,0 +1,23 @@
+{
+  "name": "@oliveira/regression-intelligence",
+  "version": "2.5.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@oliveira/repository-intelligence": "*",
+    "@oliveira/code-intelligence": "*",
+    "@oliveira/contract-intelligence": "*",
+    "@oliveira/contract-gate": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.3",
+    "vitest": "^3.2.7"
+  }
+}

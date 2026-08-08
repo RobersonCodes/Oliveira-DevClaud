@@ -1,0 +1,11 @@
+{
+  "name":"@oliveira/context-engine",
+  "version":"2.0.0",
+  "private":true,
+  "type":"module",
+  "main":"src/index.ts",
+  "types":"src/index.ts",
+  "scripts":{"typecheck":"tsc --noEmit"},
+  "devDependencies":{"typescript":"^5.7.3"},
+  "dependencies":{"@oliveira/code-intelligence":"*"}
+}
