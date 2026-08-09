@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 const docker=new Docker({socketPath:process.env.DOCKER_SOCKET??'/var/run/docker.sock'});
 const MAX_FILES=180, MAX_BYTES=22000, MAX_CONTRACTS=240, MAX_CONSUMERS=260;
 export type ContractField={name:string;type?:string;required?:boolean};
@@ -6,7 +7,9 @@ export type ApiContract={id:string;method:string;path:string;file:string;line:nu
 export type ApiConsumer={id:string;method:string;path:string;file:string;line:number;requestFields:string[];responseFields:string[]};
 export type ContractIssue={severity:'HIGH'|'MEDIUM'|'LOW';kind:'MISSING_ENDPOINT'|'METHOD_MISMATCH'|'REQUEST_FIELD_MISMATCH'|'RESPONSE_FIELD_MISMATCH';producerId?:string;consumerId?:string;message:string};
 export type ContractIntelligence={generatedAt:string;filesAnalyzed:number;contracts:ApiContract[];consumers:ApiConsumer[];issues:ContractIssue[];summary:{contracts:number;consumers:number;issues:number;highRisk:number};warnings:string[]};
-async function exec(containerId:string,cmd:string[],workingDir='/workspace/repository'){const c=docker.getContainer(containerId);const e=await c.exec({Cmd:cmd,WorkingDir:workingDir,User:'devcloud',AttachStdout:true,AttachStderr:true});const s=await e.start({hijack:true,stdin:false});let out='';for await(const b of s as any){if(out.length<MAX_BYTES*MAX_FILES)out+=Buffer.from(b).toString('utf8')}const i=await e.inspect();return{exitCode:i.ExitCode??1,output:out}}
+// Without a TTY, Docker multiplexes stdout/stderr into one stream with an 8-byte header per frame;
+// demuxStream splits those frames so `out` is clean text instead of corrupted with header bytes.
+async function exec(containerId:string,cmd:string[],workingDir='/workspace/repository'){const c=docker.getContainer(containerId);const e=await c.exec({Cmd:cmd,WorkingDir:workingDir,User:'devcloud',AttachStdout:true,AttachStderr:true});const s=await e.start({hijack:true,stdin:false});const combined=new PassThrough();docker.modem.demuxStream(s,combined,combined);let out='';for await(const b of combined){if(out.length<MAX_BYTES*MAX_FILES)out+=Buffer.from(b).toString('utf8')}const i=await e.inspect();return{exitCode:i.ExitCode??1,output:out}}
 function lineOf(text:string,index:number){return text.slice(0,index).split(/\r?\n/).length}
 function normPath(v:string){if(!v)return'/';let x=v.replace(/\$\{[^}]+\}/g,':param').replace(/\/+/g,'/');if(!x.startsWith('/'))x='/'+x;return x.replace(/\/$/,'')||'/'}
 function id(file:string,line:number,kind:string){return`${file}:${line}:${kind}`.replace(/[^a-zA-Z0-9_./:-]/g,'_').slice(0,220)}

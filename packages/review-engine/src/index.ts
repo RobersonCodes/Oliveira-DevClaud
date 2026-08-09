@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 
 export type ReviewBranch = { taskId: string; branchName: string };
 export type GateResult = { command: string; exitCode: number; output: string; ok: boolean };
@@ -29,9 +30,12 @@ export class DockerReviewEngine {
     const container = this.docker.getContainer(containerId);
     const execution = await container.exec({ Cmd: cmd, WorkingDir: workingDir, AttachStdout: true, AttachStderr: true });
     const stream = await execution.start({ hijack: true });
+    // See DockerGitIsolationEngine.exec() for why this needs demuxing rather than raw concatenation.
     const chunks: Buffer[] = [];
+    const combined = new PassThrough();
+    combined.on('data', (chunk: Buffer) => chunks.push(chunk));
+    this.docker.modem.demuxStream(stream, combined, combined);
     await new Promise<void>((resolve, reject) => {
-      stream.on('data', chunk => chunks.push(Buffer.from(chunk)));
       stream.on('end', resolve); stream.on('close', resolve); stream.on('error', reject);
     });
     const result = await execution.inspect();

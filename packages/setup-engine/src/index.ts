@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 
 export type StackKind = 'NEXTJS'|'REACT_VITE'|'NODE'|'SPRING_BOOT_MAVEN'|'SPRING_BOOT_GRADLE'|'PYTHON'|'DOCKER'|'UNKNOWN';
 export type ProjectDetection = { stack: StackKind; packageManager?: 'npm'|'pnpm'|'yarn'; installCommand?: string[]; devCommand?: string[]; buildCommand?: string[]; suggestedPorts: number[]; evidence: string[] };
@@ -9,7 +10,11 @@ async function exec(containerId:string, cmd:string[], opts?:{workdir?:string; ti
   const container=docker.getContainer(containerId);
   const ex=await container.exec({Cmd:cmd,WorkingDir:opts?.workdir ?? '/workspace/repository',User:'devcloud',AttachStdout:true,AttachStderr:true});
   const stream=await ex.start({hijack:true,stdin:false}); let output='';
-  stream.on('data',(b:Buffer)=>{output+=b.toString('utf8')});
+  // Without a TTY, Docker multiplexes stdout/stderr into one stream with an 8-byte header per
+  // frame; demuxStream splits those frames so `output` is clean text, not corrupted with headers.
+  const combined=new PassThrough();
+  combined.on('data',(b:Buffer)=>{output+=b.toString('utf8')});
+  docker.modem.demuxStream(stream,combined,combined);
   const ended=new Promise<void>((resolve,reject)=>{stream.on('end',resolve);stream.on('error',reject)});
   const timeout=new Promise<never>((_,reject)=>setTimeout(()=>reject(new Error('SETUP_COMMAND_TIMEOUT')),opts?.timeoutMs ?? 180000));
   await Promise.race([ended,timeout]); const info=await ex.inspect();

@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 const docker=new Docker({socketPath:process.env.DOCKER_SOCKET??'/var/run/docker.sock'});
 const MAX_FILES=140,MAX_BYTES=18000,MAX_SYMBOLS=1200,MAX_EDGES=1600;
 export type SymbolKind='class'|'function'|'component'|'method'|'route'|'model'|'interface'|'type';
@@ -6,7 +7,9 @@ export type CodeSymbol={id:string;name:string;kind:SymbolKind;file:string;line:n
 export type CodeEdge={from:string;to:string;type:'imports'|'calls'|'extends'|'route-handler'};
 export type CodeEndpoint={method:string;path:string;file:string;handler?:string;line:number};
 export type CodeIntelligence={generatedAt:string;filesAnalyzed:number;symbols:CodeSymbol[];edges:CodeEdge[];endpoints:CodeEndpoint[];summary:{classes:number;functions:number;components:number;routes:number;models:number};warnings:string[]};
-async function exec(containerId:string,cmd:string[],workingDir='/workspace/repository'){const c=docker.getContainer(containerId);const e=await c.exec({Cmd:cmd,WorkingDir:workingDir,User:'devcloud',AttachStdout:true,AttachStderr:true});const s=await e.start({hijack:true,stdin:false});let out='';for await(const b of s as any){if(out.length<MAX_BYTES*MAX_FILES)out+=Buffer.from(b).toString('utf8')}const i=await e.inspect();return{exitCode:i.ExitCode??1,output:out}}
+// Without a TTY, Docker multiplexes stdout/stderr into one stream with an 8-byte header per frame;
+// demuxStream splits those frames so `out` is clean text instead of corrupted with header bytes.
+async function exec(containerId:string,cmd:string[],workingDir='/workspace/repository'){const c=docker.getContainer(containerId);const e=await c.exec({Cmd:cmd,WorkingDir:workingDir,User:'devcloud',AttachStdout:true,AttachStderr:true});const s=await e.start({hijack:true,stdin:false});const combined=new PassThrough();docker.modem.demuxStream(s,combined,combined);let out='';for await(const b of combined){if(out.length<MAX_BYTES*MAX_FILES)out+=Buffer.from(b).toString('utf8')}const i=await e.inspect();return{exitCode:i.ExitCode??1,output:out}}
 function escId(s:string){return s.replace(/[^a-zA-Z0-9_./:-]/g,'_').slice(0,180)}
 function lineOf(text:string,index:number){return text.slice(0,index).split(/\r?\n/).length}
 function addSymbol(arr:CodeSymbol[],file:string,text:string,re:RegExp,kind:SymbolKind,nameGroup=1){for(const m of text.matchAll(re)){if(arr.length>=MAX_SYMBOLS)break;const name=m[nameGroup];if(!name)continue;arr.push({id:escId(`${file}:${kind}:${name}:${lineOf(text,m.index??0)}`),name,kind,file,line:lineOf(text,m.index??0),exported:/^export\s/m.test(m[0]),signature:m[0].trim().slice(0,220)})}}
