@@ -8,8 +8,12 @@ import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { getRepositoryIntelligenceCached } from '../lib/repositoryIntelligenceCache.js';
 import { getContractIntelligenceCached } from '../lib/contractIntelligenceCache.js';
-import { inspectContracts, listContractFiles } from '@oliveira/contract-intelligence';
-import { evaluateContractGate } from '@oliveira/contract-gate';
+import { getCodeIntelligenceCached } from '../lib/codeIntelligenceCache.js';
+import { inspectContracts, listContractFiles, type ContractIntelligence } from '@oliveira/contract-intelligence';
+import { evaluateContractGate, type ContractGateResult } from '@oliveira/contract-gate';
+import { getRepositoryRevision, inspectRepository } from '@oliveira/repository-intelligence';
+import { inspectCode } from '@oliveira/code-intelligence';
+import { buildRegressionReport } from '@oliveira/regression-intelligence';
 
 const queue = new OrchestrationQueue();
 const reviews = new DockerReviewEngine();
@@ -70,6 +74,21 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     return o;
   });
 
+  app.get('/:id/regression-report', async request => {
+    const { id } = request.params as { id: string };
+    const o = await prisma.orchestration.findUnique({
+      where: { id },
+      include: { workspace: { include: { project: true } } }
+    });
+    if (!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'), { statusCode: 404 });
+    // Organization membership is always resolved from the orchestration's own workspace/project
+    // chain — never trust an organizationId supplied by the client.
+    await requireOrgRole(request, o.workspace.project.organizationId, Role.DEVELOPER);
+    const summary = o.reviewSummary as { regressionIntelligence?: unknown } | null;
+    if (!summary?.regressionIntelligence) throw Object.assign(new Error('REGRESSION_REPORT_NOT_AVAILABLE'), { statusCode: 404 });
+    return { orchestrationId: id, reviewStatus: o.reviewStatus, regressionIntelligence: summary.regressionIntelligence };
+  });
+
   app.post('/:id/review/analyze', async request => {
     const { id } = request.params as { id: string };
     const o = await prisma.orchestration.findUnique({
@@ -95,28 +114,49 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     const gates = o.steps.filter(s => s.type === 'SYSTEM' && s.command && safeReviewGates.has(s.command)).map(s => s.command!);
     await prisma.orchestration.update({ where: { id }, data: { reviewStatus: 'ANALYZING' } });
     try {
-      // Contract baseline is captured from the current main worktree before the integration branch is analyzed.
+      // Baseline intelligence is captured from the current main worktree before the integration branch is analyzed.
       const repository = await getRepositoryIntelligenceCached({ workspaceId: o.workspace.id, containerId: o.workspace.containerId });
       const baselineContracts = await getContractIntelligenceCached({ workspaceId: o.workspace.id, containerId: o.workspace.containerId, repository: repository.intelligence });
+      const baselineCode = await getCodeIntelligenceCached({ workspaceId: o.workspace.id, containerId: o.workspace.containerId, repository: repository.intelligence });
 
       const result = await reviews.prepare(o.workspace.containerId, id, branches, gates);
       const gateFailed = result.gates.some(g => !g.ok);
-      let contractGate = null;
-      if (!result.conflicts.length && !gateFailed) {
-        const candidateFiles = await listContractFiles(o.workspace.containerId, result.reviewPath);
-        const candidateContracts = await inspectContracts(o.workspace.containerId, candidateFiles, result.reviewPath);
-        contractGate = evaluateContractGate(baselineContracts.intelligence, candidateContracts);
+      let contractGate: ContractGateResult | null = null;
+      let regressionIntelligence = null;
+      if (!result.conflicts.length) {
+        // The merge into the review worktree succeeded (even if a subsequent gate failed), so the
+        // candidate content is real and worth analyzing — matches the spec flow (gates then
+        // regression intelligence, not "only on green gates").
+        const candidateRevision = await getRepositoryRevision(o.workspace.containerId, result.reviewPath);
+        const candidateRepository = await inspectRepository(o.workspace.containerId, candidateRevision, result.reviewPath);
+        const candidateCode = await inspectCode(o.workspace.containerId, candidateRepository.files, result.reviewPath);
+        let candidateContracts: ContractIntelligence | null = null;
+        if (!gateFailed) {
+          const candidateFiles = await listContractFiles(o.workspace.containerId, result.reviewPath);
+          candidateContracts = await inspectContracts(o.workspace.containerId, candidateFiles, result.reviewPath);
+          contractGate = evaluateContractGate(baselineContracts.intelligence, candidateContracts);
+        }
+        const fileChanges = await git.diffNameStatus(o.workspace.containerId, result.reviewPath, result.baseCommit);
+        regressionIntelligence = buildRegressionReport({
+          baseline: { repository: repository.intelligence, code: baselineCode.intelligence, contracts: baselineContracts.intelligence },
+          candidate: { repository: candidateRepository, code: candidateCode, contracts: candidateContracts ?? baselineContracts.intelligence },
+          contractGate: contractGate ?? { ok: true, baseline: baselineContracts.intelligence.summary, candidate: baselineContracts.intelligence.summary, blocking: [], warnings: [], info: [], generatedAt: new Date().toISOString() },
+          fileChanges,
+          gates: result.gates.map(g => ({ command: g.command, ok: g.ok, exitCode: g.exitCode })),
+          conflicts: result.conflicts
+        });
       }
       const contractBlocked = contractGate ? !contractGate.ok : false;
-      const reviewStatus = result.conflicts.length ? 'CONFLICT' : (gateFailed || contractBlocked) ? 'GATE_FAILED' : 'READY';
-      const reviewSummary = { ...result, contractGate, ready: result.ready && !contractBlocked };
+      const regressionBlocked = regressionIntelligence ? regressionIntelligence.blocking : false;
+      const reviewStatus = result.conflicts.length ? 'CONFLICT' : (gateFailed || contractBlocked || regressionBlocked) ? 'GATE_FAILED' : 'READY';
+      const reviewSummary = { ...result, contractGate, regressionIntelligence, ready: result.ready && !contractBlocked && !regressionBlocked };
       const updated = await prisma.orchestration.update({
         where: { id }, data: {
           reviewStatus, reviewBranch: result.reviewBranch, reviewWorktreePath: result.reviewPath,
           reviewBaseCommit: result.baseCommit, reviewSummary: reviewSummary as any, reviewedAt: new Date(), status: 'WAITING_REVIEW'
         }
       });
-      await audit({ userId: user.id, organizationId: o.workspace.project.organizationId, action: 'ORCHESTRATION_REVIEW_ANALYZED', resource: 'Orchestration', resourceId: id, ipAddress: request.ip, metadata: { reviewStatus, conflicts: result.conflicts.length, gates: result.gates.map(g => ({ command:g.command, ok:g.ok, exitCode:g.exitCode })), contractGate: contractGate ? { ok: contractGate.ok, blocking: contractGate.blocking.length, warnings: contractGate.warnings.length } : null } });
+      await audit({ userId: user.id, organizationId: o.workspace.project.organizationId, action: 'ORCHESTRATION_REVIEW_ANALYZED', resource: 'Orchestration', resourceId: id, ipAddress: request.ip, metadata: { reviewStatus, conflicts: result.conflicts.length, gates: result.gates.map(g => ({ command:g.command, ok:g.ok, exitCode:g.exitCode })), contractGate: contractGate ? { ok: contractGate.ok, blocking: contractGate.blocking.length, warnings: contractGate.warnings.length } : null, regressionIntelligence: regressionIntelligence ? { riskScore: regressionIntelligence.riskScore, riskLevel: regressionIntelligence.riskLevel, blocking: regressionIntelligence.blocking } : null } });
       return updated;
     } catch (error) {
       await prisma.orchestration.update({ where: { id }, data: { reviewStatus: 'GATE_FAILED', reviewSummary: { error: error instanceof Error ? error.message : 'UNKNOWN' } } });

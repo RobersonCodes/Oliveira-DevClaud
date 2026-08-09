@@ -38,9 +38,9 @@ export type RepositoryIntelligence = {
   warnings: string[];
 };
 
-async function exec(containerId: string, cmd: string[], timeoutMs = 30_000) {
+async function exec(containerId: string, cmd: string[], workingDir = '/workspace/repository', timeoutMs = 30_000) {
   const container = docker.getContainer(containerId);
-  const ex = await container.exec({ Cmd: cmd, WorkingDir: '/workspace/repository', User: 'devcloud', AttachStdout: true, AttachStderr: true });
+  const ex = await container.exec({ Cmd: cmd, WorkingDir: workingDir, User: 'devcloud', AttachStdout: true, AttachStderr: true });
   const stream = await ex.start({ hijack: true, stdin: false });
   let output = '';
   stream.on('data', (b: Buffer) => { if (output.length < MAX_TEXT) output += b.toString('utf8'); });
@@ -91,11 +91,11 @@ function buildTree(files: string[]): RepositoryTreeNode[] {
   return sortNodes(root);
 }
 
-export async function getRepositoryRevision(containerId: string): Promise<RepositoryRevision> {
+export async function getRepositoryRevision(containerId: string, workingDir = '/workspace/repository'): Promise<RepositoryRevision> {
   const [status, branch, head] = await Promise.all([
-    exec(containerId, ['git', 'status', '--porcelain=v1']),
-    exec(containerId, ['git', 'branch', '--show-current']),
-    exec(containerId, ['git', 'rev-parse', 'HEAD'])
+    exec(containerId, ['git', 'status', '--porcelain=v1'], workingDir),
+    exec(containerId, ['git', 'branch', '--show-current'], workingDir),
+    exec(containerId, ['git', 'rev-parse', 'HEAD'], workingDir)
   ]);
   const changedFiles = status.exitCode === 0 ? lines(status.output).map(v => v.slice(3)).slice(0, 100) : [];
   return {
@@ -106,9 +106,9 @@ export async function getRepositoryRevision(containerId: string): Promise<Reposi
   };
 }
 
-export async function inspectRepository(containerId: string, knownRevision?: RepositoryRevision): Promise<RepositoryIntelligence> {
+export async function inspectRepository(containerId: string, knownRevision?: RepositoryRevision, workingDir = '/workspace/repository'): Promise<RepositoryIntelligence> {
   const warnings: string[] = [];
-  const find = await exec(containerId, ['find', '.', '-type', 'f', '-not', '-path', './.git/*', '-not', '-path', './node_modules/*', '-not', '-path', './dist/*', '-not', '-path', './build/*', '-not', '-path', './.next/*', '-not', '-path', './coverage/*', '-not', '-name', '.env', '-not', '-name', '.env.*']);
+  const find = await exec(containerId, ['find', '.', '-type', 'f', '-not', '-path', './.git/*', '-not', '-path', './node_modules/*', '-not', '-path', './dist/*', '-not', '-path', './build/*', '-not', '-path', './.next/*', '-not', '-path', './coverage/*', '-not', '-name', '.env', '-not', '-name', '.env.*'], workingDir);
   if (find.exitCode !== 0) warnings.push('FILE_MAP_UNAVAILABLE');
   const allFiles = lines(find.output).map(f => f.startsWith('./') ? f.slice(2) : f).sort();
   const files = allFiles.slice(0, MAX_FILES);
@@ -118,7 +118,7 @@ export async function inspectRepository(containerId: string, knownRevision?: Rep
   const manifests = manifestNames.filter(m => files.includes(m) || files.some(f => f.endsWith('/' + m)));
   let scripts: Record<string, string> = {}, dependencies: string[] = [], devDependencies: string[] = [];
   if (files.includes('package.json')) {
-    const pkg = await exec(containerId, ['cat', 'package.json']);
+    const pkg = await exec(containerId, ['cat', 'package.json'], workingDir);
     try {
       const parsed = JSON.parse(pkg.output);
       scripts = parsed.scripts ?? {};
@@ -132,11 +132,11 @@ export async function inspectRepository(containerId: string, knownRevision?: Rep
     [/\napps\//, 'monorepo: apps/'], [/\npackages\//, 'monorepo: packages/'], [/\n(src\/)?routes?\//, 'routes layer'], [/\n(src\/)?controllers?\//, 'controllers layer'], [/\n(src\/)?services?\//, 'services layer'], [/\n(src\/)?repositories?\//, 'repository/data-access layer'], [/\nprisma\//, 'Prisma ORM'], [/\nmigrations?\//, 'database migrations'], [/\n\.github\/workflows\//, 'GitHub Actions CI/CD'], [/\ninfra\//, 'infrastructure-as-code directory'], [/\ndocker-compose\.ya?ml/, 'Docker Compose'], [/\nDockerfile/, 'Docker image definition']
   ];
   for (const [re, label] of patterns) if (re.test(joined)) hints.push(label);
-  const revision = knownRevision ?? await getRepositoryRevision(containerId);
-  const log = await exec(containerId, ['git', 'log', '-5', '--pretty=format:%h %s']);
+  const revision = knownRevision ?? await getRepositoryRevision(containerId, workingDir);
+  const log = await exec(containerId, ['git', 'log', '-5', '--pretty=format:%h %s'], workingDir);
   if (!revision.head) warnings.push('GIT_HEAD_UNAVAILABLE');
   return {
-    generatedAt: new Date().toISOString(), root: '/workspace/repository', files, tree: buildTree(files), topLevelDirectories, manifests, scripts, dependencies, devDependencies,
+    generatedAt: new Date().toISOString(), root: workingDir, files, tree: buildTree(files), topLevelDirectories, manifests, scripts, dependencies, devDependencies,
     architectureHints: hints, testFiles: files.filter(isTest).length, routeFiles: files.filter(isRoute).length, sourceFiles: files.filter(isSource).length,
     git: { ...revision, recentCommits: log.exitCode === 0 ? lines(log.output) : [] }, warnings
   };
