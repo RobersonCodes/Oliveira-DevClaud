@@ -4,6 +4,7 @@ import { prisma, Role, WorkspaceStatus } from '@oliveira/database';
 import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { recordActivity } from '../lib/activity.js';
 
 const engine = new DockerWorkspaceEngine();
 const createSchema = z.object({
@@ -38,6 +39,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const runtime = await engine.create({ workspaceId: workspace.id, projectId: project.id, repositoryUrl: project.repositoryUrl, defaultBranch: project.defaultBranch, limits: body });
       const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { containerId: runtime.containerId, status: WorkspaceStatus.RUNNING, lastActiveAt: new Date() } });
       await audit({ userId: user.id, organizationId: project.organizationId, action: 'WORKSPACE_CREATED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip, metadata: { cpuLimit: body.cpuLimit, memoryMb: body.memoryMb } });
+      await recordActivity({ organizationId: project.organizationId, workspaceId: workspace.id, userId: user.id, type: 'workspace.created', message: `Workspace criado para o projeto ${project.name}` });
       return reply.code(201).send(updated);
     } catch (error) {
       await prisma.workspace.update({ where: { id: workspace.id }, data: { status: WorkspaceStatus.ERROR } });
@@ -62,6 +64,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
       const status = action === 'stop' ? WorkspaceStatus.STOPPED : WorkspaceStatus.RUNNING;
       const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { status, lastActiveAt: new Date() } });
       await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: `WORKSPACE_${action.toUpperCase()}`, resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
+      const activityByAction = { start: { type: 'workspace.started', message: 'Workspace iniciado' }, stop: { type: 'workspace.stopped', message: 'Workspace parado' }, restart: { type: 'workspace.restarted', message: 'Workspace reiniciado' } } as const;
+      await recordActivity({ organizationId: workspace.project.organizationId, workspaceId: workspace.id, userId: user.id, ...activityByAction[action] });
       return updated;
     });
   }
@@ -73,6 +77,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     if (workspace.containerId) await engine.destroy(workspace.containerId).catch(error => app.log.warn(error));
     await prisma.workspace.delete({ where: { id: workspace.id } });
     await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'WORKSPACE_DESTROYED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
+    await recordActivity({ organizationId: workspace.project.organizationId, userId: user.id, type: 'workspace.destroyed', message: 'Workspace removido' });
     return reply.code(204).send();
   });
 }

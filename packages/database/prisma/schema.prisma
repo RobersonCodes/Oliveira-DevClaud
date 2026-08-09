@@ -92,6 +92,8 @@ model User {
   sessions     Session[]
   auditLogs    AuditLog[]
   commandRuns CommandRun[]
+  activityLogs ActivityLog[]
+  notifications Notification[]
 }
 
 model Session {
@@ -118,6 +120,7 @@ model Organization {
   projects  Project[]
   auditLogs AuditLog[]
   secrets   Secret[]
+  activityLogs ActivityLog[]
 }
 
 model OrganizationMember {
@@ -136,6 +139,9 @@ model Project {
   organizationId String
   name           String
   slug           String
+  // Kept for backward compatibility — every existing reader (workspace creation, repository
+  // bootstrap, etc.) still uses these. New code should prefer `repositories` (see Repository
+  // below), which supports more than one repository per project and non-GitHub providers.
   repositoryUrl  String?
   defaultBranch  String @default("main")
   createdAt      DateTime @default(now())
@@ -143,8 +149,31 @@ model Project {
   organization   Organization @relation(fields:[organizationId], references:[id], onDelete:Cascade)
   workspaces     Workspace[]
   secrets        Secret[]
+  repositories   Repository[]
   @@unique([organizationId, slug])
   @@index([organizationId])
+}
+
+enum RepositoryProvider {
+  GITHUB
+  GITLAB
+}
+
+// Promotes the single repositoryUrl/defaultBranch pair on Project into its own model so a project
+// can eventually reference more than one repository and providers beyond GitHub (e.g. GitLab).
+// Project.repositoryUrl/defaultBranch are left in place and are not read from here (yet) — see the
+// migration for the one-time backfill that keeps both in sync for existing projects.
+model Repository {
+  id            String   @id @default(cuid())
+  projectId     String
+  provider      RepositoryProvider @default(GITHUB)
+  url           String
+  defaultBranch String   @default("main")
+  lastSyncedAt  DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  project       Project @relation(fields:[projectId], references:[id], onDelete:Cascade)
+  @@index([projectId])
 }
 
 model Workspace {
@@ -170,6 +199,7 @@ model Workspace {
   repositorySnapshots RepositorySnapshot[]
   codeIntelligenceSnapshots CodeIntelligenceSnapshot[]
   contractIntelligenceSnapshots ContractIntelligenceSnapshot[]
+  activityLogs ActivityLog[]
   @@index([projectId])
 }
 
@@ -312,6 +342,47 @@ model AuditLog {
   user           User? @relation(fields:[userId], references:[id], onDelete:SetNull)
   organization   Organization? @relation(fields:[organizationId], references:[id], onDelete:SetNull)
   @@index([organizationId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// General-purpose activity feed (git.changed, build.completed, test.failed, workspace.created, ...),
+// distinct from AuditLog (which stays reserved for sensitive/security-relevant actions). Feeds the
+// dashboard activity list and, later, the typed event bus.
+model ActivityLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  workspaceId    String?
+  userId         String?
+  type           String
+  message        String
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  organization   Organization @relation(fields:[organizationId], references:[id], onDelete:Cascade)
+  workspace      Workspace? @relation(fields:[workspaceId], references:[id], onDelete:SetNull)
+  user           User? @relation(fields:[userId], references:[id], onDelete:SetNull)
+  @@index([organizationId, createdAt])
+  @@index([workspaceId, createdAt])
+}
+
+enum NotificationType {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+  ACTION_REQUIRED
+}
+
+model Notification {
+  id                String   @id @default(cuid())
+  userId            String
+  type              NotificationType @default(INFO)
+  title             String
+  read              Boolean  @default(false)
+  relatedResource   String?
+  relatedResourceId String?
+  createdAt         DateTime @default(now())
+  user              User @relation(fields:[userId], references:[id], onDelete:Cascade)
+  @@index([userId, read])
   @@index([userId, createdAt])
 }
 

@@ -134,6 +134,46 @@ describe('projects — RBAC-gated routes (real Postgres)', () => {
   });
 });
 
+describe('activity feed + repository promotion (v2.5 schema, real Postgres)', () => {
+  it('creating a project with a repositoryUrl also creates a Repository row (project.repositoryUrl is left untouched)', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const create = await app.inject({
+      method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie },
+      payload: { organizationId, name: 'Checkout', repositoryUrl: 'https://github.com/example/checkout.git' }
+    });
+    expect(create.statusCode).toBe(201);
+    const project = create.json();
+    expect(project.repositoryUrl).toBe('https://github.com/example/checkout.git');
+
+    const repos = await prisma.repository.findMany({ where: { projectId: project.id } });
+    expect(repos).toHaveLength(1);
+    expect(repos[0]).toMatchObject({ url: 'https://github.com/example/checkout.git', provider: 'GITHUB', defaultBranch: 'main' });
+  });
+
+  it('creating a project without a repositoryUrl does not create a Repository row', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const create = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie }, payload: { organizationId, name: 'No Repo Yet' } });
+    const project = create.json();
+    const repos = await prisma.repository.findMany({ where: { projectId: project.id } });
+    expect(repos).toHaveLength(0);
+  });
+
+  it('real actions (project creation) show up on the real activity feed, and it is organization-scoped', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const other = await registerUser();
+
+    await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie }, payload: { organizationId, name: 'Observed Project' } });
+
+    const feed = await app.inject({ method: 'GET', url: `/api/v1/activity?organizationId=${organizationId}`, headers: { cookie: sessionCookie } });
+    expect(feed.statusCode).toBe(200);
+    const events = feed.json();
+    expect(events.some((e: { type: string }) => e.type === 'project.created')).toBe(true);
+
+    const otherFeed = await app.inject({ method: 'GET', url: `/api/v1/activity?organizationId=${organizationId}`, headers: { cookie: other.sessionCookie } });
+    expect(otherFeed.statusCode).toBe(403);
+  });
+});
+
 describe('organizations — membership-scoped listing (real Postgres)', () => {
   it('only returns organizations the caller is a member of', async () => {
     const mine = await registerUser();

@@ -4,6 +4,7 @@ import { prisma, Role } from '@oliveira/database';
 import { requireOrgRole } from '../lib/auth.js';
 import { slugify } from '../lib/slug.js';
 import { audit } from '../lib/audit.js';
+import { recordActivity } from '../lib/activity.js';
 
 const createSchema = z.object({
   organizationId: z.string().cuid(),
@@ -26,7 +27,14 @@ export async function projectRoutes(app: FastifyInstance) {
     let slug = base;
     for (let i = 1; await prisma.project.findUnique({ where: { organizationId_slug: { organizationId: body.organizationId, slug } } }); i++) slug = `${base}-${i}`;
     const project = await prisma.project.create({ data: { ...body, slug } });
+    // Project.repositoryUrl/defaultBranch remain the source of truth for existing readers; the
+    // Repository row is created alongside so new code (multi-repo, non-GitHub providers) has
+    // something real to read from day one instead of only via the one-time migration backfill.
+    if (body.repositoryUrl) {
+      await prisma.repository.create({ data: { projectId: project.id, provider: 'GITHUB', url: body.repositoryUrl, defaultBranch: body.defaultBranch } });
+    }
     await audit({ userId: user.id, organizationId: body.organizationId, action: 'PROJECT_CREATED', resource: 'Project', resourceId: project.id, ipAddress: request.ip });
+    await recordActivity({ organizationId: body.organizationId, userId: user.id, type: 'project.created', message: `Projeto ${project.name} criado` });
     return reply.code(201).send(project);
   });
 
