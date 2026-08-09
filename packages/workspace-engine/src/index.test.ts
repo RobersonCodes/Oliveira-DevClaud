@@ -72,10 +72,14 @@ describe('DockerWorkspaceEngine — real Docker container lifecycle', () => {
   });
 
   it('clamps cpu/memory limits to the safe min/max range instead of trusting the caller', async () => {
+    // Docker itself rejects a NanoCpus quota above the host's real CPU count (varies by machine —
+    // CI runners commonly have far fewer cores than this dev machine), so the expected clamp
+    // ceiling is min(engine's own 16-core cap, whatever the daemon actually reports).
+    const hostCpus = (await docker.info()).NCPU as number;
     const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 999, memoryMb: 999_999 } }));
     containerIds.push(runtime.containerId);
     const info = await docker.getContainer(runtime.containerId).inspect();
-    expect(info.HostConfig.NanoCpus).toBe(16 * 1_000_000_000);
+    expect(info.HostConfig.NanoCpus).toBe(Math.min(16, hostCpus) * 1_000_000_000);
     expect(info.HostConfig.Memory).toBe(32768 * 1024 * 1024);
   });
 
