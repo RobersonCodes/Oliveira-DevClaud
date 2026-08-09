@@ -6,6 +6,7 @@ import { DockerReviewEngine } from '@oliveira/review-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { recordActivity } from '../lib/activity.js';
 import { getRepositoryIntelligenceCached } from '../lib/repositoryIntelligenceCache.js';
 import { getContractIntelligenceCached } from '../lib/contractIntelligenceCache.js';
 import { getCodeIntelligenceCached } from '../lib/codeIntelligenceCache.js';
@@ -121,6 +122,15 @@ export async function orchestrationRoutes(app: FastifyInstance) {
 
       const result = await reviews.prepare(o.workspace.containerId, id, branches, gates);
       const gateFailed = result.gates.some(g => !g.ok);
+      for (const gate of result.gates) {
+        const kind = /test/i.test(gate.command) ? 'test' : /build/i.test(gate.command) ? 'build' : 'gate';
+        await recordActivity({
+          organizationId: o.workspace.project.organizationId, workspaceId: o.workspace.id, userId: user.id,
+          type: `${kind}.${gate.ok ? 'completed' : 'failed'}`,
+          message: `${gate.command} ${gate.ok ? 'passou' : 'falhou'} (exit ${gate.exitCode})`,
+          metadata: { orchestrationId: id, command: gate.command, exitCode: gate.exitCode }
+        });
+      }
       let contractGate: ContractGateResult | null = null;
       let regressionIntelligence = null;
       if (!result.conflicts.length) {
@@ -137,6 +147,13 @@ export async function orchestrationRoutes(app: FastifyInstance) {
           contractGate = evaluateContractGate(baselineContracts.intelligence, candidateContracts);
         }
         const fileChanges = await git.diffNameStatus(o.workspace.containerId, result.reviewPath, result.baseCommit);
+        if (fileChanges.length) {
+          await recordActivity({
+            organizationId: o.workspace.project.organizationId, workspaceId: o.workspace.id, userId: user.id,
+            type: 'git.changed', message: `${fileChanges.length} arquivo(s) alterado(s) na worktree de integração`,
+            metadata: { orchestrationId: id, files: fileChanges.length }
+          });
+        }
         regressionIntelligence = buildRegressionReport({
           baseline: { repository: repository.intelligence, code: baselineCode.intelligence, contracts: baselineContracts.intelligence },
           candidate: { repository: candidateRepository, code: candidateCode, contracts: candidateContracts ?? baselineContracts.intelligence },

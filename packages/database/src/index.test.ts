@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Prisma, Role, SecretKind, SecretScope, prisma } from './index.js';
+import { NotificationType, Prisma, Role, SecretKind, SecretScope, prisma } from './index.js';
 
 // These tests exercise real Prisma queries against a real Postgres instance (DATABASE_URL) — no
 // mocking of the query engine. Every created row is tracked and removed in afterEach so the suite
@@ -22,6 +22,10 @@ async function createUser() {
   const user = await prisma.user.create({ data: { email: `${unique('user')}@example.test`, passwordHash: 'not-a-real-hash' } });
   createdUserIds.push(user.id);
   return user;
+}
+
+async function createProject(organizationId: string) {
+  return prisma.project.create({ data: { organizationId, name: unique('project'), slug: unique('project-slug') } });
 }
 
 afterEach(async () => {
@@ -120,5 +124,57 @@ describe('database — Prisma namespace export', () => {
   it('re-exports the generated Prisma namespace alongside the client', () => {
     expect(Prisma).toBeDefined();
     expect(typeof Prisma.PrismaClientKnownRequestError).toBe('function');
+  });
+});
+
+describe('Repository — promoted from Project.repositoryUrl (v2.5)', () => {
+  it('cascades Repository deletion when the owning Project is deleted', async () => {
+    const org = await createOrg();
+    const project = await createProject(org.id);
+    const repo = await prisma.repository.create({ data: { projectId: project.id, url: 'https://github.com/example/repo.git' } });
+    expect(repo.provider).toBe('GITHUB');
+    expect(repo.defaultBranch).toBe('main');
+
+    await prisma.project.delete({ where: { id: project.id } });
+    await expect(prisma.repository.findUnique({ where: { id: repo.id } })).resolves.toBeNull();
+  });
+
+  it('allows more than one repository per project (the whole point of the promotion)', async () => {
+    const org = await createOrg();
+    const project = await createProject(org.id);
+    await prisma.repository.create({ data: { projectId: project.id, url: 'https://github.com/example/service-a.git' } });
+    await prisma.repository.create({ data: { projectId: project.id, provider: 'GITLAB', url: 'https://gitlab.com/example/service-b.git' } });
+    const repos = await prisma.repository.findMany({ where: { projectId: project.id } });
+    expect(repos).toHaveLength(2);
+  });
+});
+
+describe('ActivityLog — general activity feed, distinct from AuditLog (v2.5)', () => {
+  it('cascades when the Organization is deleted, and clears workspaceId (not the row) when the Workspace is deleted', async () => {
+    const org = await createOrg();
+    const project = await createProject(org.id);
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const entry = await prisma.activityLog.create({ data: { organizationId: org.id, workspaceId: workspace.id, type: 'workspace.created', message: 'Workspace criado' } });
+
+    await prisma.workspace.delete({ where: { id: workspace.id } });
+    const survived = await prisma.activityLog.findUniqueOrThrow({ where: { id: entry.id } });
+    expect(survived.workspaceId).toBeNull();
+
+    await prisma.organization.delete({ where: { id: org.id } });
+    createdOrgIds.splice(createdOrgIds.indexOf(org.id), 1);
+    await expect(prisma.activityLog.findUnique({ where: { id: entry.id } })).resolves.toBeNull();
+  });
+});
+
+describe('Notification (v2.5)', () => {
+  it('defaults to type INFO, starts unread, and cascades when the User is deleted', async () => {
+    const user = await createUser();
+    const notification = await prisma.notification.create({ data: { userId: user.id, title: 'Merge Risk: HIGH' } });
+    expect(notification.type).toBe(NotificationType.INFO);
+    expect(notification.read).toBe(false);
+
+    await prisma.user.delete({ where: { id: user.id } });
+    createdUserIds.splice(createdUserIds.indexOf(user.id), 1);
+    await expect(prisma.notification.findUnique({ where: { id: notification.id } })).resolves.toBeNull();
   });
 });
