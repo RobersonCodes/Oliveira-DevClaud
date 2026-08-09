@@ -9,6 +9,9 @@ jobs:
       # Real database — the database package's integration tests (packages/database/src/index.test.ts)
       # run real Prisma queries, not mocks, against this service container.
       DATABASE_URL: postgresql://oliveira:oliveira@localhost:5432/devcloud?schema=public
+      # Real workspace containers (workspace-engine/git-engine tests, and the minimal E2E journey)
+      # bind-mount this path from the host; the runner's default WORKSPACE_ROOT isn't writable.
+      WORKSPACE_ROOT: /tmp/odc-workspaces
     services:
       postgres:
         image: postgres:17-alpine
@@ -32,6 +35,11 @@ jobs:
         run: npm run db:generate
       - name: Apply database migrations
         run: npm run db:migrate:deploy
+      # The E2E test (apps/api/src/e2e.test.ts) starts a real workspace container from this image —
+      # not a lightweight stand-in — to exercise the actual login -> project -> workspace ->
+      # terminal -> run a command -> stop journey end to end.
+      - name: Build workspace image
+        run: docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node
       - name: Lint
         run: npm run lint
       # `npm run typecheck --workspaces` executes each workspace independently and does not
