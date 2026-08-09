@@ -5,7 +5,7 @@ services:
       POSTGRES_USER: oliveira
       POSTGRES_PASSWORD: oliveira
       POSTGRES_DB: devcloud
-    ports: ["5432:5432"]
+    ports: ["5433:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

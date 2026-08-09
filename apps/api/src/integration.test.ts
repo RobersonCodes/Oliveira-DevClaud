@@ -67,6 +67,18 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     expect(right.cookies.some(c => c.name === 'odc_session')).toBe(true);
   });
 
+  it('locks the account after 5 failed logins and rejects even the correct password while locked (423)', async () => {
+    const { body } = await registerUser();
+    for (let i = 0; i < 5; i++) {
+      const attempt = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: 'totally-wrong-password' } });
+      expect(attempt.statusCode).toBe(401);
+    }
+    const lockedOut = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: body.password } });
+    expect(lockedOut.statusCode).toBe(423);
+    expect(lockedOut.json().error).toBe('ACCOUNT_LOCKED');
+    expect(new Date(lockedOut.json().lockedUntil).getTime()).toBeGreaterThan(Date.now());
+  });
+
   it('logout clears the session so /me stops working with the old cookie', async () => {
     const { sessionCookie } = await registerUser();
     const before = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: sessionCookie } });

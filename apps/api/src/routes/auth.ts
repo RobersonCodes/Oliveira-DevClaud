@@ -8,6 +8,19 @@ import { audit } from '../lib/audit.js';
 const credentials = z.object({ email: z.string().email().max(254), password: z.string().min(10).max(128) });
 const registerSchema = credentials.extend({ name: z.string().min(2).max(100), organizationName: z.string().min(2).max(100).default('Oliveira Systems') });
 
+// Progressive account lockout: 5 failed attempts locks the account for 15 minutes, doubling on
+// every subsequent failure while still locked (up to a 24h cap). This is per-account, layered on
+// top of the per-IP rate limit already on this route (config.rateLimit below) — together they
+// cover both a single account being brute-forced from many IPs and one IP hammering many accounts.
+const LOCKOUT_THRESHOLD = 5;
+const BASE_LOCKOUT_MINUTES = 15;
+const MAX_LOCKOUT_MINUTES = 24 * 60;
+function nextLockout(attempts: number): Date {
+  const tier = attempts - LOCKOUT_THRESHOLD;
+  const minutes = Math.min(BASE_LOCKOUT_MINUTES * 2 ** tier, MAX_LOCKOUT_MINUTES);
+  return new Date(Date.now() + minutes * 60_000);
+}
+
 export async function authRoutes(app: FastifyInstance) {
   app.post('/register', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
     const body = registerSchema.parse(request.body);
@@ -32,7 +45,22 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/login', { config: { rateLimit: { max: 8, timeWindow: '1 minute' } } }, async (request, reply) => {
     const body = credentials.parse(request.body);
     const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
-    if (!user || !(await verifyPassword(body.password, user.passwordHash))) return reply.code(401).send({ error: 'INVALID_CREDENTIALS' });
+    if (user?.lockedUntil && user.lockedUntil > new Date()) {
+      return reply.code(423).send({ error: 'ACCOUNT_LOCKED', lockedUntil: user.lockedUntil });
+    }
+    if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
+      if (user) {
+        const attempts = user.failedLoginAttempts + 1;
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { failedLoginAttempts: attempts, lockedUntil: attempts >= LOCKOUT_THRESHOLD ? nextLockout(attempts) : null }
+        });
+      }
+      return reply.code(401).send({ error: 'INVALID_CREDENTIALS' });
+    }
+    if (user.failedLoginAttempts > 0 || user.lockedUntil) {
+      await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockedUntil: null } });
+    }
     const session = await createSession(user.id, request);
     reply.setCookie(SESSION_COOKIE, session.token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', expires: session.expiresAt });
     await audit({ userId: user.id, action: 'USER_LOGIN', resource: 'Session', ipAddress: request.ip });
