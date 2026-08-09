@@ -13,6 +13,12 @@ import { DockerWorkspaceEngine } from './index.js';
 const IMAGE = 'alpine:3.20';
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
 
+// The engine's own ceiling clamp (16 cores) is not host-aware, and Docker itself hard-rejects a
+// NanoCpus quota above the real host CPU count — so how high the ceiling test can safely push
+// depends on the machine running it (CI commonly has far fewer cores than a dev machine). Resolved
+// at module scope (top-level await) so it's available synchronously for `it.skipIf` below.
+const hostCpus = (await docker.info()).NCPU as number;
+
 let workspaceRoot: string;
 let engine: DockerWorkspaceEngine;
 const containerIds: string[] = [];
@@ -71,16 +77,27 @@ describe('DockerWorkspaceEngine — real Docker container lifecycle', () => {
     expect(stat.isDirectory()).toBe(true);
   });
 
-  it('clamps cpu/memory limits to the safe min/max range instead of trusting the caller', async () => {
-    // Docker itself rejects a NanoCpus quota above the host's real CPU count (varies by machine —
-    // CI runners commonly have far fewer cores than this dev machine), so the expected clamp
-    // ceiling is min(engine's own 16-core cap, whatever the daemon actually reports).
-    const hostCpus = (await docker.info()).NCPU as number;
-    const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 999, memoryMb: 999_999 } }));
+  it('clamps memory above the max down to 32768MB', async () => {
+    const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 1, memoryMb: 999_999 } }));
     containerIds.push(runtime.containerId);
     const info = await docker.getContainer(runtime.containerId).inspect();
-    expect(info.HostConfig.NanoCpus).toBe(Math.min(16, hostCpus) * 1_000_000_000);
     expect(info.HostConfig.Memory).toBe(32768 * 1024 * 1024);
+  });
+
+  it('clamps a below-minimum cpu request up to 0.25 cores', async () => {
+    const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 0.001, memoryMb: 512 } }));
+    containerIds.push(runtime.containerId);
+    const info = await docker.getContainer(runtime.containerId).inspect();
+    expect(info.HostConfig.NanoCpus).toBe(0.25 * 1_000_000_000);
+  });
+
+  // Requesting the app's 16-core ceiling only makes sense on a host that actually has 16+ cores —
+  // Docker rejects the request outright otherwise (verified: it does not silently clamp further).
+  it.skipIf(hostCpus < 16)('clamps an above-maximum cpu request down to 16 cores', async () => {
+    const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 999, memoryMb: 512 } }));
+    containerIds.push(runtime.containerId);
+    const info = await docker.getContainer(runtime.containerId).inspect();
+    expect(info.HostConfig.NanoCpus).toBe(16 * 1_000_000_000);
   });
 
   it('create() is idempotent for the same workspaceId — reuses the existing container instead of duplicating it', async () => {
