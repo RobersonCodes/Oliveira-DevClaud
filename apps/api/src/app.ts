@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
+import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { ZodError } from 'zod';
@@ -33,6 +34,10 @@ import { registerRuntimeProxy } from './lib/runtimeProxy.js';
  */
 export async function buildApp(opts: { logger?: boolean; disableRateLimit?: boolean } = {}) {
   const app = Fastify({ logger: opts.logger ?? true, trustProxy: true });
+  // This is a JSON-only API, never a source of HTML, so contentSecurityPolicy is off; the web app
+  // legitimately fetches this API cross-origin with credentials, so CORP is relaxed to allow that
+  // (COEP/COOP, which govern window/worker embedding rather than fetch, stay at Helmet's defaults).
+  await app.register(helmet, { contentSecurityPolicy: false, crossOriginResourcePolicy: { policy: 'cross-origin' } });
   await app.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000', credentials: true });
   await app.register(cookie);
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
