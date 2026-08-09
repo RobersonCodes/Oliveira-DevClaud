@@ -1,6 +1,6 @@
 # Oliveira DevCloud
 
-> **v2.4 — Contract Gate para Review & Merge.**
+> **v2.5 — Regression Intelligence & Merge Risk Report.**
 
 Plataforma self-hosted de desenvolvimento remoto da Oliveira Systems: workspaces Docker isolados, terminal persistente via tmux, Web IDE no navegador, importação GitHub, secrets criptografados, Codex/Claude em worktrees isolados, orquestração multiagente e aprovação humana antes do merge.
 
@@ -22,6 +22,7 @@ Plataforma self-hosted de desenvolvimento remoto da Oliveira Systems: workspaces
 - **v2.2** — Dependency Router: adiciona dependências somente quando há evidência arquitetural forte e preserva paralelismo quando seguro.
 - **v2.3** — Contract Intelligence: mapeia produtores/consumidores HTTP e riscos de integração.
 - **v2.4** — Contract Gate: compara baseline vs integração e bloqueia regressões de contrato de alta confiança antes do merge.
+- **v2.5** — Regression Intelligence: compara baseline vs candidato (testes, endpoints, símbolos, módulos sensíveis, migrations, dependências, config) e produz um Merge Risk Report com score determinístico antes da aprovação humana.
 
 ## Arquitetura
 
@@ -48,6 +49,7 @@ packages/
   context-engine/
   contract-intelligence/
   contract-gate/
+  regression-intelligence/
 infra/
   workspace-images/node/
   nginx/
@@ -74,6 +76,10 @@ GitHub → Project → Docker Workspace → Stack Detection → Browser IDE
                              Quality Gates + Review
                                       ↓
                                   Contract Gate
+                                      ↓
+                            Regression Intelligence
+                                      ↓
+                          Merge Risk Report (score + bloqueio)
                                       ↓
                                Human Approval
                                       ↓
@@ -147,3 +153,7 @@ Mapeia endpoints produtores e consumidores HTTP, detecta incompatibilidades infe
 ## v2.4 — Contract Gate
 
 O Review & Merge agora compara a baseline de contratos HTTP da branch principal com a worktree integrada de Codex/Claude. Regressões de alta confiança bloqueiam `reviewStatus=READY` e, portanto, impedem o merge até nova correção/análise. Consulte `docs/V2.4.md`.
+
+## v2.5 — Regression Intelligence & Merge Risk Report
+
+Depois do Contract Gate, `@oliveira/regression-intelligence` compara baseline vs candidato (testes removidos, endpoints, símbolos exportados, módulos sensíveis, migrations, dependências, config) e o Risk Engine calcula um score 0–100 determinístico (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). Bloqueio automático só ocorre com evidência forte (Contract Gate bloqueado, build/teste falho, conflito de merge, ou endpoint removido com consumidor conhecido) — heurísticas de símbolo/módulo sensível nunca bloqueiam sozinhas, só aparecem no relatório. O relatório fica em `Orchestration.reviewSummary.regressionIntelligence` e também em `GET /api/v1/orchestrations/:id/regression-report`; a tela `/orchestrations` mostra um card "Merge Risk" mobile-first. Consulte `docs/V2.5.md`.

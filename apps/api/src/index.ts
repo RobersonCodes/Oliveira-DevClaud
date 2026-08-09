@@ -45,7 +45,7 @@ app.setErrorHandler((rawError, _request, reply) => {
   return reply.code(statusCode).send({ error: statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : error.message });
 });
 
-app.get('/health', async () => ({ status: 'ok', service: 'oliveira-devcloud-api', version: '2.4.0' }));
+app.get('/health', async () => ({ status: 'ok', service: 'oliveira-devcloud-api', version: '2.5.0' }));
 app.get('/ready', async (_request, reply) => {
   try { await prisma.$queryRaw`SELECT 1`; return { status: 'ready', database: 'ok' }; }
   catch { return reply.code(503).send({ status: 'not-ready', database: 'error' }); }
