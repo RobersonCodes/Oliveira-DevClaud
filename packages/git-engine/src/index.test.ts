@@ -49,9 +49,11 @@ beforeAll(async () => {
 afterAll(async () => {
   if (!containerId) return;
   const container = docker.getContainer(containerId);
-  await container.stop().catch(() => undefined);
+  // Short grace period — this is a disposable `sleep infinity` container, no need to wait out the
+  // default ~10s SIGTERM window (which was blowing past vitest's default 10s hook timeout in CI).
+  await container.stop({ t: 1 }).catch(() => undefined);
   await container.remove({ force: true }).catch(() => undefined);
-});
+}, 30_000);
 
 describe('DockerGitIsolationEngine — real container, real git', () => {
   it('ensureRepository resolves for an initialized repo', async () => {
