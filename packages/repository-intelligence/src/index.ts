@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
 const MAX_FILES = 400;
@@ -42,8 +43,12 @@ async function exec(containerId: string, cmd: string[], workingDir = '/workspace
   const container = docker.getContainer(containerId);
   const ex = await container.exec({ Cmd: cmd, WorkingDir: workingDir, User: 'devcloud', AttachStdout: true, AttachStderr: true });
   const stream = await ex.start({ hijack: true, stdin: false });
+  // Without a TTY, Docker multiplexes stdout/stderr into one stream with an 8-byte header per
+  // frame; demuxStream splits those frames so `output` is clean text, not corrupted with headers.
   let output = '';
-  stream.on('data', (b: Buffer) => { if (output.length < MAX_TEXT) output += b.toString('utf8'); });
+  const combined = new PassThrough();
+  combined.on('data', (b: Buffer) => { if (output.length < MAX_TEXT) output += b.toString('utf8'); });
+  docker.modem.demuxStream(stream, combined, combined);
   const ended = new Promise<void>((resolve, reject) => { stream.on('end', resolve); stream.on('error', reject); });
   const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('REPOSITORY_INTELLIGENCE_TIMEOUT')), timeoutMs));
   await Promise.race([ended, timeout]);

@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { PassThrough } from 'node:stream';
 
 export type WorktreeInfo = {
   path: string;
@@ -42,9 +43,16 @@ export class DockerGitIsolationEngine {
     const container = this.docker.getContainer(containerId);
     const execution = await container.exec({ Cmd: cmd, WorkingDir: workingDir, AttachStdout: true, AttachStderr: true });
     const stream = await execution.start({ hijack: true });
+    // Without a TTY, Docker multiplexes stdout/stderr into one stream, prefixing every frame with
+    // an 8-byte header (stream type + length) — raw `data` events include those header bytes
+    // verbatim, silently corrupting anything parsed from the output (commit SHAs, diffs, ...).
+    // demuxStream splits the frames properly; Tty:true was considered but makes git emit ANSI
+    // color/pager control sequences instead, which is worse for machine parsing.
     const chunks: Buffer[] = [];
+    const stdout = new PassThrough();
+    stdout.on('data', (chunk: Buffer) => chunks.push(chunk));
+    this.docker.modem.demuxStream(stream, stdout, stdout);
     await new Promise<void>((resolve, reject) => {
-      stream.on('data', chunk => chunks.push(Buffer.from(chunk)));
       stream.on('end', resolve);
       stream.on('close', resolve);
       stream.on('error', reject);
