@@ -6,9 +6,20 @@ jobs:
   quality:
     runs-on: ubuntu-latest
     env:
-      # prisma generate/validate require DATABASE_URL to be a well-formed connection string, but
-      # none of the CI steps (generate/typecheck/test/build) open a real connection.
+      # Real database — the database package's integration tests (packages/database/src/index.test.ts)
+      # run real Prisma queries, not mocks, against this service container.
       DATABASE_URL: postgresql://oliveira:oliveira@localhost:5432/devcloud?schema=public
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: oliveira
+          POSTGRES_PASSWORD: oliveira
+          POSTGRES_DB: devcloud
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U oliveira -d devcloud"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,6 +30,8 @@ jobs:
         run: npm ci
       - name: Generate Prisma Client
         run: npm run db:generate
+      - name: Apply database migrations
+        run: npm run db:migrate:deploy
       - name: Lint
         run: npm run lint
       # `npm run typecheck --workspaces` executes each workspace independently and does not

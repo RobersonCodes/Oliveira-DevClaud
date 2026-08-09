@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:generate": "npm run generate -w @oliveira/database",
-    "db:migrate": "npm run migrate -w @oliveira/database"
+    "db:migrate": "npm run migrate -w @oliveira/database",
+    "db:migrate:deploy": "npm run migrate:deploy -w @oliveira/database"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
