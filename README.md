@@ -130,10 +130,11 @@ A suíte roda contra **infraestrutura real**, não contra mocks:
 | `packages/git-engine` | Worktree completo: create → snapshot → review → diff → merge → cleanup, contra um container Alpine real com git de verdade | Docker real |
 | `packages/workspace-engine` | Lifecycle de container (create/start/stop/restart/destroy), enforcement real de CPU/RAM/PIDs/capabilities | Docker real |
 | `packages/regression-intelligence` | Os 8 detectores de regressão + Risk Engine (determinístico, sem I/O) | nenhuma |
+| `apps/api` (`e2e.test.ts`) | Jornada mínima completa: login → criar projeto → subir um workspace real (a imagem `oliveira-devcloud/workspace-node:1.0` de verdade, não uma imagem leve substituta) → abrir terminal → rodar um comando real por WebSocket real e ler a saída → parar o workspace | Postgres real + Docker real + imagem de workspace já buildada |
 
 Sem `DATABASE_URL`/`DOCKER_SOCKET` configurados, os testes que precisam dessa infra falham — não há
-skip silencioso. Em CI, o Postgres sobe como serviço do job e o Docker já vem disponível nos runners
-hospedados pela GitHub.
+skip silencioso. Em CI, o Postgres sobe como serviço do job, a imagem de workspace é buildada antes
+da suíte, e o Docker já vem disponível nos runners hospedados pela GitHub.
 
 ## CI/CD
 
