@@ -1,12 +1,12 @@
 import Docker from 'dockerode';
+import { WORKSPACE_NETWORK_NAME_PREFIX } from '@oliveira/runtime-broker-client';
 
 export const WORKSPACE_NETWORK_LABEL = 'dev.oliveira.devcloud';
 export const WORKSPACE_NETWORK_ID_LABEL = 'dev.oliveira.workspace-id';
 export const WORKSPACE_NETWORK_VALUE = 'workspace-network';
+export { WORKSPACE_NETWORK_NAME_PREFIX };
 
 const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 64);
-
-export const WORKSPACE_NETWORK_NAME_PREFIX = 'odc-ws-net-';
 
 /** Deterministic, idempotent-by-construction name — never derived from a random nonce. */
 export function workspaceNetworkName(workspaceId: string): string {
@@ -50,10 +50,10 @@ export async function ensureWorkspaceNetwork(docker: Docker, workspaceId: string
 
 /**
  * Connects the relay (the process proxying IDE/preview traffic — the `api` container in
- * production) to a workspace's dedicated network so it can reach the workspace container by IP.
- * `relayContainerId` is expected to be unset when the relay itself runs directly on the host (dev,
- * CI) rather than inside a container — the host can already route to any Docker bridge network's
- * containers without an explicit `network connect`, so this is a no-op in that case.
+ * production, identified by `RELAY_CONTAINER_NAME`) to a workspace's dedicated network so it can
+ * reach the workspace container by IP. Unset in dev/CI, where the broker itself runs directly on
+ * the host — the host can already route to any Docker bridge network's containers without an
+ * explicit `network connect`.
  */
 export async function connectRelayToWorkspaceNetwork(docker: Docker, networkName: string, relayContainerId: string | undefined): Promise<void> {
   if (!relayContainerId) return;
@@ -93,8 +93,9 @@ export async function removeWorkspaceNetwork(docker: Docker, workspaceId: string
 /**
  * Best-effort sweep for workspace networks left behind by a crash between container removal and
  * network removal (or an interrupted destroy()). Only removes networks carrying this module's own
- * label and that currently have zero containers attached — never a network in active use. Intended
- * to be invoked periodically by the Fase 7 reaper; also safe to call ad hoc.
+ * label and that currently have zero containers attached — never a network in active use. Exposed
+ * over `POST /v1/maintenance/prune-networks`, intended to be invoked periodically by the Fase 7
+ * reaper; also safe to call ad hoc.
  */
 export async function pruneOrphanedNetworks(docker: Docker): Promise<string[]> {
   const networks = await docker.listNetworks({ filters: JSON.stringify({ label: [`${WORKSPACE_NETWORK_LABEL}=${WORKSPACE_NETWORK_VALUE}`] }) });

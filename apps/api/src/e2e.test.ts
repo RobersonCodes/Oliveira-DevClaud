@@ -3,26 +3,39 @@ import WebSocket from 'ws';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma } from '@oliveira/database';
-import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
-import { buildApp } from './app.js';
+import { startTestBroker } from '@oliveira/runtime-broker/src/testHelpers.js';
 
 /**
  * Minimal end-to-end test: login → create project → start a REAL workspace container (the actual
  * `oliveira-devcloud/workspace-node:1.0` image, not a lightweight stand-in) → open a real terminal
  * session over a real WebSocket → run a real shell command and read its real output → stop the
- * workspace. Every layer is real: Postgres, Docker, tmux, the WebSocket transport. No mocks.
+ * workspace. Every layer is real: Postgres, Docker, tmux, the WebSocket transport, and — since the
+ * Fase 4 Runtime Broker migration — a real broker in front of Docker too. No mocks.
  *
  * Requires: DATABASE_URL, DOCKER_SOCKET, and the workspace image already built
  * (`docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node`).
+ *
+ * RUNTIME_BROKER_URL/TOKEN must be set (to a *running* broker) before `./app.js` is ever imported —
+ * apps/api/src/routes/{workspaces,terminals,ide}.ts construct their engine clients once, at module
+ * load time, so this test starts its own broker and only then dynamically imports buildApp/
+ * DockerWorkspaceEngine, rather than statically importing them at the top of the file.
  */
 let app: FastifyInstance;
 let baseUrl: string;
 let wsBaseUrl: string;
+let broker: Awaited<ReturnType<typeof startTestBroker>>;
+let DockerWorkspaceEngine: typeof import('@oliveira/workspace-engine').DockerWorkspaceEngine;
 const createdUserIds: string[] = [];
 const createdOrgIds: string[] = [];
 const createdWorkspaceIds: string[] = [];
 
 beforeAll(async () => {
+  broker = await startTestBroker();
+  process.env.RUNTIME_BROKER_URL = broker.url;
+  process.env.RUNTIME_BROKER_TOKEN = broker.token;
+
+  ({ DockerWorkspaceEngine } = await import('@oliveira/workspace-engine'));
+  const { buildApp } = await import('./app.js');
   app = await buildApp({ logger: false, disableRateLimit: true });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
@@ -40,6 +53,7 @@ afterAll(async () => {
   for (const id of createdOrgIds) await prisma.organization.delete({ where: { id } }).catch(() => undefined);
   for (const id of createdUserIds) await prisma.user.delete({ where: { id } }).catch(() => undefined);
   await app.close();
+  await broker?.close();
 }, 60_000);
 
 function extractSessionCookie(response: Response): string {

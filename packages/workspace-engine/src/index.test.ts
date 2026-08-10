@@ -4,13 +4,14 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { startTestBroker } from '@oliveira/runtime-broker/src/testHelpers.js';
 import { DockerWorkspaceEngine } from './index.js';
-import { pruneOrphanedNetworks } from './network.js';
 
-// Real Docker container lifecycle — no mocking of dockerode. Uses a lightweight `alpine:3.20`
-// override instead of the real (heavyweight, apt/code-server-installing) workspace image: this
-// package's own responsibility is container orchestration (limits, binds, lifecycle), not image
-// contents, and alpine exercises the exact same dockerode calls against a real daemon.
+// Real broker (real Fastify app), real Docker daemon underneath — this validates workspace-engine
+// exactly as production runs it: as an HTTP client of apps/runtime-broker, never touching
+// `docker.sock` itself. Uses a lightweight `alpine:3.20` override instead of the real (heavyweight,
+// apt/code-server-installing) workspace image: this package's own responsibility is container
+// orchestration (limits, binds, lifecycle), not image contents.
 const IMAGE = 'alpine:3.20';
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
 
@@ -21,6 +22,7 @@ const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/d
 const hostCpus = (await docker.info()).NCPU as number;
 
 let workspaceRoot: string;
+let broker: Awaited<ReturnType<typeof startTestBroker>>;
 let engine: DockerWorkspaceEngine;
 const containerIds: string[] = [];
 
@@ -32,7 +34,8 @@ beforeAll(async () => {
     });
   });
   workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'odc-workspace-engine-'));
-  engine = new DockerWorkspaceEngine({ socketPath: process.env.DOCKER_SOCKET, image: IMAGE, workspaceRoot });
+  broker = await startTestBroker({ docker, config: { image: IMAGE, workspaceRoot } });
+  engine = new DockerWorkspaceEngine({ baseUrl: broker.url, token: broker.token, workspaceRoot });
 }, 60_000);
 
 afterEach(async () => {
@@ -42,13 +45,14 @@ afterEach(async () => {
     await container.stop({ t: 1 }).catch(() => undefined);
     await container.remove({ force: true }).catch(() => undefined);
   }
-  // create() now also creates a dedicated network per workspace (Fase 3/P0-3); most of the tests
-  // here only clean up the container, not the workspace, so sweep whatever that leaves orphaned.
-  await pruneOrphanedNetworks(docker).catch(() => undefined);
+  // create() also creates a dedicated network per workspace (Fase 3/P0-3); most of the tests here
+  // only clean up the container, not the workspace, so sweep whatever that leaves orphaned.
+  await fetch(`${broker.url}/v1/maintenance/prune-networks`, { method: 'POST', headers: { authorization: `Bearer ${broker.token}` } }).catch(() => undefined);
 });
 
 afterAll(async () => {
   if (workspaceRoot) await fs.rm(workspaceRoot, { recursive: true, force: true }).catch(() => undefined);
+  await broker?.close();
 }, 30_000);
 
 function workspaceInput(overrides: Partial<Parameters<DockerWorkspaceEngine['create']>[0]> = {}) {
@@ -60,7 +64,7 @@ function workspaceInput(overrides: Partial<Parameters<DockerWorkspaceEngine['cre
   };
 }
 
-describe('DockerWorkspaceEngine — real Docker container lifecycle', () => {
+describe('DockerWorkspaceEngine — real broker, real Docker container lifecycle', () => {
   it('creates a running container with the workspace bind mount and resource limits enforced', async () => {
     const input = workspaceInput();
     const runtime = await engine.create(input);

@@ -1,5 +1,4 @@
-import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
 export type ReviewBranch = { taskId: string; branchName: string };
 export type GateResult = { command: string; exitCode: number; output: string; ok: boolean };
@@ -23,23 +22,11 @@ const safeBranch = (value: string) => {
 };
 
 export class DockerReviewEngine {
-  private readonly docker: Docker;
-  constructor(socketPath = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock') { this.docker = new Docker({ socketPath }); }
+  private readonly broker: RuntimeBrokerClient;
+  constructor(opts?: RuntimeBrokerClientOptions) { this.broker = new RuntimeBrokerClient(opts); }
 
   private async exec(containerId: string, cmd: string[], workingDir = '/workspace/repository') {
-    const container = this.docker.getContainer(containerId);
-    const execution = await container.exec({ Cmd: cmd, WorkingDir: workingDir, AttachStdout: true, AttachStderr: true });
-    const stream = await execution.start({ hijack: true });
-    // See DockerGitIsolationEngine.exec() for why this needs demuxing rather than raw concatenation.
-    const chunks: Buffer[] = [];
-    const combined = new PassThrough();
-    combined.on('data', (chunk: Buffer) => chunks.push(chunk));
-    this.docker.modem.demuxStream(stream, combined, combined);
-    await new Promise<void>((resolve, reject) => {
-      stream.on('end', resolve); stream.on('close', resolve); stream.on('error', reject);
-    });
-    const result = await execution.inspect();
-    return { exitCode: result.ExitCode ?? 1, output: Buffer.concat(chunks).toString('utf8') };
+    return this.broker.exec(containerId, { cmd, workingDir });
   }
 
   private ok(result: { exitCode:number; output:string }, code:string) {

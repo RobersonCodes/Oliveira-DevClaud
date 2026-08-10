@@ -117,7 +117,7 @@ import { SetupStage, SetupJobStatus, SecretKind } from '@oliveira/database';
 import { detectProject, installDependencies } from '@oliveira/setup-engine';
 import { DockerIdeEngine } from '@oliveira/ide-engine';
 import { SetupQueue } from '@oliveira/setup-queue';
-import { bootstrapRepository } from './lib/repositoryBootstrap.js';
+import { bootstrapRepository } from '@oliveira/repository-bootstrap';
 import { resolveSecretByKind } from './lib/secretResolver.js';
 
 const setupIde=new DockerIdeEngine(); const setupQueue=new SetupQueue();

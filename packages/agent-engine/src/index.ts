@@ -1,5 +1,4 @@
-import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
 export type AgentKind = 'CODEX' | 'CLAUDE';
 export type AgentRuntimeStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'UNKNOWN';
@@ -23,30 +22,14 @@ const safeTaskId = (value: string) => {
 };
 
 export class DockerAgentEngine {
-  private readonly docker: Docker;
+  private readonly broker: RuntimeBrokerClient;
 
-  constructor(socketPath = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock') {
-    this.docker = new Docker({ socketPath });
+  constructor(opts?: RuntimeBrokerClientOptions) {
+    this.broker = new RuntimeBrokerClient(opts);
   }
 
   private async exec(containerId: string, cmd: string[], env?: string[]) {
-    const container = this.docker.getContainer(containerId);
-    const execution = await container.exec({ Cmd: cmd, Env: env, AttachStdout: true, AttachStderr: true });
-    const stream = await execution.start({ hijack: true });
-    // Without a TTY, Docker multiplexes stdout/stderr into one stream, prefixing every frame with
-    // an 8-byte header (stream type + length) — raw `data` events include those header bytes
-    // verbatim, corrupting status codes/log output parsed from it. demuxStream splits the frames.
-    const chunks: Buffer[] = [];
-    const combined = new PassThrough();
-    combined.on('data', (chunk: Buffer) => chunks.push(chunk));
-    this.docker.modem.demuxStream(stream, combined, combined);
-    await new Promise<void>((resolve, reject) => {
-      stream.on('end', resolve);
-      stream.on('close', resolve);
-      stream.on('error', reject);
-    });
-    const result = await execution.inspect();
-    return { exitCode: result.ExitCode ?? 1, output: Buffer.concat(chunks).toString('utf8') };
+    return this.broker.exec(containerId, { cmd, env });
   }
 
   async start(input: StartAgentInput): Promise<AgentRuntime> {

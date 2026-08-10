@@ -1,14 +1,19 @@
 import Docker from 'dockerode';
 import { PassThrough } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startTestBroker } from '@oliveira/runtime-broker/src/testHelpers.js';
 import { DockerGitIsolationEngine } from './index.js';
 
-// Real Docker + a real git repository — no mocking of dockerode or of git itself. Requires a
-// reachable Docker daemon; DOCKER_SOCKET must point at the platform-appropriate endpoint (Unix
-// socket in CI/Linux, e.g. `//./pipe/docker_engine` when developing directly on Windows).
+// Real Docker + a real git repository + a real broker — no mocking of dockerode or of git itself.
+// Requires a reachable Docker daemon; DOCKER_SOCKET must point at the platform-appropriate endpoint
+// (Unix socket in CI/Linux, e.g. `//./pipe/docker_engine` when developing directly on Windows). The
+// test's own `exec()` helper below (seeding git state, asserting on repo contents) talks to Docker
+// directly — that's just scaffolding, not the thing under test — while `git` itself is backed by a
+// real broker instance, exactly how apps/api/apps/worker use it in production.
 const IMAGE = 'alpine:3.20';
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
-const git = new DockerGitIsolationEngine(process.env.DOCKER_SOCKET ?? '/var/run/docker.sock');
+let broker: Awaited<ReturnType<typeof startTestBroker>>;
+let git: DockerGitIsolationEngine;
 
 let containerId: string;
 
@@ -36,6 +41,8 @@ beforeAll(async () => {
   const container = await docker.createContainer({ Image: IMAGE, Cmd: ['sleep', 'infinity'], Tty: false });
   containerId = container.id;
   await container.start();
+  broker = await startTestBroker({ docker });
+  git = new DockerGitIsolationEngine({ baseUrl: broker.url, token: broker.token });
   await exec(['mkdir', '-p', '/workspace/repository', '/workspace/worktrees'], '/');
   await exec(['apk', 'add', '--no-cache', 'git'], '/');
   await exec(['git', 'init']);
@@ -47,6 +54,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
+  await broker?.close();
   if (!containerId) return;
   const container = docker.getContainer(containerId);
   // Short grace period — this is a disposable `sleep infinity` container, no need to wait out the

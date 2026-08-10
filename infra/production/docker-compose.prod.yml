@@ -21,36 +21,52 @@ services:
     env_file: ../../.env.production
     depends_on: { postgres: { condition: service_healthy } }
     command: ["npm","run","db:migrate:deploy"]
-  api:
-    build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
-    # Fixed name so the container can identify and reconnect *itself* (see RELAY_CONTAINER_NAME
-    # below) to each workspace's dedicated network — `docker network connect` needs a stable
-    # container name/ID, and Compose otherwise assigns a fresh one on every recreate.
-    container_name: odc-api
+  # Sole holder of the Docker socket (Fase 4 / P1-5) — api and worker talk to it over the internal
+  # compose network via @oliveira/runtime-broker-client instead of touching docker.sock directly.
+  # Never publishes a host port: only reachable by other containers on this compose network.
+  runtime-broker:
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.runtime-broker }
     restart: unless-stopped
     env_file: ../../.env.production
     environment:
-      # Must match `container_name` above. Lets workspace-engine (running inside this very
-      # container) join a workspace's isolated network so IDE/preview relay can reach it by IP —
-      # without this, api is only on the compose default network and per-workspace networks are
-      # unreachable from here. Unset in dev/CI on purpose: there, this process runs directly on the
-      # host, which can already route to any Docker bridge network without joining it explicitly.
+      # Matches api's `container_name` below. Lets the broker join a workspace's dedicated network
+      # on the relay's behalf so IDE/preview traffic (proxied from inside the api container) can
+      # reach the workspace container by IP — without this, per-workspace networks are unreachable
+      # from api. Unset in dev/CI on purpose: there, api runs directly on the host, which can
+      # already route to any Docker bridge network without joining it explicitly.
       RELAY_CONTAINER_NAME: odc-api
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Workspace containers are created as *siblings* of the broker by the host Docker daemon (via
+      # the socket above), not as children of this container — so the daemon resolves Binds paths
+      # against the HOST filesystem regardless of what this container's own filesystem looks like.
+      # The broker therefore does NOT need WORKSPACE_ROOT_HOST bind-mounted into itself; it only
+      # needs to know the *string* (WORKSPACE_ROOT below) to hand the daemon. Compare to api, which
+      # DOES need the real bind mount, because it also `fs.mkdir`/`fs.chown`s that path directly
+      # (see the comment on api's own volumes) before ever asking the broker to create a container.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  api:
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
+    # Fixed name so the broker can connect/disconnect *this* container (see runtime-broker's
+    # RELAY_CONTAINER_NAME above) to each workspace's dedicated network — `docker network connect`
+    # needs a stable container name/ID, and Compose otherwise assigns a fresh one on every recreate.
+    container_name: odc-api
+    restart: unless-stopped
+    env_file: ../../.env.production
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
       migrate: { condition: service_completed_successfully }
+      runtime-broker: { condition: service_healthy }
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Workspace containers are created as *siblings* by the host Docker daemon (via the socket
-      # above), not as children of this container — so the daemon resolves Binds paths against the
-      # HOST filesystem, never against this container's filesystem. A named volume here would give
-      # api/worker a path like /var/lib/.../workspaces that only exists inside THIS container, and
-      # the daemon would silently bind-mount an empty/wrong host directory into every new workspace.
-      # Using the identical path as a host bind mount keeps "the path workspace-engine writes to"
-      # and "the path the host daemon reads from" the same directory. Operator must ensure
-      # WORKSPACE_ROOT_HOST exists and is writable by uid 10001 (the workspace image's non-root
-      # user) before first run.
+      # fs.mkdir/fs.chown the workspace's bind-mounted directory directly (workspace-engine's
+      # create()) before ever asking the broker to create the container — needs the same real host
+      # path visible in api's own filesystem. Operator must ensure WORKSPACE_ROOT_HOST exists and is
+      # writable by uid 10001 (the workspace image's non-root user) before first run.
       - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces
   worker:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.worker }
@@ -60,9 +76,7 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
       migrate: { condition: service_completed_successfully }
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces
+      runtime-broker: { condition: service_healthy }
   web:
     build:
       context: ../..

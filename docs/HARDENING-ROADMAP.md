@@ -6,8 +6,9 @@ containers/redes Docker reais, localmente e confirmado em CI Linux via push). O 
 implementado para um site registrável separado do painel, com domínios reais definidos
 (`app.oliveiradevcloud.com` / `runtime.oliveiradevcloud-content.com`) e o server block nginx real já
 escrito e validado sintaticamente; DNS wildcard e certificado TLS wildcard seguem pendentes de
-execução no servidor real do usuário (`docs/RUNTIME-GATEWAY-DEPLOY.md`). As Fases 1, 5(resto), 6-9
-continuam pendentes — ver Seção 7.
+execução no servidor real do usuário (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker (Fase 4,
+P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema — api e worker não têm
+mais acesso direto ao daemon. As Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
 **Data:** 2026-08-10
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -97,7 +98,7 @@ Pontos-chave já confirmados no código:
 | Workspace ↔ outro Workspace | Isolada — rede Docker dedicada por workspace, sem rota entre redes bridge distintas | `packages/workspace-engine/src/network.ts` |
 | Workspace ↔ Docker socket do host | Intacta — socket nunca montado em workspace | confirmado via busca exaustiva (agente de pesquisa) |
 | Workspace ↔ Postgres/Redis | Intacta hoje, mas por **acidente de topologia** (redes Compose distintas), não por design explícito | `infra/production/docker-compose.prod.yml` sem `networks:` compartilhada |
-| API/Worker ↔ Docker daemon | **Privilégio não reduzido** — 2 processos com socket bruto, sem broker/allow-list | `infra/production/docker-compose.prod.yml:22,30` |
+| API/Worker ↔ Docker daemon | Isolada — só o `runtime-broker` tem `docker.sock`; api/worker falam com ele via HTTP/WS autenticado, contrato estreito sem `Privileged`/mounts/rede arbitrários | `apps/runtime-broker/`; `infra/production/docker-compose.prod.yml` (Fase 4) |
 | code-server dentro do workspace | **Sem autenticação própria** (`--auth none`) — depende 100% do proxy da API | `packages/ide-engine/src/index.ts:55` |
 
 ---
@@ -132,7 +133,7 @@ Pontos-chave já confirmados no código:
 | P1-2 | Cookie de sessão só recebe `secure: true` se `NODE_ENV==='production'` estiver setado corretamente no deploy — se a env var faltar, o cookie trafega sem flag `Secure`. | `apps/api/src/routes/auth.ts:40,65` |
 | P1-3 | `CORS origin` cai para `http://localhost:3000` se `WEB_ORIGIN` não estiver definida em produção — libera CORS com `credentials:true` para uma origem de desenvolvimento. | `apps/api/src/app.ts:41` |
 | P1-4 | Handshake WS do `runtimeProxy` verifica apenas membership na organização do workspace, não o papel mínimo `DEVELOPER` que as rotas HTTP paralelas exigem — inconsistência de autorização entre HTTP e WS para o mesmo recurso. | `apps/api/src/lib/runtimeProxy.ts:70-71` vs. rotas HTTP com `requireOrgRole(..., Role.DEVELOPER)` |
-| P1-5 | `docker.sock` montado em **dois** serviços (api e worker) em vez de um broker único — dobra a superfície de um processo com acesso root-equivalente ao host. | `infra/production/docker-compose.prod.yml:22,30` |
+| P1-5 | ✅ **Corrigido (Fase 4, 2026-08-10).** ~~`docker.sock` montado em **dois** serviços (api e worker) em vez de um broker único — dobra a superfície de um processo com acesso root-equivalente ao host.~~ Novo serviço `runtime-broker` (`apps/runtime-broker`) é agora o único detentor de `docker.sock`; api e worker falam com ele via `@oliveira/runtime-broker-client` (HTTP/WS autenticado por bearer token, contrato estreito e específico por domínio — nunca um passthrough genérico do Docker). `docker compose config` confirma que `docker.sock` só aparece no `runtime-broker`. 12 pontos de acesso direto a `dockerode` migrados (10 catalogados originalmente + 2 achados durante o levantamento: `apps/api/src/lib/repositoryBootstrap.ts` e sua cópia duplicada em `apps/worker`, consolidadas em `packages/repository-bootstrap`). Validado com 13 testes de contrato do broker + testes reais de cada engine migrado + a suíte E2E completa — tudo contra Docker real. Detalhe completo: `docs/PROJECT-COMPLETION-PLAN.md` Fase 4. | `apps/runtime-broker/`; `packages/runtime-broker-client/`; `infra/production/docker-compose.prod.yml` |
 | P1-6 | Dockerfiles de produção usam `npm install` (não `npm ci`), são single-stage (copiam o monorepo inteiro, sem `.dockerignore`), rodam como root e não têm `HEALTHCHECK`. | `infra/production/Dockerfile.{api,web,worker}` |
 | P1-7 | PostgreSQL já possui healthcheck e bloqueia migration/API/worker corretamente; Redis ainda usa apenas `service_started`, sem healthcheck de prontidão no Compose de produção. | `infra/production/docker-compose.prod.yml` |
 | P1-8 | `/ready` só verifica Postgres — não verifica Redis nem o daemon Docker, então o orquestrador de containers pode considerar a API "pronta" mesmo com Redis/Docker fora do ar. | `apps/api/src/app.ts:58-61` |
@@ -328,12 +329,14 @@ emitir os dois certificados TLS via `certbot` (`docs/RUNTIME-GATEWAY-DEPLOY.md` 
 runbook (§5) — inclusive a captura de rede confirmando que o cookie do painel nunca é enviado ao
 domínio de runtime e vice-versa.
 
-**Pendente no roadmap geral:** o último P0 (P0-3) foi corrigido na sessão anterior — não resta nenhum
-P0 aberto. Continuam pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o
-agendamento periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para
-a Fase 7 (item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua
-entrega na Fase 7").
+**Pendente no roadmap geral:** nenhum P0 aberto (todos os 15 corrigidos) e nenhum P1 crítico aberto
+(P1-5, o último de risco de segurança direto, foi corrigido na Fase 4 desta sessão). Continuam
+pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o agendamento
+periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para a Fase 7
+(item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua entrega
+na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também foi deliberadamente
+adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
-A sequência sugerida agora é: usuário executa o runbook de DNS/TLS reais (`docs/RUNTIME-GATEWAY-DEPLOY.md`)
-para fechar a Fase 2 → Runtime Broker/Fase 4 (retirar `docker.sock` de api/worker) → cliente HTTP/WS
-centralizado do frontend/Fase 1 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).
+A sequência sugerida agora é: usuário executa o runbook de DNS/TLS reais
+(`docs/RUNTIME-GATEWAY-DEPLOY.md`) para fechar a Fase 2 → cliente HTTP/WS centralizado do
+frontend/Fase 1 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).

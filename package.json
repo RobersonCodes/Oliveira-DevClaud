@@ -8,7 +8,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n web,api,worker \"npm run dev -w @oliveira/web\" \"npm run dev -w @oliveira/api\" \"npm run dev -w @oliveira/worker\"",
+    "dev": "concurrently -n web,api,worker,broker \"npm run dev -w @oliveira/web\" \"npm run dev -w @oliveira/api\" \"npm run dev -w @oliveira/worker\" \"npm run dev -w @oliveira/runtime-broker\"",
     "build": "npm run build --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",

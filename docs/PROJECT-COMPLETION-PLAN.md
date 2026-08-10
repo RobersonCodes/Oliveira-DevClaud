@@ -46,12 +46,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `158e546` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
-| Etapa ativa | Etapa 2 — Runtime Gateway: DNS, TLS e nginx reais |
-| Responsável | Claude (parte de código concluída) → usuário (DNS/TLS/validação no servidor) |
-| Status | `PARCIAL` — server block nginx, compose e docs prontos e validados sintaticamente; falta execução do usuário no servidor real |
-| Próxima ação única | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS wildcard, certbot, primeiro deploy, checklist de validação) e reporta o resultado para fechar a Fase 2. Enquanto isso, Claude pode adiantar a Etapa 3 (Fase 4 — Runtime Broker), que não depende da Etapa 2 concluída, se o usuário preferir. |
-| Bloqueios externos | DNS wildcard e certificado TLS wildcard exigem execução no servidor real do usuário (fora do alcance desta sessão) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
+| Etapa ativa | Etapa 4 — cliente HTTP/WebSocket centralizado do frontend (Fase 1) |
+| Responsável | Claude |
+| Status | `PENDENTE` |
+| Próxima ação única | Inventariar `fetch`, URLs de API e conexões WebSocket em `apps/web` e desenhar o cliente HTTP/WS centralizado (Fase 1) |
+| Bloqueios externos | Nenhum bloqueio externo conhecido para a Etapa 4. Etapa 2 permanece `PARCIAL`, aguardando o usuário executar `docs/RUNTIME-GATEWAY-DEPLOY.md` no servidor real. |
 
 ### Baseline de validação conhecido
 
@@ -315,7 +315,7 @@ workspace por IP interno.
 
 ### Fase 4 — Runtime Broker e redução de privilégio
 
-**Status:** `PENDENTE`
+**Status:** `CONCLUÍDA`
 
 **Execução:** Claude — Etapa 3.
 
@@ -323,27 +323,116 @@ workspace por IP interno.
 
 **Implementação:**
 
-- [ ] Especificar contrato interno mínimo do broker.
-- [ ] Implementar autenticação serviço-a-serviço e autorização por operação.
-- [ ] Criar allowlist de imagens, mounts, redes, portas e capabilities.
-- [ ] Rejeitar modo privilegiado, socket Docker e mounts fora das raízes permitidas.
-- [ ] Migrar API, worker e engines para o broker.
-- [ ] Remover `docker.sock` da API e do worker no compose.
-- [ ] Manter a porta do broker apenas em rede interna.
-- [ ] Adicionar audit log sem secrets.
-- [ ] Testar payloads maliciosos e indisponibilidade do broker.
+- [x] Especificar contrato interno mínimo do broker — deliberadamente estreito e específico por
+      domínio (não é um passthrough genérico do Docker): `POST /v1/workspaces/:workspaceId/container`
+      (criar), `GET /v1/containers/:id` (inspect), `POST .../start`, `POST .../stop`,
+      `POST .../restart`, `DELETE /v1/containers/:id` (destroy), `POST /v1/containers/:id/exec`
+      (um-tiro, genérico), `WS /v1/containers/:id/exec-tty` (interativo, só para o terminal),
+      `POST /v1/maintenance/prune-networks`. Nove endpoints cobrem os 14 pontos de uso real de
+      `dockerode` levantados no repositório (ver evidência de pesquisa abaixo).
+- [x] Implementar autenticação serviço-a-serviço e autorização por operação — bearer token
+      compartilhado (`RUNTIME_BROKER_TOKEN`), comparação em tempo constante
+      (`crypto.timingSafeEqual`), validado em todo request via hook `onRequest` (inclusive antes do
+      upgrade do WebSocket interativo — testado). "Autorização por operação" é o próprio contrato
+      estreito: cada endpoint só permite a operação específica que implementa.
+- [x] Criar allowlist de imagens, mounts, redes, portas e capabilities — imagem vem só da própria
+      env do broker (`WORKSPACE_IMAGE`), nunca do chamador; caminho de bind é sempre derivado
+      internamente de `workspaceId` (nunca aceito como string do cliente); nome de rede idem
+      (`odc-ws-net-<workspaceId>`); `CapDrop:['ALL']`, `SecurityOpt:['no-new-privileges:true']` e
+      `Privileged` (nunca setado, portanto sempre `false`) são fixos no código do broker — nenhum
+      desses campos existe no schema de request aceito pela API.
+- [x] Rejeitar modo privilegiado, socket Docker e mounts fora das raízes permitidas — estruturalmente
+      impossível pedir (não existe campo no contrato), e testado explicitamente: um payload tentando
+      injetar `Privileged`/`CapAdd`/`Binds`/`NetworkMode:'host'` é silenciosamente ignorado.
+- [x] Migrar API, worker e engines para o broker — os 14 pontos reais de acesso direto a
+      `dockerode` (levantamento tinha só 10 catalogados no roadmap; achei mais 2 —
+      `apps/api/src/lib/repositoryBootstrap.ts` e a cópia duplicada em `apps/worker` — e consolidei
+      as duas em `packages/repository-bootstrap`, então 12 pontos migrados no total):
+      `workspace-engine`, `ide-engine`, `terminal-engine` (o único caso genuinamente interativo —
+      usa o WS `exec-tty`), `git-engine`, `setup-engine`, `review-engine`,
+      `repository-intelligence`, `code-intelligence`, `contract-intelligence`, `agent-engine`,
+      `repository-bootstrap` (novo, consolidado). Todos preservam sua interface pública exata —
+      nenhuma rota de `apps/api` precisou mudar.
+- [x] Remover `docker.sock` da API e do worker no compose — confirmado via
+      `docker compose config`: `docker.sock` só aparece no serviço `runtime-broker`; `api` mantém só
+      o bind mount de `WORKSPACE_ROOT_HOST` (necessário para `fs.mkdir`/`fs.chown` antes de pedir a
+      criação do container); `worker` não tem nenhum volume.
+- [x] Manter a porta do broker apenas em rede interna — serviço `runtime-broker` no compose não tem
+      `ports:` nenhuma; só alcançável por outros containers da mesma rede do compose.
+- [x] Adicionar audit log sem secrets — `apps/runtime-broker/src/audit.ts`: linhas JSON estruturadas
+      em stdout com operação, containerId/workspaceId, `cmd0` (só o binário, ex. "git"/"npm"), exit
+      code, duração e sucesso/erro — nunca argumentos completos nem output (um deles,
+      `repository-bootstrap`, literalmente carrega um token do GitHub dentro do próprio `Cmd`, por
+      isso a decisão de nunca logar `Cmd`/output).
+- [x] Testar payloads maliciosos — ver acima (Privileged/CapAdd/Binds/NetworkMode ignorados,
+      `user` de exec fora da allowlist rejeitado com 400 antes de tocar o Docker).
+- [ ] Testar indisponibilidade do broker — **deliberadamente adiado para a Fase 7**, que já lista
+      "testar restart de API, worker, Redis e broker durante operações" no próprio checklist; não é
+      uma lacuna escondida desta fase.
 
 **Critérios de aceite:**
 
-- Somente o broker possui o socket Docker.
-- Nenhum cliente consegue escolher parâmetros Docker arbitrários.
-- API pública comprometida não obtém controle direto do daemon.
-- Operações permitidas continuam funcionando ponta a ponta.
+- [x] Somente o broker possui o socket Docker — `docker compose config` confirma.
+- [x] Nenhum cliente consegue escolher parâmetros Docker arbitrários — contrato estreito por
+      construção + teste estrutural.
+- [x] API pública comprometida não obtém controle direto do daemon — api/worker não têm mais
+      `docker.sock`; só falam com o broker via HTTP/WS autenticado, através de um contrato que não
+      aceita `Privileged`/mounts arbitrários/rede arbitrária.
+- [x] Operações permitidas continuam funcionando ponta a ponta — suíte completa (189 testes, 24
+      arquivos) verde contra Postgres, Redis e Docker reais, incluindo o E2E completo (login →
+      projeto → workspace real → terminal real via tmux → comando real → parar workspace) e o
+      terminal interativo real (tmux attach de verdade sobre o WebSocket do broker).
 
 **Validação mínima:** testes de contrato, integração Docker, inspeção do compose e teste negativo de
 rede/porta.
 
-**Evidências:** _preencher durante a execução._
+**Evidências:**
+
+- Levantamento completo dos 14 pontos de acesso direto a `dockerode` no repositório (arquivo, método
+  usado, uso de streaming/hijack) feito antes de desenhar o contrato — confirmou que o roadmap
+  original catalogava só 10 e detectou os outros 2 (`repositoryBootstrap.ts` duplicado).
+- `apps/runtime-broker` (novo serviço) e `packages/runtime-broker-client` (novo cliente
+  compartilhado) — contrato completo em `packages/runtime-broker-client/src/contract.ts`.
+- `apps/runtime-broker/src/app.test.ts` — 13 testes contra Docker real: auth (sem token, token
+  errado), ciclo de vida completo do container de workspace (criar/inspecionar/exec/destruir),
+  idempotência de criar/destruir, isolamento cross-workspace (repete a garantia da Fase 3 através do
+  broker), clamp de limites de recursos, allowlist de exec, payload malicioso ignorado
+  estruturalmente, TTY interativo real (WebSocket), rejeição de handshake WS sem token,
+  `prune-networks`.
+- Todos os 12 pontos migrados têm teste próprio contra broker real + Docker real (a maioria delas
+  criada nesta sessão — a maior parte desses pacotes nunca tinha teste direto antes):
+  `packages/workspace-engine/src/index.test.ts` (8), `packages/terminal-engine/src/index.test.ts`
+  (4, novo — a sessão tmux interativa de verdade), `packages/git-engine/src/index.test.ts` (5),
+  `packages/setup-engine/src/index.test.ts` (2, novo), `packages/review-engine/src/index.test.ts`
+  (2, novo), `packages/repository-intelligence/src/index.test.ts` (1, novo),
+  `packages/code-intelligence/src/index.test.ts` (1, novo),
+  `packages/contract-intelligence/src/index.test.ts` (2, novo),
+  `packages/agent-engine/src/index.test.ts` (2, novo — tmux real + CLI `codex`/`claude` falsas),
+  `packages/repository-bootstrap/src/index.test.ts` (2, novo — clone git real de um repo bare
+  local).
+- `apps/api/src/e2e.test.ts` passou de ponta a ponta através do broker real: registro → projeto →
+  workspace real (imagem `oliveira-devcloud/workspace-node:1.0`) → sessão de terminal real → comando
+  real executado e sua saída real lida via WebSocket → parar workspace.
+- **Correção genuína de um teste antes marcado como "pré-existente e não relacionado" na Fase 3**:
+  `apps/api/src/ws-security.test.ts` — os dois casos que verificavam "passa auth, falha depois
+  resolvendo o container" esperavam `500` porque, sem um broker real alcançável, a chamada
+  `fetch()` interna falhava de conexão (erro sem `statusCode`, caindo no `?? 500` do handler de
+  erro) — um acidente, não uma verificação real de "container não existe". Agora o teste sobe um
+  broker real em `beforeAll` e a asserção foi corrigida para `404` (a resposta real e correta do
+  broker para um `containerId` inexistente). `docs/HARDENING-ROADMAP.md` atualizado para refletir
+  que isso deixou de ser uma pendência.
+- Bug real encontrado e corrigido durante o desenvolvimento: `RuntimeBrokerClient.request()` sempre
+  mandava `content-type: application/json` mesmo sem body, e o Fastify rejeitava corpo vazio com
+  esse header (`DELETE`/`POST` sem payload quebravam) — corrigido para só mandar o header quando há
+  body de verdade.
+- Suíte completa do monorepo (`npx vitest run`), contra Postgres real (efêmero), Redis real
+  (efêmero) e Docker real (Docker Desktop): **189 de 189 testes passaram, 24 de 24 arquivos** — zero
+  falhas, incluindo o `ws-security.test.ts` agora corrigido de verdade. `npm run typecheck`,
+  `npm run lint` e `npm run build` limpos no monorepo inteiro. Nenhuma rede/container de teste
+  ficou órfão (verificado após cada rodada).
+- `docker compose --env-file <dummy> -f infra/production/docker-compose.prod.yml config` validado:
+  `docker.sock` só no `runtime-broker`; `api` só com o bind mount do workspace root; `worker` sem
+  nenhum volume.
 
 ---
 
@@ -547,6 +636,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Delegação | Etapas atribuídas | Claude: 1–5; Codex: 6–10; handoff definido | Claude iniciar Etapa 1 |
 | 2026-08-10 | Claude | Fase 3 (Etapa 1) | `CONCLUÍDA` | Rede Docker dedicada por workspace implementada (`packages/workspace-engine/src/network.ts`), `create()`/`destroy()` e `ide-engine` atualizados, `docker-compose.prod.yml`/env examples atualizados; 6 testes novos + suíte existente validados localmente contra Docker real (Docker Desktop iniciado nesta sessão) e depois em CI Linux real via push (`gh run` 31383975282) — local `npm test`: 164/166; CI: 163/166 + 1 ignorado; em ambos os casos as únicas falhas são o mesmo par pré-existente e não relacionado em `ws-security.test.ts`, isolado via `git stash`; `typecheck`/`lint`/`build` limpos em ambos os ambientes; nenhuma rede/container órfão após a execução; commits `11c36c8`, `68258a9` | Iniciar Etapa 2 (nginx/DNS/cert reais do Runtime Gateway) — depende de acesso a um domínio registrável separado |
 | 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário confirmou os domínios reais (painel `app.oliveiradevcloud.com`, runtime `runtime.oliveiradevcloud-content.com`). Server block real do Runtime Gateway escrito em `infra/production/nginx.prod.conf` (location morta `/runtime/` removida); `docker-compose.prod.yml` com `RUNTIME_BASE_DOMAIN` no nginx; `.env.production(.example)` e `.gitignore` atualizados; novo runbook `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS, certbot HTTP-01/DNS-01, renovação, checklist, recuperação de falha). Validado com Docker real nesta sessão (`nginx:1.27-alpine`, certs autoassinados, `--add-host` simulando a rede do compose): `envsubst` renderiza os domínios reais corretamente, `nginx -t` limpo sem warnings. DNS wildcard, certificado TLS wildcard e validação em domínio real seguem pendentes — dependem de execução do usuário no servidor real, fora do alcance desta sessão | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md`; Claude pode adiantar a Etapa 3 (Fase 4) nesse meio-tempo, se autorizado |
+| 2026-08-10 | Claude | Fase 4 (Etapa 3) | `CONCLUÍDA` | Runtime Broker implementado do zero: `apps/runtime-broker` (novo serviço, único detentor de `docker.sock`) + `packages/runtime-broker-client` (cliente compartilhado). Levantamento prévio achou 14 pontos reais de acesso a `dockerode` (roadmap catalogava só 10) — os 12 pontos únicos (2 eram duplicatas, consolidadas em `packages/repository-bootstrap`) migrados: `workspace-engine`, `ide-engine`, `terminal-engine` (WS interativo real), `git-engine`, `setup-engine`, `review-engine`, `repository-intelligence`, `code-intelligence`, `contract-intelligence`, `agent-engine`, `repository-bootstrap`. Contrato do broker deliberadamente estreito (não é passthrough genérico do Docker) — imagem/bind/rede sempre derivados internamente, nunca aceitos do chamador; `Privileged`/`CapAdd` nem existem no schema. `docker-compose.prod.yml`: novo serviço `runtime-broker` com `docker.sock`; `docker.sock` removido de `api`/`worker` (confirmado via `docker compose config`). Validação: 13 testes de contrato do broker + teste próprio (novo, contra broker+Docker reais) para cada um dos 12 pontos migrados + `apps/api/src/e2e.test.ts` passando de ponta a ponta pelo broker real + correção genuína de `ws-security.test.ts` (as 2 falhas "pré-existentes" da Fase 3 eram, na real, um broker inalcançável mascarado de 500 — agora sobe um broker real e espera o 404 correto). Suíte completa: **189/189 testes, 24/24 arquivos, zero falhas**; `typecheck`/`lint`/`build` limpos no monorepo inteiro. Bug real encontrado e corrigido: `RuntimeBrokerClient` mandava `content-type` mesmo sem body, quebrando `DELETE`/`POST` vazios. P1-5 do roadmap fechado | Etapa 4: cliente HTTP/WS centralizado do frontend (Fase 1) |
 
 ### Modelo para futuras entradas
 

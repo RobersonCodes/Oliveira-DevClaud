@@ -1,5 +1,4 @@
-import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
 export type TerminalSize = { cols: number; rows: number };
 export type TerminalConnection = {
@@ -21,24 +20,21 @@ const safeTmuxName = (value: string) => {
   return value;
 };
 
-export class DockerTmuxTerminalEngine implements TerminalEngine {
-  private readonly docker: Docker;
+const clampSize = (size: TerminalSize) => ({
+  cols: Math.max(20, Math.min(size.cols, 300)),
+  rows: Math.max(5, Math.min(size.rows, 120))
+});
 
-  constructor(socketPath = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock') {
-    this.docker = new Docker({ socketPath });
+export class DockerTmuxTerminalEngine implements TerminalEngine {
+  private readonly broker: RuntimeBrokerClient;
+
+  constructor(opts?: RuntimeBrokerClientOptions) {
+    this.broker = new RuntimeBrokerClient(opts);
   }
 
-  private async exec(containerId: string, cmd: string[]) {
-    const container = this.docker.getContainer(containerId);
-    const exec = await container.exec({ Cmd: cmd, AttachStdout: true, AttachStderr: true });
-    const stream = await exec.start({ hijack: true });
-    await new Promise<void>((resolve, reject) => {
-      stream.on('end', resolve);
-      stream.on('error', reject);
-      stream.resume();
-    });
-    const result = await exec.inspect();
-    return result.ExitCode ?? 1;
+  private async exec(containerId: string, cmd: string[]): Promise<number> {
+    const result = await this.broker.exec(containerId, { cmd });
+    return result.exitCode;
   }
 
   async ensureSession(containerId: string, rawName: string) {
@@ -52,26 +48,15 @@ export class DockerTmuxTerminalEngine implements TerminalEngine {
   async connect(containerId: string, rawName: string, size: TerminalSize): Promise<TerminalConnection> {
     const name = safeTmuxName(rawName);
     await this.ensureSession(containerId, name);
-    const container = this.docker.getContainer(containerId);
-    const exec = await container.exec({
-      Cmd: ['tmux', 'attach-session', '-t', name],
-      AttachStdin: true,
-      AttachStdout: true,
-      AttachStderr: true,
-      Tty: true
-    });
-    const stream = await exec.start({ hijack: true, stdin: true, Tty: true });
-    await exec.resize({ w: Math.max(20, Math.min(size.cols, 300)), h: Math.max(5, Math.min(size.rows, 120)) });
-
-    const output = new PassThrough();
-    stream.pipe(output);
+    const { cols, rows } = clampSize(size);
+    const session = this.broker.execTty(containerId, { cmd: ['tmux', 'attach-session', '-t', name], cols, rows });
 
     return {
-      write(data) { stream.write(data); },
-      async resize(next) { await exec.resize({ w: Math.max(20, Math.min(next.cols, 300)), h: Math.max(5, Math.min(next.rows, 120)) }); },
-      async close() { stream.end(); },
-      onData(handler) { output.on('data', handler); },
-      onClose(handler) { stream.on('close', handler); stream.on('end', handler); }
+      write(data) { session.write(data); },
+      async resize(next) { await session.resize(clampSize(next)); },
+      async close() { await session.close(); },
+      onData(handler) { session.onData(handler); },
+      onClose(handler) { session.onClose(handler); }
     };
   }
 

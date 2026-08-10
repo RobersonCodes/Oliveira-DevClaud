@@ -6,11 +6,9 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
-    "@oliveira/workspace-engine": "*",
-    "dockerode": "^4.0.6"
+    "@oliveira/runtime-broker-client": "*"
   },
   "devDependencies": {
-    "@types/dockerode": "^3.3.34",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.3"
   }

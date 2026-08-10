@@ -4,9 +4,9 @@ import WebSocket, { WebSocketServer } from 'ws';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { prisma } from '@oliveira/database';
-import { DockerIdeEngine, IDE_PORT } from '@oliveira/ide-engine';
+import { IDE_PORT } from '@oliveira/ide-engine';
+import { startTestBroker } from '@oliveira/runtime-broker/src/testHelpers.js';
 import { hashToken } from './lib/auth.js';
-import { buildApp } from './app.js';
 
 // Real listening server + a real `ws`/`http` client, not `app.inject()` — Origin-header rejection
 // and the WebSocket upgrade handshake itself can only be exercised through an actual HTTP
@@ -15,11 +15,25 @@ let app: FastifyInstance;
 let baseUrl: string;
 let wsBaseUrl: string;
 let port: number;
+let broker: Awaited<ReturnType<typeof startTestBroker>>;
+let DockerIdeEngine: typeof import('@oliveira/ide-engine').DockerIdeEngine;
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
 const createdUserIds: string[] = [];
 const createdOrgIds: string[] = [];
 
 beforeAll(async () => {
+  // apps/api/src/routes/{terminals,ide}.ts construct their engine clients once, at module load
+  // time — the real broker has to exist (and RUNTIME_BROKER_URL/TOKEN has to point at it) before
+  // `./app.js` is ever imported, so this is a dynamic import, not a static one at the top of the
+  // file. Without this, `ide.internalHost()` fails by trying (and failing) to reach the
+  // unconfigured production default URL, which is a *different* failure than the one the two
+  // "fails later, resolving the real container" tests below are actually about.
+  broker = await startTestBroker();
+  process.env.RUNTIME_BROKER_URL = broker.url;
+  process.env.RUNTIME_BROKER_TOKEN = broker.token;
+  ({ DockerIdeEngine } = await import('@oliveira/ide-engine'));
+  const { buildApp } = await import('./app.js');
+
   app = await buildApp({ logger: false, disableRateLimit: true });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
@@ -35,6 +49,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await app.close();
+  await broker?.close();
 });
 
 async function registerUser() {
@@ -187,16 +202,17 @@ describe('runtime proxy WebSocket authorization (real server, real WebSocket han
   });
 
   it('a well-formed, correctly-authorized request passes Origin/cookie/role checks (fails later, resolving the real container)', async () => {
-    // No real Docker daemon on this host, so `ide.internalHost()` throws for the fixture's fake
-    // containerId — but only *after* Origin/session/role have all already passed, which is what
-    // this test is actually proving (getting a 500 from a workspace-resolution failure — instead of
-    // the 401/403 the earlier tests in this block assert on — is only possible once every explicit
-    // authorization check above it in requireIdeAccess() has already succeeded).
+    // The fixture's containerId ('test-container-not-real') doesn't exist, so the real broker's
+    // real Docker daemon gives a clean 404 for it — but only *after* Origin/session/role have all
+    // already passed, which is what this test is actually proving (getting a 404 from a workspace-
+    // resolution failure — instead of the 401/403 the earlier tests in this block assert on — is
+    // only possible once every explicit authorization check above it in requireIdeAccess() has
+    // already succeeded).
     const { cookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const result = await attemptHandshake(`/api/v1/proxy/ide/${workspace.id}/`, { Origin: WEB_ORIGIN, cookie });
     expect(result).not.toBe('open');
-    expect((result as { code: number }).code).toBe(500);
+    expect((result as { code: number }).code).toBe(404);
   });
 
   it('rejects a preview handshake for a port that was never registered on the workspace', async () => {
@@ -213,7 +229,7 @@ describe('runtime proxy WebSocket authorization (real server, real WebSocket han
     await prisma.workspacePort.create({ data: { workspaceId: workspace.id, port: 5173, label: 'vite' } });
     const result = await attemptHandshake(`/api/v1/proxy/preview/${workspace.id}/5173/`, { Origin: WEB_ORIGIN, cookie });
     expect(result).not.toBe('open');
-    expect((result as { code: number }).code).toBe(500);
+    expect((result as { code: number }).code).toBe(404);
   });
 });
 
@@ -264,9 +280,10 @@ describe('upgrade ownership (real server)', () => {
 });
 
 describe('IDE proxy — actually functions end-to-end through the route, not just a successful handshake', () => {
-  // No real Docker daemon on this host, so the one piece we can't exercise for real is container
-  // network resolution — `DockerIdeEngine.internalHost()` is stubbed to point at a real local
-  // WebSocket server standing in for code-server, bound to the real IDE_PORT. Everything else
+  // The one piece deliberately not exercised against a real workspace container is network
+  // resolution itself — `DockerIdeEngine.internalHost()` is stubbed to point at a real local
+  // WebSocket server standing in for code-server, bound to the real IDE_PORT, so the relay target is
+  // fully controllable instead of depending on a real container's IP. Everything else
   // (Origin, session, RBAC, the route/preHandler/wsHandler wiring, and the bridge relay itself) is
   // exercised for real, end-to-end, through the actual HTTP server.
   let fakeIde: WebSocketServer;
