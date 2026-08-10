@@ -65,35 +65,86 @@ function matchesTarget(payload: { workspaceId: string; purpose: RuntimeTicketPur
   return true;
 }
 
-// CORRECTED: an earlier version of this file had *no* Origin check, on the theory that a foreign
+// BACKGROUND: an earlier version of this file had *no* Origin check, on the theory that a foreign
 // origin's fetch/WS calls don't carry the (SameSite=Lax, host-only) runtime cookie. That reasoning
 // is wrong for siblings under the same runtime base domain: SameSite compares the *registrable
 // site* (RFC6265bis), not the exact origin, and ide-a.runtime.<domain> / ide-b.runtime.<domain> are
 // same-site to each other. So workspace A's own (malicious/compromised) JS can open
 // `wss://ide-b.runtime.<domain>/...` and the browser attaches B's cookie — the destination host is
-// what determines which cookie goes out, not who initiated the request. Only a same-site request
-// with WRONG origin looks like a request against workspace B; host-only scoping means A can't *read*
-// B's cookie, but never stopped A from *triggering* a request that legitimately carries it. Per RFC
-// 6455 §10.2, only an exact server-side Origin check closes this — sibling subdomains can't be told
-// apart by cookie scoping or SameSite alone.
+// what determines which cookie goes out, not who initiated the request. Host-only scoping means A
+// can't *read* B's cookie, but never stopped A from *triggering* a request that legitimately carries
+// it. Per RFC 6455 §10.2, only an exact server-side Origin check closes this for WebSocket.
 //
-// Two legitimate Origins exist depending on which leg of the flow this is:
-//  - The ticket redirect (top-level cross-origin navigation from the panel, first load only): the
-//    browser sends the *panel's* Origin for cross-origin navigations, not the runtime host's.
-//  - Everything after that (code-server's own same-origin fetch/WS calls back to its own host, and
-//    the WS handshake itself per RFC 6455): Origin is the runtime host's own origin.
-// Anything else — including a *different* runtime subdomain, "null", absent, a lookalike/suffix
-// host, or the right host with the wrong scheme/port — is rejected. Exact string equality only, no
-// suffix/prefix matching.
-function isAllowedRuntimeOrigin(request: FastifyRequest): boolean {
-  const origin = request.headers.origin;
-  if (typeof origin !== 'string' || origin.length === 0) return false;
+// A SECOND, opposite mistake followed from over-correcting that: requiring Origin on *every* request
+// uniformly (including plain GET) breaks the real flow. Per the Fetch Standard's Origin header
+// algorithm (https://fetch.spec.whatwg.org/#origin-header), Origin is NOT reliably sent on GET/HEAD
+// requests, particularly top-level navigations — and the ticket redemption flow is exactly a
+// cross-origin top-level navigation (`<iframe src="https://ide-x.../?t=...">`), immediately followed
+// by a same-origin navigation (the 302 redirect), then ordinary same-origin asset GETs from
+// code-server's own page. Requiring Origin on all of those would 403 the golden path in real
+// browsers even though app.inject()/raw `ws` test clients (which set headers explicitly) never catch
+// it. RFC 6455 §10.2, by contrast, DOES guarantee Origin on every WebSocket handshake — browsers
+// always send it there, unlike plain GET navigations — so WS keeps a hard requirement.
+//
+// The policy is therefore split by what actually guarantees Origin:
+//  - WebSocket handshake: Origin is REQUIRED and must equal this exact host's own origin — never the
+//    panel's (a WS connection is never a top-level navigation *from* the panel; it's always code-
+//    server's own same-origin call back to itself).
+//  - Mutating HTTP (POST/PUT/PATCH/DELETE): fetch/XHR always sends Origin regardless of method
+//    (unlike navigations), so this is REQUIRED too, and — same as WS — only this exact host's own
+//    origin is accepted. Nothing on the gateway needs the panel to call it with a mutating method.
+//  - GET/HEAD: Origin is validated *if present* (must be the panel or this exact host — this alone
+//    still blocks a sibling's fetch()/XHR-based attempt, since those always carry Origin per spec),
+//    but its absence is NOT itself a rejection reason. Sec-Fetch-Site is checked as the secondary
+//    signal in that case: a `cross-site`/`same-site` value paired with a `Sec-Fetch-Mode` other than
+//    `navigate` means "this is a subresource/fetch-like request from another origin, not a top-level
+//    navigation" and is rejected even without Origin — closing the residual gap for clients that
+//    support Sec-Fetch-* but happen to omit Origin on some subresource GET. If neither header is
+//    present (very old browser, or a non-browser client), the request falls through to the
+//    ticket/cookie credential check below, which is a real, scoped, short-lived, live-membership-
+//    checked secret on its own — exactly the case the ticket path was designed to stand on its own
+//    for (a bare GET has no side effects to forge in the first place).
+const WS_UPGRADE_HEADER = 'websocket';
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function isWebSocketUpgradeRequest(request: FastifyRequest): boolean {
+  const upgrade = request.headers.upgrade;
+  return typeof upgrade === 'string' && upgrade.toLowerCase() === WS_UPGRADE_HEADER;
+}
+
+function ownOrigin(request: FastifyRequest): string {
+  return `${request.protocol}://${request.headers.host}`;
+}
+
+function isWellFormedOrigin(origin: unknown): origin is string {
   // A folded/duplicated Origin header (Node joins repeated non-special headers with ", ") must never
   // be treated as a match even if one of the joined values happens to look right.
-  if (origin.includes(',')) return false;
-  const ownOrigin = `${request.protocol}://${request.headers.host}`;
-  const panelOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
-  return origin === ownOrigin || origin === panelOrigin;
+  return typeof origin === 'string' && origin.length > 0 && !origin.includes(',');
+}
+
+function requireExactOwnOrigin(request: FastifyRequest, context: string) {
+  const origin = request.headers.origin;
+  if (!isWellFormedOrigin(origin) || origin !== ownOrigin(request)) {
+    throw Object.assign(new Error(`ORIGIN_NOT_ALLOWED_${context}`), { statusCode: 403 });
+  }
+}
+
+function validateOriginForGetOrHead(request: FastifyRequest) {
+  const origin = request.headers.origin;
+  if (isWellFormedOrigin(origin)) {
+    const panelOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
+    if (origin !== ownOrigin(request) && origin !== panelOrigin) {
+      throw Object.assign(new Error('ORIGIN_NOT_ALLOWED_GET'), { statusCode: 403 });
+    }
+    return;
+  }
+  if (origin !== undefined) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED_GET'), { statusCode: 403 }); // malformed/duplicated
+  // Origin genuinely absent — fall back to Sec-Fetch-Site/-Mode, sent reliably by every modern
+  // browser regardless of whether Origin itself was included.
+  const site = request.headers['sec-fetch-site'];
+  const mode = request.headers['sec-fetch-mode'];
+  const isCrossOriginButNotANavigation = (site === 'cross-site' || site === 'same-site') && mode !== 'navigate';
+  if (isCrossOriginButNotANavigation) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED_GET_SEC_FETCH'), { statusCode: 403 });
 }
 
 // Runs as `preHandler` on every request to *.runtime.<domain> — for both the plain-HTTP and the
@@ -106,7 +157,9 @@ async function requireRuntimeAccess(request: FastifyRequest) {
 
   // Checked before touching the ticket/cookie at all — a cross-workspace or cross-site request
   // should never get far enough to learn whether a ticket/cookie would otherwise have worked.
-  if (!isAllowedRuntimeOrigin(request)) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED'), { statusCode: 403 });
+  if (isWebSocketUpgradeRequest(request)) requireExactOwnOrigin(request, 'WS');
+  else if (MUTATING_METHODS.has(request.method)) requireExactOwnOrigin(request, 'MUTATION');
+  else validateOriginForGetOrHead(request);
 
   const cookieValue = request.cookies?.[runtimeCookieName(parsed)];
   const cookiePayload = cookieValue ? verifyRuntimeTicket(cookieValue) : null;
@@ -158,20 +211,49 @@ function applyRuntimeSecurityHeaders(reply: FastifyReply) {
   // destinations, so even if the Origin check ever regressed, a browser enforcing this page's CSP
   // would still refuse a same-page script's attempt to open a WebSocket to a *different* origin
   // (including a sibling workspace's).
-  reply.header('Content-Security-Policy', `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}; connect-src 'self'`);
-  reply.header('Referrer-Policy', 'no-referrer');
-  reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  reply.header('X-Content-Type-Options', 'nosniff');
+  //
+  // Set directly on the raw response, not via reply.header(): the non-redirect path below calls
+  // reply.hijack() and lets http-proxy write straight to reply.raw, which bypasses Fastify's normal
+  // header-serialization step entirely — anything queued through reply.header() before a hijack is
+  // silently never sent. Only discovered by running this in a real browser: vitest's app.inject()
+  // still reports reply.getHeader() correctly (it reads Fastify's own buffered state, not the actual
+  // wire bytes), so this exact loss was invisible to every prior test.
+  reply.raw.setHeader('Content-Security-Policy', `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}; connect-src 'self'`);
+  reply.raw.setHeader('Referrer-Policy', 'no-referrer');
+  reply.raw.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  reply.raw.setHeader('X-Content-Type-Options', 'nosniff');
+  // @fastify/helmet sets this globally (SAMEORIGIN) before this handler ever runs, which would
+  // otherwise block the very cross-origin embed (panel iframing a runtime host) this route exists
+  // for — and unlike our own headers above, Helmet sets it early enough via onRequest that it
+  // *does* survive hijacking, so it must be explicitly removed rather than just outweighed by CSP.
+  // Removing it entirely is deliberate, not just "prefer CSP": some older/non-Chromium engines don't
+  // implement the "ignore X-Frame-Options when frame-ancestors is present" fallback rule, so leaving
+  // a stale SAMEORIGIN in place would still block them even though this CSP is correct.
+  reply.raw.removeHeader('X-Frame-Options');
 }
 
 function setRuntimeCookie(reply: FastifyReply, cookie: { name: string; value: string } | undefined) {
   if (!cookie) return;
   // No `domain` attribute — host-only, scoped to this *exact* subdomain (e.g.
   // ide-<workspaceId>.runtime.<base>), never sent to a sibling workspace's or preview's subdomain.
+  //
+  // sameSite MUST be 'none', not 'lax': this cookie is read back from *inside* the
+  // `<iframe src="https://ide-x.../...">` embed (apps/web/app/ide/page.tsx) that is this feature's
+  // entire point, and the browser's SameSite algorithm classifies a subframe's own navigation by the
+  // *top-level* document's site (app.<domain>), not the subframe's own site — so even a request the
+  // iframe makes back to the exact host that set the cookie is "cross-site" for SameSite purposes,
+  // and Lax cookies are never sent on a non-top-level navigation regardless of same-site-ness. This
+  // was invisible to vitest's app.inject()-based tests (no real frame tree exists there) and only
+  // surfaced running the real flow in Chromium: the ticket→redirect worked, but the redirected
+  // request came back with no cookie and fell through to a 401. `SameSite=None` requires `Secure` in
+  // every modern browser, which in turn requires a "potentially trustworthy" origin — real HTTPS in
+  // production, and (per the Secure Contexts spec's loopback carve-out, which Chrome implements for
+  // any `*.localhost` host) plain http in local dev too, so this doesn't need to be conditional on
+  // NODE_ENV.
   reply.setCookie(cookie.name, cookie.value, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'none',
+    secure: true,
     path: '/',
     maxAge: RUNTIME_COOKIE_TTL_MS / 1000
   });
@@ -193,8 +275,10 @@ export function registerRuntimeGateway(app: FastifyInstance) {
     applyRuntimeSecurityHeaders(reply);
     setRuntimeCookie(reply, request.runtimeNewCookie);
     if (request.runtimeNewCookie) {
-      // A ticket was just consumed — never let it linger in the URL bar/history/onward referrers.
-      // One extra round trip on first load only; every request after this carries the cookie.
+      // A ticket was just redeemed for a cookie — never let it linger in the URL bar/history/onward
+      // referrers, even though the ticket string itself remains a valid bearer credential elsewhere
+      // until its TTL expires (it isn't single-use). One extra round trip on first load only; every
+      // request after this carries the cookie instead.
       return reply.redirect(stripPrefix(request.raw.url), 302);
     }
     const { host, port } = request.runtimeTarget!;

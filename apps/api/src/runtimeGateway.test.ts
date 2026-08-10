@@ -134,12 +134,60 @@ describe('Runtime Gateway — Origin validation (RFC 6455 §10.2; exact match, n
     expect(res.statusCode).toBe(403);
   });
 
-  it('rejects a request with no Origin header at all', async () => {
+  it('accepts a ticket-redemption GET with NO Origin header and no Sec-Fetch-Site header — real browsers do not guarantee Origin on GET navigations (Fetch Standard)', async () => {
+    // This is the actual golden path: <iframe src="https://ide-x.../?t=..."> is a top-level
+    // navigation, and per the Fetch Standard's Origin header algorithm, Origin is not reliably sent
+    // on GET/HEAD navigations. Requiring it here would 403 real browsers while only passing this
+    // test suite's own explicit-Origin requests — the exact bug this test guards against regressing.
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
     const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id) } });
+    expect(res.statusCode).toBe(302);
+  });
+
+  it('accepts a resource GET with an existing cookie, no Origin, and Sec-Fetch-Mode: navigate — e.g. a full-page reload of the IDE tab', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
+    const res = await app.inject({
+      method: 'GET', url: '/',
+      headers: { host: ideHost(workspace.id), cookie: runtimeCookie, 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'iframe' }
+    });
+    expect(res.statusCode).not.toBe(403);
+  });
+
+  it('rejects a GET with no Origin but Sec-Fetch-Site indicating a cross-origin subresource/fetch, not a navigation', async () => {
+    // The residual gap Origin-presence alone can't close: a browser that (for whatever request type)
+    // omits Origin on a GET but still sends Sec-Fetch-Site — a same-site sibling's fetch()-like
+    // request that isn't a top-level navigation must still be rejected.
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({
+      method: 'GET', url: `/?t=${ticket}`,
+      headers: { host: ideHost(workspace.id), 'sec-fetch-site': 'same-site', 'sec-fetch-mode': 'no-cors', 'sec-fetch-dest': 'image' }
+    });
     expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a POST (mutating) request whose Origin is the panel — the gateway has no endpoint that legitimately needs panel-initiated mutation', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
+    const res = await app.inject({ method: 'POST', url: '/some-action', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: WEB_ORIGIN } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('accepts a POST (mutating) request whose Origin is this exact runtime host', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
+    const res = await app.inject({ method: 'POST', url: '/some-action', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) } });
+    expect(res.statusCode).not.toBe(403);
   });
 
   it('rejects a duplicated/folded Origin header even if one of the joined values would otherwise match', async () => {

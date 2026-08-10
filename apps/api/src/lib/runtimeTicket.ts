@@ -8,11 +8,16 @@ import crypto from 'node:crypto';
 // short-lived bridge across that boundary instead).
 //
 // Signed (HMAC-SHA256) rather than stored in a DB table: the gateway must validate on every
-// subdomain request path with no extra round trip, and the ticket is single-purpose/short-lived
-// enough (60s) that early revocation isn't the concern a long-lived credential would need — the
-// gateway still re-checks live organization membership when the ticket is consumed (see
-// runtimeGateway.ts), so removing a user from the org invalidates their access immediately even
-// though the ticket signature itself remains "valid" until it expires seconds later.
+// subdomain request path with no extra round trip. This is a short-lived BEARER ticket, not a
+// single-use one — nothing tracks which tickets have already been redeemed (no jti/consumption
+// store), so the same ticket string stays valid for anyone who has it until the 60s TTL elapses,
+// same as a short-lived access token. What actually limits the blast radius of a leaked ticket is
+// the TTL itself plus scope (bound to one workspace/purpose/port) — early revocation isn't a gap
+// this needs to close, because the gateway re-checks live organization membership on *every*
+// request regardless of ticket or cookie (see runtimeGateway.ts), so removing a user from the org
+// invalidates their access immediately even though a ticket's signature stays valid until expiry.
+// If a genuinely single-use guarantee is ever needed, it requires a consumed-jti store (Redis with
+// a TTL matching the ticket's own would do) — deliberately not built here to keep this stateless.
 
 export type RuntimeTicketPurpose = 'ide' | 'preview';
 

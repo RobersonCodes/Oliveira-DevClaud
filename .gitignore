@@ -4,6 +4,10 @@ dist/
 coverage/
 .turbo/
 *.tsbuildinfo
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # Never commit runtime credentials. Keep templates only.
 .env
