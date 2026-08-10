@@ -21,5 +21,5 @@ limites previstos em lei ou mediante autorização escrita do titular.
 
 - Autor e titular declarado: Roberson Andre do Amarante de Oliveira
 - Identificador público: RobersonCodes
-- Repositório: `https://github.com/RobersonCodes/Oliveira-DevClaud`
+- Repositório: `https://github.com/RobersonCodes/Oliveira-DevCloud`
 - Ano inicial documentado: 2026

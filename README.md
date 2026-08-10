@@ -1,6 +1,6 @@
 # Oliveira DevCloud
 
-[![CI](https://github.com/RobersonCodes/Oliveira-DevClaud/actions/workflows/ci.yml/badge.svg)](https://github.com/RobersonCodes/Oliveira-DevClaud/actions/workflows/ci.yml)
+[![CI](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/workflows/ci.yml/badge.svg)](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/workflows/ci.yml)
 ![version](https://img.shields.io/badge/version-2.5.0-2563eb)
 ![Node.js](https://img.shields.io/badge/Node.js-22-339933?logo=nodedotjs&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)

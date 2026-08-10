@@ -7,7 +7,7 @@
 - **Versão de referência:** 2.5.0
 - **Autor declarado:** Roberson Andre do Amarante de Oliveira
 - **Identificador público:** RobersonCodes
-- **Repositório:** `https://github.com/RobersonCodes/Oliveira-DevClaud`
+- **Repositório:** `https://github.com/RobersonCodes/Oliveira-DevCloud`
 - **Data deste registro:** 9 de agosto de 2026
 
 ## Evidência Git
