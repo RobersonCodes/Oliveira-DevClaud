@@ -48,6 +48,10 @@ function runtimeHostPattern(): RegExp {
   return new RegExp(`^(ide|preview)-[a-z0-9]+(-\\d+)?\\.${escaped}(:\\d+)?$`, 'i');
 }
 
+// Every distinct (workspaceId, purpose, port) triple gets its own subdomain (parseRuntimeHost above)
+// and therefore its own cookie name here — cookies are not port-isolated on a shared host, so two
+// preview ports on the *same* workspace deliberately get two different hostnames/cookies too, not
+// just different workspaces.
 function runtimeCookieName(parsed: ParsedRuntimeHost): string {
   return parsed.purpose === 'ide' ? `odc_runtime_ide_${parsed.workspaceId}` : `odc_runtime_preview_${parsed.workspaceId}_${parsed.port}`;
 }
@@ -61,22 +65,48 @@ function matchesTarget(payload: { workspaceId: string; purpose: RuntimeTicketPur
   return true;
 }
 
+// CORRECTED: an earlier version of this file had *no* Origin check, on the theory that a foreign
+// origin's fetch/WS calls don't carry the (SameSite=Lax, host-only) runtime cookie. That reasoning
+// is wrong for siblings under the same runtime base domain: SameSite compares the *registrable
+// site* (RFC6265bis), not the exact origin, and ide-a.runtime.<domain> / ide-b.runtime.<domain> are
+// same-site to each other. So workspace A's own (malicious/compromised) JS can open
+// `wss://ide-b.runtime.<domain>/...` and the browser attaches B's cookie — the destination host is
+// what determines which cookie goes out, not who initiated the request. Only a same-site request
+// with WRONG origin looks like a request against workspace B; host-only scoping means A can't *read*
+// B's cookie, but never stopped A from *triggering* a request that legitimately carries it. Per RFC
+// 6455 §10.2, only an exact server-side Origin check closes this — sibling subdomains can't be told
+// apart by cookie scoping or SameSite alone.
+//
+// Two legitimate Origins exist depending on which leg of the flow this is:
+//  - The ticket redirect (top-level cross-origin navigation from the panel, first load only): the
+//    browser sends the *panel's* Origin for cross-origin navigations, not the runtime host's.
+//  - Everything after that (code-server's own same-origin fetch/WS calls back to its own host, and
+//    the WS handshake itself per RFC 6455): Origin is the runtime host's own origin.
+// Anything else — including a *different* runtime subdomain, "null", absent, a lookalike/suffix
+// host, or the right host with the wrong scheme/port — is rejected. Exact string equality only, no
+// suffix/prefix matching.
+function isAllowedRuntimeOrigin(request: FastifyRequest): boolean {
+  const origin = request.headers.origin;
+  if (typeof origin !== 'string' || origin.length === 0) return false;
+  // A folded/duplicated Origin header (Node joins repeated non-special headers with ", ") must never
+  // be treated as a match even if one of the joined values happens to look right.
+  if (origin.includes(',')) return false;
+  const ownOrigin = `${request.protocol}://${request.headers.host}`;
+  const panelOrigin = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
+  return origin === ownOrigin || origin === panelOrigin;
+}
+
 // Runs as `preHandler` on every request to *.runtime.<domain> — for both the plain-HTTP and the
 // WebSocket path through the same route, since @fastify/websocket only sends its 101 once the
 // route's own handler/wsHandler runs, strictly after preHandler resolves. A request that fails
 // here gets a normal HTTP error response; no upgrade is ever attempted.
-//
-// Deliberately no Origin allowlist check here, unlike terminals.ts/runtimeProxy.ts: those protect a
-// panel-origin resource, so a legitimate request's Origin is always the panel's. Here the legitimate
-// caller *is* the runtime origin itself (code-server's own same-origin fetch/WS calls back to
-// ide-<id>.runtime.<domain>) or a bare top-level navigation (the ticket redirect), neither of which
-// has "the panel" as an Origin to check against. The actual cross-site defense is the credential
-// model: a foreign page can't read the ticket (never stored anywhere it could reach), and the
-// runtime cookie is SameSite=Lax + host-only, so a foreign origin's fetch/WS calls (unlike a
-// top-level navigation) don't carry it at all.
 async function requireRuntimeAccess(request: FastifyRequest) {
   const parsed = parseRuntimeHost(request.headers.host);
   if (!parsed) throw Object.assign(new Error('UNKNOWN_RUNTIME_HOST'), { statusCode: 404 });
+
+  // Checked before touching the ticket/cookie at all — a cross-workspace or cross-site request
+  // should never get far enough to learn whether a ticket/cookie would otherwise have worked.
+  if (!isAllowedRuntimeOrigin(request)) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED'), { statusCode: 403 });
 
   const cookieValue = request.cookies?.[runtimeCookieName(parsed)];
   const cookiePayload = cookieValue ? verifyRuntimeTicket(cookieValue) : null;
@@ -123,7 +153,12 @@ function applyRuntimeSecurityHeaders(reply: FastifyReply) {
   // constrained: who may iframe it, and that it never leaks a referrer (which could carry a ticket
   // in the URL) to whatever the container itself links out to. A full page CSP (script-src etc.)
   // would break the proxied app (code-server, arbitrary preview apps) and isn't this boundary's job.
-  reply.header('Content-Security-Policy', `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}`);
+  // connect-src 'self' is defense in depth against the same sibling-subdomain attack the Origin
+  // check above closes server-side: per CSP Level 3 §6.4.5, connect-src governs fetch/XHR/WebSocket
+  // destinations, so even if the Origin check ever regressed, a browser enforcing this page's CSP
+  // would still refuse a same-page script's attempt to open a WebSocket to a *different* origin
+  // (including a sibling workspace's).
+  reply.header('Content-Security-Policy', `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}; connect-src 'self'`);
   reply.header('Referrer-Policy', 'no-referrer');
   reply.header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   reply.header('X-Content-Type-Options', 'nosniff');
@@ -174,6 +209,9 @@ export function registerRuntimeGateway(app: FastifyInstance) {
   };
 
   app.route({ method: 'GET', url: '*', constraints: { host: runtimeHostPattern() }, preHandler: requireRuntimeAccess, handler: httpHandler, wsHandler });
+  // Mutating methods go through the exact same requireRuntimeAccess — the strict Origin check there
+  // (exact match against the panel or this host, never a sibling) already is CSRF protection for
+  // these, equivalent to (and more broadly supported than) checking Sec-Fetch-Site: same-origin.
   app.route({ method: [...OTHER_METHODS], url: '*', constraints: { host: runtimeHostPattern() }, preHandler: requireRuntimeAccess, handler: httpHandler });
 }
 

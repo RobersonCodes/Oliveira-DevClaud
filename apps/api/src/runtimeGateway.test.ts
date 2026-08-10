@@ -7,6 +7,11 @@ import { DockerIdeEngine } from '@oliveira/ide-engine';
 import { buildApp } from './app.js';
 
 const RUNTIME_BASE_DOMAIN = 'runtime.localhost';
+const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
+
+function ideHost(workspaceId: string) { return `ide-${workspaceId}.${RUNTIME_BASE_DOMAIN}`; }
+function previewHost(workspaceId: string, port: number) { return `preview-${workspaceId}-${port}.${RUNTIME_BASE_DOMAIN}`; }
+function originFor(host: string) { return `http://${host}`; }
 
 let app: FastifyInstance;
 const createdUserIds: string[] = [];
@@ -57,6 +62,14 @@ async function issueTicket(sessionCookie: string, workspaceId: string, purpose: 
   return res;
 }
 
+/** Redeems a ticket (Origin: the panel, as a real cross-origin navigation would send) and returns the freshly-issued runtime cookie. */
+async function redeemTicketForCookie(host: string, ticket: string) {
+  const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host, origin: WEB_ORIGIN } });
+  const cookie = res.cookies[0];
+  if (!cookie) throw new Error(`ticket redemption against ${host} did not yield a cookie (status ${res.statusCode})`);
+  return `${cookie.name}=${cookie.value}`;
+}
+
 describe('runtime ticket issuance (POST /api/v1/runtime-tickets, on the panel origin)', () => {
   it('requires authentication', async () => {
     // A real (existing) workspace, no session cookie — isolates "not authenticated" (401) from
@@ -95,11 +108,108 @@ describe('runtime ticket issuance (POST /api/v1/runtime-tickets, on the panel or
   });
 });
 
+describe('Runtime Gateway — Origin validation (RFC 6455 §10.2; exact match, never suffix/prefix)', () => {
+  it('accepts the ticket-redemption request when Origin is the panel\'s (a real cross-origin navigation sends this)', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
+    expect(res.statusCode).toBe(302);
+  });
+
+  it('accepts a same-origin request (Origin exactly equal to the request\'s own host) using an existing cookie', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
+    const res = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) } });
+    expect(res.statusCode).not.toBe(403);
+  });
+
+  it('rejects a request with Origin: null', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: 'null' } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a request with no Origin header at all', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id) } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a duplicated/folded Origin header even if one of the joined values would otherwise match', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: `${WEB_ORIGIN}, https://evil.example` } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects a lookalike/suffix origin that merely contains or extends the real host', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const lookalikes = [
+      `${originFor(ideHost(workspace.id))}.evil.example`, // "starts with the real origin"
+      `http://evil.example?${originFor(ideHost(workspace.id))}`, // real origin appears, just not as Origin
+      `http://not-${ideHost(workspace.id)}` // similar-looking but different host
+    ];
+    for (const origin of lookalikes) {
+      const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin } });
+      expect(res.statusCode, `origin "${origin}" should have been rejected`).toBe(403);
+    }
+  });
+
+  it('rejects the right host with the wrong scheme', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: `https://${ideHost(workspace.id)}` } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects the right host with the wrong port', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: `http://${ideHost(workspace.id)}:9999` } });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('CRITICAL: a sibling runtime workspace cannot use its victim\'s valid runtime cookie to access the victim — even though SameSite=Lax + host-only cookie scoping alone would let the request through', async () => {
+    // The exact attack: ide-a.runtime.<domain> and ide-b.runtime.<domain> are different origins but
+    // the *same registrable site* (RFC6265bis) — SameSite=Lax does not distinguish them. A cookie
+    // scoped to B's exact host is sent by the browser whenever a request *targets* B's host,
+    // regardless of which origin's script initiated it. Host-only scoping stops A's script from
+    // *reading* B's cookie via document.cookie; it never stopped A from *triggering* a request to B
+    // that legitimately carries it. This is simulated directly: B's real, valid cookie, attached to
+    // a request whose Origin is A — exactly what a browser would send for `new WebSocket(...)`
+    // issued by a script running on A's page.
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspaceA = await makeWorkspaceFixture(organizationId);
+    const workspaceB = await makeWorkspaceFixture(organizationId);
+
+    const ticketB = (await issueTicket(sessionCookie, workspaceB.id, 'ide')).json().ticket;
+    const victimCookieForB = await redeemTicketForCookie(ideHost(workspaceB.id), ticketB);
+
+    const attack = await app.inject({
+      method: 'GET', url: '/',
+      headers: { host: ideHost(workspaceB.id), cookie: victimCookieForB, origin: originFor(ideHost(workspaceA.id)) }
+    });
+    expect(attack.statusCode).toBe(403);
+  });
+});
+
 describe('Runtime Gateway host routing (real Postgres, in-process via app.inject with a spoofed Host header)', () => {
   it('rejects a request with no ticket and no runtime cookie', async () => {
     const { organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
-    const res = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
   });
 
@@ -111,7 +221,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     // something this process can misconfigure away.
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
-    const res = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}`, cookie: sessionCookie } });
+    const res = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), cookie: sessionCookie, origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
   });
 
@@ -120,7 +230,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const workspaceA = await makeWorkspaceFixture(organizationId);
     const workspaceB = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspaceA.id, 'ide')).json();
-    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `ide-${workspaceB.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspaceB.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
   });
 
@@ -129,7 +239,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const workspace = await makeWorkspaceFixture(organizationId);
     await prisma.workspacePort.create({ data: { workspaceId: workspace.id, port: 3000, label: 'app' } });
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
-    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `preview-${workspace.id}-3000.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: previewHost(workspace.id, 3000), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
   });
 
@@ -141,7 +251,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const owner = await prisma.organizationMember.findFirstOrThrow({ where: { organizationId } });
     const expired = issueRuntimeTicket({ uid: owner.userId, workspaceId: workspace.id, purpose: 'ide' }, -1);
     void sessionCookie;
-    const res = await app.inject({ method: 'GET', url: `/?t=${expired}`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${expired}`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
   });
 
@@ -151,7 +261,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
     const membership = await prisma.organizationMember.findFirstOrThrow({ where: { organizationId } });
     await prisma.organizationMember.delete({ where: { id: membership.id } });
-    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(403);
   });
 
@@ -159,7 +269,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
-    const res = await app.inject({ method: 'GET', url: `/some/path?t=${ticket}&x=1`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/some/path?t=${ticket}&x=1`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe('/some/path?x=1');
     const runtimeCookie = res.cookies.find(c => c.name === `odc_runtime_ide_${workspace.id}`);
@@ -173,27 +283,26 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
-    const first = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
-    const runtimeCookie = first.cookies.find(c => c.name === `odc_runtime_ide_${workspace.id}`)!;
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
 
-    const second = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}`, cookie: `${runtimeCookie.name}=${runtimeCookie.value}` } });
+    const second = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) } });
     // No redirect this time (no fresh ticket consumed) and no auth error — it reaches the proxy
     // handler, which then fails for an unrelated reason (no real Docker/container on this host).
     expect(second.statusCode).not.toBe(401);
     expect(second.statusCode).not.toBe(302);
+    expect(second.statusCode).not.toBe(403);
   });
 
   it('an existing runtime cookie stops granting access once the user is removed from the organization', async () => {
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
-    const first = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
-    const runtimeCookie = first.cookies.find(c => c.name === `odc_runtime_ide_${workspace.id}`)!;
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
 
     const membership = await prisma.organizationMember.findFirstOrThrow({ where: { organizationId } });
     await prisma.organizationMember.delete({ where: { id: membership.id } });
 
-    const second = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}`, cookie: `${runtimeCookie.name}=${runtimeCookie.value}` } });
+    const second = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) } });
     expect(second.statusCode).toBe(403);
   });
 
@@ -203,23 +312,24 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     await prisma.workspacePort.create({ data: { workspaceId: workspace.id, port: 4321, label: 'app' } });
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'preview', 4321)).json();
     await prisma.workspacePort.deleteMany({ where: { workspaceId: workspace.id, port: 4321 } });
-    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `preview-${workspace.id}-4321.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: previewHost(workspace.id, 4321), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(404);
   });
 
-  it('sends the required security headers on every gateway response', async () => {
+  it('sends the required security headers on every gateway response, including connect-src \'self\'', async () => {
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
-    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: `ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}` } });
+    const res = await app.inject({ method: 'GET', url: `/?t=${ticket}`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.headers['content-security-policy']).toContain('frame-ancestors');
+    expect(res.headers['content-security-policy']).toContain("connect-src 'self'");
     expect(res.headers['referrer-policy']).toBe('no-referrer');
     expect(res.headers['permissions-policy']).toBeDefined();
     expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('an unrecognized runtime-domain host is a plain 404, and does not interfere with normal panel routes', async () => {
-    const notAWorkspace = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-not-a-real-id.${RUNTIME_BASE_DOMAIN}` } });
+    const notAWorkspace = await app.inject({ method: 'GET', url: '/', headers: { host: `ide-not-a-real-id.${RUNTIME_BASE_DOMAIN}`, origin: WEB_ORIGIN } });
     expect(notAWorkspace.statusCode).toBe(404);
 
     const { sessionCookie } = await registerUser();
@@ -252,12 +362,11 @@ describe('deprecated /api/v1/proxy/* — blocked in production, still usable dur
 describe('Runtime Gateway — actually relays real traffic end-to-end (real listening server, real WebSocket)', () => {
   let fakeIde: WebSocketServer;
   let wsBaseUrl: string;
-  let port: number;
 
   beforeAll(async () => {
     await app.listen({ port: 0, host: '127.0.0.1' });
     const address = app.server.address();
-    port = typeof address === 'object' && address ? address.port : 0;
+    const port = typeof address === 'object' && address ? address.port : 0;
     wsBaseUrl = `ws://127.0.0.1:${port}`;
 
     fakeIde = new WebSocketServer({ port: 0, host: '127.0.0.1' });
@@ -270,23 +379,18 @@ describe('Runtime Gateway — actually relays real traffic end-to-end (real list
   });
 
   beforeEach(() => {
-    const fakePort = (fakeIde.address() as { port: number }).port;
     internalHostSpy = vi.spyOn(DockerIdeEngine.prototype, 'internalHost').mockImplementation(async () => '127.0.0.1');
-    // The gateway always targets IDE_PORT (13337) for ide-* hosts, which nothing is listening on in
-    // this test — so this specific describe block instead proves the relay mechanics generically via
-    // a raw WebSocket connection carrying a spoofed Host that resolves through the exact same
-    // preHandler/wsHandler/bridge path preview traffic uses, pointed at the fake server's real port.
-    void fakePort;
   });
 
-  it('relays a real message through ticket validation, the gateway route, and the bridge', async () => {
+  it('relays a real message through Origin validation, ticket validation, the gateway route, and the bridge', async () => {
     const { sessionCookie, organizationId } = await registerUser();
     const workspace = await makeWorkspaceFixture(organizationId);
     const fakePort = (fakeIde.address() as { port: number }).port;
     await prisma.workspacePort.create({ data: { workspaceId: workspace.id, port: fakePort, label: 'preview' } });
     const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'preview', fakePort)).json();
+    const host = previewHost(workspace.id, fakePort);
 
-    const client = new WebSocket(`${wsBaseUrl}/?t=${ticket}`, { headers: { host: `preview-${workspace.id}-${fakePort}.${RUNTIME_BASE_DOMAIN}` } });
+    const client = new WebSocket(`${wsBaseUrl}/?t=${ticket}`, { headers: { host, origin: originFor(host) } });
     try {
       const opened = new Promise<void>((resolve, reject) => { client.once('open', () => resolve()); client.once('error', reject); client.once('unexpected-response', (_r, res) => reject(new Error(`unexpected ${res.statusCode}`))); });
       await opened;
@@ -296,5 +400,24 @@ describe('Runtime Gateway — actually relays real traffic end-to-end (real list
     } finally {
       client.close();
     }
+  });
+
+  it('rejects the same WebSocket handshake when Origin is a sibling runtime host instead of its own', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const fakePort = (fakeIde.address() as { port: number }).port;
+    await prisma.workspacePort.create({ data: { workspaceId: workspace.id, port: fakePort, label: 'preview' } });
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'preview', fakePort)).json();
+    const host = previewHost(workspace.id, fakePort);
+    const siblingWorkspace = await makeWorkspaceFixture(organizationId);
+
+    const client = new WebSocket(`${wsBaseUrl}/?t=${ticket}`, { headers: { host, origin: originFor(ideHost(siblingWorkspace.id)) } });
+    const rejected = await new Promise<number>((resolve, reject) => {
+      client.once('unexpected-response', (_r, res) => resolve(res.statusCode ?? 0));
+      client.once('open', () => reject(new Error('handshake unexpectedly succeeded')));
+      client.once('error', () => {});
+      setTimeout(() => reject(new Error('timed out waiting for rejection')), 5_000);
+    });
+    expect(rejected).toBe(403);
   });
 });
