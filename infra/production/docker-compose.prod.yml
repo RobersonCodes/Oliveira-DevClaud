@@ -80,13 +80,19 @@ services:
     ports: ["80:80","443:443"]
     environment:
       DEV_CLOUD_HOST: ${DEV_CLOUD_HOST:?set DEV_CLOUD_HOST}
+      RUNTIME_BASE_DOMAIN: ${RUNTIME_BASE_DOMAIN:?set RUNTIME_BASE_DOMAIN}
     volumes:
       # Mounted under /etc/nginx/templates/ (not conf.d/ directly) so the official nginx image's
       # docker-entrypoint.sh runs envsubst on it at container start, substituting ${DEV_CLOUD_HOST}
-      # from the environment above before writing the result to conf.d/default.conf. Mounting
-      # straight into conf.d/ (the previous setup) never triggers envsubst — server_name would be
-      # the literal, unexpanded string "${DEV_CLOUD_HOST}".
+      # and ${RUNTIME_BASE_DOMAIN} from the environment above before writing the result to
+      # conf.d/default.conf. Mounting straight into conf.d/ (the previous setup) never triggers
+      # envsubst — server_name would be the literal, unexpanded string "${DEV_CLOUD_HOST}".
       - ./nginx.prod.conf:/etc/nginx/templates/default.conf.template:ro
+      # Two independent certificates, one per origin (panel vs runtime — see nginx.prod.conf):
+      #   certs/panel/{fullchain.pem,privkey.pem}     — single-host cert for DEV_CLOUD_HOST
+      #   certs/runtime/{fullchain.pem,privkey.pem}   — WILDCARD cert for *.RUNTIME_BASE_DOMAIN
+      # Neither is provisioned by this repo — see docs/RUNTIME-GATEWAY-DEPLOY.md for how to obtain
+      # both with certbot before the first `docker compose up`.
       - ./certs:/etc/nginx/certs:ro
     depends_on: [web,api]
 volumes: { postgres_data: {}, redis_data: {} }

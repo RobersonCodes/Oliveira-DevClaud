@@ -3,8 +3,11 @@
 **Status:** Fase 0 concluída. Dos 15 P0 registrados, todos os 15 foram corrigidos e validados com
 evidência real (build, integração, relay WebSocket, Chromium e — a partir desta sessão —
 containers/redes Docker reais, localmente e confirmado em CI Linux via push). O Runtime Gateway está
-implementado para um site registrável separado do painel; DNS/certificado wildcard/nginx ficam para o
-deploy real. As Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
+implementado para um site registrável separado do painel, com domínios reais definidos
+(`app.oliveiradevcloud.com` / `runtime.oliveiradevcloud-content.com`) e o server block nginx real já
+escrito e validado sintaticamente; DNS wildcard e certificado TLS wildcard seguem pendentes de
+execução no servidor real do usuário (`docs/RUNTIME-GATEWAY-DEPLOY.md`). As Fases 1, 5(resto), 6-9
+continuam pendentes — ver Seção 7.
 **Data:** 2026-08-10
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -106,7 +109,7 @@ Pontos-chave já confirmados no código:
 | # | Status | Risco | Evidência |
 |---|---|---|---|
 | P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
-| P0-2 | ✅ Corrigido (app, validado em navegador real) / ⏳ nginx+DNS+cert pendentes | **Painel e conteúdo de runtime compartilhavam a mesma origem.** O Runtime Gateway agora serve IDE/preview em hosts exclusivos de um `RUNTIME_BASE_DOMAIN` que, em produção, deve pertencer a outro domínio registrável. Um ticket HMAC bearer de 60s é trocado por cookie `__Host-`, host-only, `Secure` e `SameSite=None`; membership e papel são revalidados em toda requisição. WebSocket e mutações exigem `Origin` próprio exato; GET/HEAD tratam corretamente a ausência legítima desse header e usam Fetch Metadata como defesa adicional. CSP, `Referrer-Policy`, `Permissions-Policy` e `nosniff` são impostos tanto no redirect quanto na resposta efetivamente copiada pelo proxy. O proxy remove `X-Frame-Options` conflitante e qualquer atributo `Domain` recebido em `Set-Cookie` upstream. `/api/v1/proxy/*` retorna 410 em produção. Validado com integração e Chromium real, inclusive iframe, redirect, assets, WebSocket e ataque sibling com cookie da vítima. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts`; `apps/api/e2e-browser/runtimeGateway.spec.ts` |
+| P0-2 | ✅ Corrigido (app + nginx, validado em navegador real e sintaxe real) / ⏳ DNS+cert+validação em domínio real dependem de execução no servidor do usuário | **Painel e conteúdo de runtime compartilhavam a mesma origem.** O Runtime Gateway agora serve IDE/preview em hosts exclusivos de um `RUNTIME_BASE_DOMAIN` que, em produção, deve pertencer a outro domínio registrável. Um ticket HMAC bearer de 60s é trocado por cookie `__Host-`, host-only, `Secure` e `SameSite=None`; membership e papel são revalidados em toda requisição. WebSocket e mutações exigem `Origin` próprio exato; GET/HEAD tratam corretamente a ausência legítima desse header e usam Fetch Metadata como defesa adicional. CSP, `Referrer-Policy`, `Permissions-Policy` e `nosniff` são impostos tanto no redirect quanto na resposta efetivamente copiada pelo proxy. O proxy remove `X-Frame-Options` conflitante e qualquer atributo `Domain` recebido em `Set-Cookie` upstream. `/api/v1/proxy/*` retorna 410 em produção. Validado com integração e Chromium real, inclusive iframe, redirect, assets, WebSocket e ataque sibling com cookie da vítima. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts`; `apps/api/e2e-browser/runtimeGateway.spec.ts` |
 | P0-3 | ✅ Corrigido | **Todos os workspaces compartilhavam a rede Docker bridge default — sem isolamento entre tenants.** Cada workspace agora recebe sua própria rede Docker dedicada (`odc-ws-net-<workspaceId>`, driver `bridge`), criada/removida de forma idempotente e nunca compartilhada entre workspaces — Docker não roteia entre redes bridge distintas por padrão, o que é o que efetivamente bloqueia o acesso cross-workspace por IP. O Runtime Gateway (relay) é conectado apenas à rede do workspace que está servindo no momento, via `docker network connect`/`disconnect` ao redor de create()/destroy(), identificado em produção por `RELAY_CONTAINER_NAME`/`container_name: odc-api`. Validado com Docker real (Docker Desktop, não CI) neste host: dois workspaces reais, um não consegue nem abrir uma conexão TCP para uma porta com listener ativo no outro; `create()` reaproveita a mesma rede em chamadas repetidas; `destroy()` remove container+rede sem tocar na rede de outro workspace e é idempotente; o relay é conectado/desconectado corretamente; `pruneOrphanedNetworks()` remove só redes rotuladas com zero containers. `Privileged=false`, ausência de `docker.sock` no workspace e `CapDrop:['ALL']`/`no-new-privileges` já existiam e seguem cobertos pelos testes existentes. | `packages/workspace-engine/src/network.ts`; `packages/workspace-engine/src/index.ts`; `packages/workspace-engine/src/network.test.ts`; `packages/ide-engine/src/index.ts`; `infra/production/docker-compose.prod.yml` |
 | P0-4 | ✅ Corrigido | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) validava o header `Origin`.** Qualquer site na internet podia tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não havia defesa em profundidade além da checagem de sessão. Corrigido com `wsOrigin.ts` (comparação exata contra `WEB_ORIGIN`, nunca por sufixo/prefixo) aplicado a terminal e runtime proxy; papel `DEVELOPER` agora também exigido no WS do runtime proxy (antes só checava membership); ambos migrados para `preHandler` de modo que a validação — Origin, sessão, papel, workspace — sempre roda antes de qualquer 101 (ver P0-13). 18 testes cobrindo origin ausente/maliciosa (com domínios parecidos), cookie ausente/inválido/expirado, cross-org. | `apps/api/src/lib/wsOrigin.ts`; `apps/api/src/routes/terminals.ts`; `apps/api/src/lib/runtimeProxy.ts` |
 | P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
@@ -289,17 +292,48 @@ interceptada é tratada pelo Local Network Access do Chrome como espaço de ende
 suas requisições a um alvo loopback bloqueadas (`net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`) —
 mais um comportamento que só aparece contra um browser de verdade.
 
-**Pendente antes de operar o Runtime Gateway com domínio real:** adquirir/configurar um domínio
-registrável separado do control plane, DNS wildcard, certificado TLS wildcard e server block em
-`nginx.prod.conf`. O exemplo de produção usa `.example.com` no painel e `.example.net` no runtime
-justamente para tornar essa fronteira explícita.
+**Atualização — Etapa 2 (2026-08-10):** o usuário forneceu os dois domínios registráveis reais desta
+implantação — painel `app.oliveiradevcloud.com`, runtime `runtime.oliveiradevcloud-content.com`
+(confirmadamente sites registráveis distintos, não subdomínios do mesmo domínio). Com isso:
 
-**Pendente no roadmap geral:** o último P0 (P0-3) foi corrigido nesta sessão — não resta nenhum P0
-aberto. Continuam pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o
+- `infra/production/nginx.prod.conf` ganhou o server block real do Runtime Gateway: redirect
+  HTTP→HTTPS compartilhado para os dois hosts, server block HTTPS dedicado para
+  `*.${RUNTIME_BASE_DOMAIN}` com certificado próprio (`certs/runtime/`), Host header preservado sem
+  reescrita (a app despacha por Host via `constraints` do Fastify — `runtimeHostPattern()` em
+  `runtimeGateway.ts`), suporte a WebSocket (`Upgrade`/`Connection`) e HSTS (o único header que a app
+  não define para esse domínio; CSP/Referrer-Policy/Permissions-Policy/nosniff continuam vindo
+  exclusivamente da app, conforme o design do P0-15). A location morta `/runtime/` que existia sob o
+  domínio do painel — sem nenhuma rota correspondente na app — foi removida.
+- `infra/production/docker-compose.prod.yml`: serviço `nginx` ganhou `RUNTIME_BASE_DOMAIN` no
+  `environment` (necessário para o `envsubst` do template); documentado o layout esperado de
+  `certs/panel/` e `certs/runtime/` (dois certificados independentes).
+- `.env.production.example` e `.env.production` (local, fora do git) atualizados com os domínios
+  reais.
+- `.gitignore`: `infra/production/certs/` adicionado explicitamente — chave privada TLS nunca deve
+  chegar perto do git.
+- **Validado nesta sessão** (Docker real, Windows/PowerShell — `docker run` com certificados
+  autoassinados descartáveis e `--add-host api/web` simulando a rede do compose): o template renderiza
+  os dois domínios reais corretamente via `envsubst`, e `nginx -t` passa sem nenhum warning ou erro
+  (inclusive corrigida a diretiva `listen ... http2` depreciada na sintaxe do nginx 1.27, substituída
+  por `listen ... ssl;` + `http2 on;` separados). Isso prova a sintaxe e a resolução dos upstreams —
+  **não** prova DNS/TLS/roteamento reais, que exigem o servidor de produção.
+- Novo runbook: `docs/RUNTIME-GATEWAY-DEPLOY.md` — registros DNS exatos, comandos `certbot` (HTTP-01
+  para o painel, DNS-01 obrigatório para o wildcard do runtime), layout de cópia dos certificados,
+  renovação/deploy-hook, checklist de validação no domínio real e tabela de recuperação de falha.
+
+**Segue pendente — depende exclusivamente do servidor/DNS reais do usuário, fora do alcance desta
+sessão:** criar os registros DNS (incluindo o wildcard `*.runtime.oliveiradevcloud-content.com`),
+emitir os dois certificados TLS via `certbot` (`docs/RUNTIME-GATEWAY-DEPLOY.md` §§1-2), copiá-los para
+`infra/production/certs/{panel,runtime}/`, subir a stack real e percorrer a checklist de validação do
+runbook (§5) — inclusive a captura de rede confirmando que o cookie do painel nunca é enviado ao
+domínio de runtime e vice-versa.
+
+**Pendente no roadmap geral:** o último P0 (P0-3) foi corrigido na sessão anterior — não resta nenhum
+P0 aberto. Continuam pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o
 agendamento periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para
 a Fase 7 (item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua
 entrega na Fase 7").
 
-A sequência sugerida agora é: Runtime Broker/Fase 4 (retirar `docker.sock` de api/worker) → cliente
-HTTP/WS centralizado do frontend/Fase 1 → wiring de nginx/DNS/certificado real para o Runtime Gateway
-já pronto/Fase 2 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).
+A sequência sugerida agora é: usuário executa o runbook de DNS/TLS reais (`docs/RUNTIME-GATEWAY-DEPLOY.md`)
+para fechar a Fase 2 → Runtime Broker/Fase 4 (retirar `docker.sock` de api/worker) → cliente HTTP/WS
+centralizado do frontend/Fase 1 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).

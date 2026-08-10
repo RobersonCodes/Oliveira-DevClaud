@@ -299,10 +299,12 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
 
 ## Documentação
 
+- [Plano operacional de conclusão](docs/PROJECT-COMPLETION-PLAN.md) — fases executáveis, checkpoint, critérios de aceite e retomada por agentes.
 - [Arquitetura](docs/ARCHITECTURE.md) — componentes e fronteiras de segurança.
 - [Regression Intelligence v2.5](docs/V2.5.md) — detectores, score e Merge Risk Report.
 - [Auditoria v2.5](docs/V2.5-AUDIT.md) — achados de baseline e correções de confiabilidade.
 - [Roadmap de hardening](docs/HARDENING-ROADMAP.md) — riscos, decisões e critérios de produção.
+- [Deploy do Runtime Gateway](docs/RUNTIME-GATEWAY-DEPLOY.md) — DNS, TLS wildcard e nginx em domínio real.
 - [Relatório de implementação v2.5](docs/V2.5-IMPLEMENTATION-REPORT.md) — escopo e validações da versão.
 - [`docs/V0.2.md`](docs/V0.2.md) a [`docs/V2.4.md`](docs/V2.4.md) — evolução incremental das capacidades.
 

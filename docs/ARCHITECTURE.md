@@ -76,3 +76,13 @@ remoção é deixada para `pruneOrphanedNetworks()` (mesmo módulo), que remove 
 acima e zero containers conectados; hoje é invocável sob demanda e pensada para ser agendada
 periodicamente pelo reaper da Fase 7 (ainda não implementada como job agendado — ver
 `docs/HARDENING-ROADMAP.md`).
+
+## Hardening Fase 2 — Runtime Gateway em domínio real (P0-2)
+
+O painel (`app.oliveiradevcloud.com`) e o Runtime Gateway (`*.runtime.oliveiradevcloud-content.com`)
+são dois sites registráveis distintos por trás do mesmo `nginx`, cada um com seu próprio certificado
+TLS (`infra/production/nginx.prod.conf`). Os dois `server_name` apontam para o mesmo backend
+`api:4000`; a app despacha por Host header via `constraints` do Fastify
+(`runtimeHostPattern()`/`parseRuntimeHost()` em `apps/api/src/lib/runtimeGateway.ts`) — nginx nunca
+reescreve esse header, só termina TLS. Passo a passo operacional (DNS, certbot, renovação):
+`docs/RUNTIME-GATEWAY-DEPLOY.md`.

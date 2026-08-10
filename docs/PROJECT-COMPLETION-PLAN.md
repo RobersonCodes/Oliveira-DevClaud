@@ -48,10 +48,10 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Commit de referência | `68258a9` |
 | Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
 | Etapa ativa | Etapa 2 — Runtime Gateway: DNS, TLS e nginx reais |
-| Responsável | Claude |
-| Status | `PENDENTE` |
-| Próxima ação única | Confirmar com o usuário o acesso a um domínio registrável separado do control plane (`RUNTIME_BASE_DOMAIN`), DNS wildcard e certificado TLS wildcard — pré-requisito explícito da Etapa 2 — e então configurar o server block do nginx e validar contra o domínio real |
-| Bloqueios externos | DNS wildcard, certificado wildcard e configuração real do domínio de runtime (Etapa 2) |
+| Responsável | Claude (parte de código concluída) → usuário (DNS/TLS/validação no servidor) |
+| Status | `PARCIAL` — server block nginx, compose e docs prontos e validados sintaticamente; falta execução do usuário no servidor real |
+| Próxima ação única | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS wildcard, certbot, primeiro deploy, checklist de validação) e reporta o resultado para fechar a Fase 2. Enquanto isso, Claude pode adiantar a Etapa 3 (Fase 4 — Runtime Broker), que não depende da Etapa 2 concluída, se o usuário preferir. |
+| Bloqueios externos | DNS wildcard e certificado TLS wildcard exigem execução no servidor real do usuário (fora do alcance desta sessão) |
 
 ### Baseline de validação conhecido
 
@@ -169,36 +169,59 @@ same-origin e uma única política para HTTP e WebSocket.
 
 ### Fase 2 — Runtime Gateway e deploy de origem isolada
 
-**Status:** `PARCIAL`
+**Status:** `PARCIAL` — código/config prontos; DNS, TLS e validação em domínio real dependem do
+usuário (ver `docs/RUNTIME-GATEWAY-DEPLOY.md`)
 
 **Execução:** Claude — Etapa 2.
 
 **Já validado em código:** ticket HMAC curto, cookie `__Host-`, membership em tempo real, proteção de
 Origin/Fetch Metadata, headers autoritativos, bloqueio do proxy legado em produção e relay HTTP/WS.
 
+**Domínios definidos pelo usuário em 2026-08-10:** painel `app.oliveiradevcloud.com`, runtime
+`runtime.oliveiradevcloud-content.com` — sites registráveis distintos, conforme exigido.
+
 **Pendente para concluir:**
 
-- [ ] Provisionar um domínio registrável separado para conteúdo de runtime.
-- [ ] Configurar DNS wildcard para os hosts de workspace/runtime.
-- [ ] Instalar e testar certificado TLS wildcard.
-- [ ] Criar server block nginx do Runtime Gateway.
-- [ ] Validar redirect, iframe, assets, preview e WebSocket em domínio real.
-- [ ] Confirmar que cookies do control plane nunca são enviados ao site de runtime.
-- [ ] Documentar emissão/renovação de certificado e recuperação de falha.
+- [x] Provisionar um domínio registrável separado para conteúdo de runtime — domínios confirmados
+      pelo usuário (ver acima).
+- [ ] Configurar DNS wildcard para os hosts de workspace/runtime — **depende do usuário**, passo a
+      passo em `docs/RUNTIME-GATEWAY-DEPLOY.md` §1.
+- [ ] Instalar e testar certificado TLS wildcard — **depende do usuário**, `docs/RUNTIME-GATEWAY-DEPLOY.md` §2.
+- [x] Criar server block nginx do Runtime Gateway — `infra/production/nginx.prod.conf` (redirect
+      HTTP→HTTPS compartilhado, server block HTTPS dedicado a `*.${RUNTIME_BASE_DOMAIN}`, Host
+      preservado sem reescrita, suporte a WebSocket, HSTS); location morta `/runtime/` removida.
+      Sintaxe e resolução de upstream validadas com Docker real nesta sessão (`nginx -t` limpo,
+      envsubst confirmado com os domínios reais renderizados corretamente).
+- [ ] Validar redirect, iframe, assets, preview e WebSocket em domínio real — **depende do usuário**
+      (checklist pronta em `docs/RUNTIME-GATEWAY-DEPLOY.md` §5).
+- [ ] Confirmar que cookies do control plane nunca são enviados ao site de runtime — desenho já
+      garante isso (domínios registráveis distintos + cookies `__Host-`); confirmação por captura de
+      rede real listada em `docs/RUNTIME-GATEWAY-DEPLOY.md` §5, **depende do usuário**.
+- [x] Documentar emissão/renovação de certificado e recuperação de falha — `docs/RUNTIME-GATEWAY-DEPLOY.md`
+      (registros DNS exatos, comandos certbot HTTP-01/DNS-01, cópia para o layout esperado, deploy-hook
+      de renovação, tabela de recuperação de falha).
 
 **Critérios de aceite:**
 
-- Um ticket não abre outro workspace, outra porta ou outro propósito.
-- Usuário removido da organização perde acesso na requisição seguinte.
-- Ataque entre dois subdomínios de runtime recebe 403 em HTTP e WebSocket.
-- IDE e preview funcionam integralmente em HTTPS/WSS no domínio real.
-- O proxy legado retorna 410 em produção.
+- Um ticket não abre outro workspace, outra porta ou outro propósito. *(já coberto por teste automatizado)*
+- Usuário removido da organização perde acesso na requisição seguinte. *(já coberto por teste automatizado)*
+- Ataque entre dois subdomínios de runtime recebe 403 em HTTP e WebSocket. *(já coberto por teste automatizado)*
+- IDE e preview funcionam integralmente em HTTPS/WSS no domínio real. *(pendente — exige servidor real)*
+- O proxy legado retorna 410 em produção. *(já coberto por teste automatizado)*
 
 **Validação mínima:** integração, Playwright em Chromium e teste manual em domínio real.
 
-**Bloqueio conhecido:** exige DNS, certificado e acesso ao ambiente de deploy.
+**Bloqueio conhecido:** DNS wildcard, certificado TLS wildcard e o teste manual final exigem execução
+no servidor de produção real do usuário — nenhum deles pode ser feito a partir desta sessão (sem
+acesso ao provedor de DNS nem a um host publicamente roteável). Runbook completo com os comandos
+exatos: `docs/RUNTIME-GATEWAY-DEPLOY.md`.
 
-**Evidências:** ver `docs/HARDENING-ROADMAP.md`; acrescentar evidências do deploy real aqui.
+**Evidências:** ver `docs/HARDENING-ROADMAP.md`. Validação local desta sessão: `docker run` com
+`nginx:1.27-alpine`, certificados autoassinados descartáveis e `--add-host api/web` simulando a rede
+do compose — `envsubst` renderiza `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com`
+corretamente nos dois `server_name`, `nginx -t` passa sem warnings (corrigida também a diretiva
+`listen ... http2` depreciada). Evidência de DNS/TLS/validação em domínio real fica pendente de
+execução pelo usuário — acrescentar aqui quando `docs/RUNTIME-GATEWAY-DEPLOY.md` §5 for concluído.
 
 ---
 
@@ -523,6 +546,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Planejamento | Plano criado | Documentação operacional e regras persistentes | Iniciar Fase 3 |
 | 2026-08-10 | Codex | Delegação | Etapas atribuídas | Claude: 1–5; Codex: 6–10; handoff definido | Claude iniciar Etapa 1 |
 | 2026-08-10 | Claude | Fase 3 (Etapa 1) | `CONCLUÍDA` | Rede Docker dedicada por workspace implementada (`packages/workspace-engine/src/network.ts`), `create()`/`destroy()` e `ide-engine` atualizados, `docker-compose.prod.yml`/env examples atualizados; 6 testes novos + suíte existente validados localmente contra Docker real (Docker Desktop iniciado nesta sessão) e depois em CI Linux real via push (`gh run` 31383975282) — local `npm test`: 164/166; CI: 163/166 + 1 ignorado; em ambos os casos as únicas falhas são o mesmo par pré-existente e não relacionado em `ws-security.test.ts`, isolado via `git stash`; `typecheck`/`lint`/`build` limpos em ambos os ambientes; nenhuma rede/container órfão após a execução; commits `11c36c8`, `68258a9` | Iniciar Etapa 2 (nginx/DNS/cert reais do Runtime Gateway) — depende de acesso a um domínio registrável separado |
+| 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário confirmou os domínios reais (painel `app.oliveiradevcloud.com`, runtime `runtime.oliveiradevcloud-content.com`). Server block real do Runtime Gateway escrito em `infra/production/nginx.prod.conf` (location morta `/runtime/` removida); `docker-compose.prod.yml` com `RUNTIME_BASE_DOMAIN` no nginx; `.env.production(.example)` e `.gitignore` atualizados; novo runbook `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS, certbot HTTP-01/DNS-01, renovação, checklist, recuperação de falha). Validado com Docker real nesta sessão (`nginx:1.27-alpine`, certs autoassinados, `--add-host` simulando a rede do compose): `envsubst` renderiza os domínios reais corretamente, `nginx -t` limpo sem warnings. DNS wildcard, certificado TLS wildcard e validação em domínio real seguem pendentes — dependem de execução do usuário no servidor real, fora do alcance desta sessão | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md`; Claude pode adiantar a Etapa 3 (Fase 4) nesse meio-tempo, se autorizado |
 
 ### Modelo para futuras entradas
 

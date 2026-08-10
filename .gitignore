@@ -15,6 +15,10 @@ playwright/.cache/
 !.env.example
 !.env.*.example
 
+# TLS private keys/certs for the production nginx deploy (docs/RUNTIME-GATEWAY-DEPLOY.md) — real
+# key material only ever belongs on the deploy server, never in git.
+infra/production/certs/
+
 # Runtime and local tooling
 *.log
 *.pid
