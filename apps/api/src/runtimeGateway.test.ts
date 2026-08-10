@@ -320,9 +320,12 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     const res = await app.inject({ method: 'GET', url: `/some/path?t=${ticket}&x=1`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(302);
     expect(res.headers.location).toBe('/some/path?x=1');
-    const runtimeCookie = res.cookies.find(c => c.name === `odc_runtime_ide_${workspace.id}`);
+    const runtimeCookie = res.cookies.find(c => c.name === `__Host-odc_runtime_ide_${workspace.id}`);
     expect(runtimeCookie).toBeDefined();
     expect(runtimeCookie?.httpOnly).toBe(true);
+    expect(runtimeCookie?.secure).toBe(true);
+    expect(runtimeCookie?.sameSite).toBe('None');
+    expect(runtimeCookie?.path).toBe('/');
     // Host-only: no explicit Domain attribute, so the browser scopes it to this exact subdomain only.
     expect((runtimeCookie as unknown as { domain?: string })?.domain).toBeUndefined();
   });

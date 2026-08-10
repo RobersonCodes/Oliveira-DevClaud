@@ -1,4 +1,5 @@
 import httpProxy from 'http-proxy';
+import type { IncomingMessage } from 'node:http';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type WebSocket from 'ws';
 import { z } from 'zod';
@@ -19,6 +20,7 @@ declare module 'fastify' {
 
 const ide = new DockerIdeEngine();
 const proxy = httpProxy.createProxyServer({ ws: false, xfwd: true, changeOrigin: false });
+proxy.on('proxyRes', proxyRes => applyRuntimeSecurityHeadersToProxyResponse(proxyRes));
 proxy.on('error', (_err, _req, res) => {
   if ('writeHead' in res && !res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
   if ('end' in res) res.end(JSON.stringify({ error: 'RUNTIME_GATEWAY_PROXY_ERROR' }));
@@ -53,7 +55,12 @@ function runtimeHostPattern(): RegExp {
 // preview ports on the *same* workspace deliberately get two different hostnames/cookies too, not
 // just different workspaces.
 function runtimeCookieName(parsed: ParsedRuntimeHost): string {
-  return parsed.purpose === 'ide' ? `odc_runtime_ide_${parsed.workspaceId}` : `odc_runtime_preview_${parsed.workspaceId}_${parsed.port}`;
+  // __Host- makes Secure + Path=/ + no Domain browser-enforced invariants. A sibling runtime can
+  // still execute arbitrary JavaScript, but the browser will reject any attempt to shadow this
+  // credential with a same-named parent-domain cookie.
+  return parsed.purpose === 'ide'
+    ? `__Host-odc_runtime_ide_${parsed.workspaceId}`
+    : `__Host-odc_runtime_preview_${parsed.workspaceId}_${parsed.port}`;
 }
 
 const RUNTIME_COOKIE_TTL_MS = 12 * 60 * 60 * 1000; // 12h — after this, reloading from the panel (a fresh ticket) is required
@@ -201,6 +208,23 @@ async function requireRuntimeAccess(request: FastifyRequest) {
   request.runtimeTarget = { host, port: parsed.purpose === 'ide' ? IDE_PORT : parsed.port! };
 }
 
+function runtimeSecurityHeaders(): Record<string, string> {
+  return {
+    'content-security-policy': `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}; connect-src 'self'`,
+    'referrer-policy': 'no-referrer',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+    'x-content-type-options': 'nosniff'
+  };
+}
+
+function applyRuntimeSecurityHeadersToProxyResponse(proxyRes: IncomingMessage) {
+  // http-proxy copies upstream headers to ServerResponse *after* the gateway handler runs. Mutate
+  // proxyRes itself so a workspace-controlled server cannot weaken the gateway's CSP/referrer/
+  // permissions boundary or restore X-Frame-Options after we removed Helmet's global value.
+  for (const [name, value] of Object.entries(runtimeSecurityHeaders())) proxyRes.headers[name] = value;
+  delete proxyRes.headers['x-frame-options'];
+}
+
 function applyRuntimeSecurityHeaders(reply: FastifyReply) {
   // Scoped narrowly to what this proxied, arbitrary/user-controlled content actually needs
   // constrained: who may iframe it, and that it never leaks a referrer (which could carry a ticket
@@ -218,10 +242,7 @@ function applyRuntimeSecurityHeaders(reply: FastifyReply) {
   // silently never sent. Only discovered by running this in a real browser: vitest's app.inject()
   // still reports reply.getHeader() correctly (it reads Fastify's own buffered state, not the actual
   // wire bytes), so this exact loss was invisible to every prior test.
-  reply.raw.setHeader('Content-Security-Policy', `frame-ancestors ${process.env.WEB_ORIGIN ?? 'http://localhost:3000'}; connect-src 'self'`);
-  reply.raw.setHeader('Referrer-Policy', 'no-referrer');
-  reply.raw.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
-  reply.raw.setHeader('X-Content-Type-Options', 'nosniff');
+  for (const [name, value] of Object.entries(runtimeSecurityHeaders())) reply.raw.setHeader(name, value);
   // @fastify/helmet sets this globally (SAMEORIGIN) before this handler ever runs, which would
   // otherwise block the very cross-origin embed (panel iframing a runtime host) this route exists
   // for — and unlike our own headers above, Helmet sets it early enough via onRequest that it
@@ -237,19 +258,10 @@ function setRuntimeCookie(reply: FastifyReply, cookie: { name: string; value: st
   // No `domain` attribute — host-only, scoped to this *exact* subdomain (e.g.
   // ide-<workspaceId>.runtime.<base>), never sent to a sibling workspace's or preview's subdomain.
   //
-  // sameSite MUST be 'none', not 'lax': this cookie is read back from *inside* the
-  // `<iframe src="https://ide-x.../...">` embed (apps/web/app/ide/page.tsx) that is this feature's
-  // entire point, and the browser's SameSite algorithm classifies a subframe's own navigation by the
-  // *top-level* document's site (app.<domain>), not the subframe's own site — so even a request the
-  // iframe makes back to the exact host that set the cookie is "cross-site" for SameSite purposes,
-  // and Lax cookies are never sent on a non-top-level navigation regardless of same-site-ness. This
-  // was invisible to vitest's app.inject()-based tests (no real frame tree exists there) and only
-  // surfaced running the real flow in Chromium: the ticket→redirect worked, but the redirected
-  // request came back with no cookie and fell through to a 401. `SameSite=None` requires `Secure` in
-  // every modern browser, which in turn requires a "potentially trustworthy" origin — real HTTPS in
-  // production, and (per the Secure Contexts spec's loopback carve-out, which Chrome implements for
-  // any `*.localhost` host) plain http in local dev too, so this doesn't need to be conditional on
-  // NODE_ENV.
+  // Production intentionally places untrusted runtimes on a different registrable domain from the
+  // control plane. The iframe is therefore cross-site and requires SameSite=None for its host-only
+  // credential to survive ticket redemption and the clean-URL redirect. None requires Secure; real
+  // deployments use HTTPS, while Chromium accepts Secure cookies on *.localhost for local E2E.
   reply.setCookie(cookie.name, cookie.value, {
     httpOnly: true,
     sameSite: 'none',
@@ -283,7 +295,10 @@ export function registerRuntimeGateway(app: FastifyInstance) {
     }
     const { host, port } = request.runtimeTarget!;
     reply.hijack();
-    proxy.web(request.raw, reply.raw, { target: `http://${host}:${port}` });
+    // Preserve application cookies but strip any upstream Domain attribute. A preview/code-server
+    // may scope its own cookies to this exact runtime host; it must not plant cookies into sibling
+    // runtimes or a parent domain. Security-sensitive gateway cookies additionally use __Host-.
+    proxy.web(request.raw, reply.raw, { target: `http://${host}:${port}`, cookieDomainRewrite: '' });
   };
 
   const wsHandler = async (socket: WebSocket, request: FastifyRequest) => {

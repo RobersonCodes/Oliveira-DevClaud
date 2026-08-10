@@ -13,6 +13,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
+    "test:browser": "playwright test --config=apps/api/playwright.config.ts",
     "test:watch": "vitest",
     "db:generate": "npm run generate -w @oliveira/database",
     "db:migrate": "npm run migrate -w @oliveira/database",

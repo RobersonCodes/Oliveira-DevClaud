@@ -3,10 +3,28 @@ import bcrypt from 'bcryptjs';
 import { prisma, Role } from '@oliveira/database';
 import type { FastifyRequest } from 'fastify';
 
-const SESSION_COOKIE = 'odc_session';
+// In production the __Host- prefix is a browser-enforced security boundary: the cookie must be
+// Secure, have Path=/ and omit Domain. Untrusted runtime subdomains therefore cannot shadow the
+// control-plane session by planting a same-named parent-domain cookie (cookie tossing). Keep the
+// shorter development name because plain HTTP clients outside the browser do not consistently
+// implement localhost's Secure-cookie exception.
+export function sessionCookieName(nodeEnv = process.env.NODE_ENV) {
+  return nodeEnv === 'production' ? '__Host-odc_session' : 'odc_session';
+}
+
+const SESSION_COOKIE = sessionCookieName();
 const SESSION_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 14);
 
 export { SESSION_COOKIE };
+
+export function sessionCookieOptions(cookieName = SESSION_COOKIE) {
+  return {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: cookieName.startsWith('__Host-'),
+    path: '/'
+  };
+}
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 12);
 export const verifyPassword = (password: string, hash: string) => bcrypt.compare(password, hash);

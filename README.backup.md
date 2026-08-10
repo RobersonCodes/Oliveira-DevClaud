@@ -12,7 +12,9 @@ Cada projeto é executado em um workspace Docker dedicado, com terminal persiste
 Git worktrees por agente e uma etapa de revisão protegida por quality gates, análise de contratos,
 avaliação determinística de regressão e aprovação humana.
 
-![Dashboard da Oliveira DevCloud](docs/images/dashboard.jpg)
+<p align="center">
+  <img src="docs/images/dashboard.jpg" alt="Dashboard da Oliveira DevCloud" width="880" />
+</p>
 
 ## Visão geral
 
@@ -21,10 +23,10 @@ executado. O navegador acessa apenas o control plane; criação de containers, s
 operações Git e execução de agentes permanecem no backend.
 
 | Capacidade | Implementação |
-| --- | --- |
+|---|---|
 | Workspaces isolados | Containers Docker non-root, com limites de CPU, memória e PIDs |
 | Terminal persistente | xterm.js + WebSocket autenticado + tmux no container |
-| IDE remota | code-server atrás de Runtime Gateway com origem, ticket e cookie isolados |
+| IDE remota | code-server atrás do proxy autenticado da API |
 | Execução multiagente | Codex e Claude em Git worktrees independentes |
 | Orquestração | DAG de tarefas assíncronas processado por BullMQ |
 | Contexto de código | Índices de arquivos, símbolos, dependências, endpoints e contratos por commit |
@@ -39,14 +41,12 @@ de desenvolvimento.
 
 ```mermaid
 flowchart TB
-  browser["Browser"] -->|"app.<control-domain>"| web["Web · Next.js"]
+  browser["Browser"] --> web["Web · Next.js"]
   browser -->|"HTTP / WebSocket"| api["API · Fastify"]
-  browser -->|"*.runtime.<separate-domain>"| gateway["Runtime Gateway"]
 
   subgraph control["Control plane"]
     web
     api
-    gateway
     worker["Worker · BullMQ"]
   end
 
@@ -68,7 +68,6 @@ flowchart TB
   api --> contracts
   api --> workspace
   api --> terminal
-  gateway --> containers
   api --> postgres[("PostgreSQL")]
   api --> redis[("Redis")]
   worker --> redis
@@ -81,10 +80,6 @@ flowchart TB
 ### Decisões de projeto
 
 - **Control plane separado do execution plane:** o navegador nunca recebe acesso ao Docker socket.
-- **Runtime em site registrável separado:** conteúdo não confiável de IDE/preview não compartilha
-  origem nem domínio de cookies com o painel; cookies sensíveis usam prefixo `__Host-`.
-- **Gateway como fronteira autoritativa:** tickets HMAC curtos, membership revalidada por requisição,
-  `Origin` exato em mutações/WebSocket e headers de segurança sobrescrevem respostas do workspace.
 - **Isolamento por worktree:** cada agente altera uma árvore Git própria; a integração ocorre apenas na
   branch efêmera de review.
 - **Bloqueio baseado em evidência:** falhas objetivas — testes, build, conflitos ou quebra de contrato
@@ -192,7 +187,7 @@ conflitos para que a aprovação seja rastreável.
 Após a inicialização:
 
 | Serviço | Endereço |
-| --- | --- |
+|---|---|
 | Dashboard | `http://localhost:3000` |
 | API | `http://localhost:4000` |
 | PostgreSQL | `localhost:5433` |
@@ -204,14 +199,13 @@ As variáveis disponíveis e seus valores de desenvolvimento estão documentados
 ## Comandos úteis
 
 | Comando | Finalidade |
-| --- | --- |
+|---|---|
 | `npm run dev` | Inicia web, API e worker em modo de desenvolvimento |
 | `npm run build` | Compila todos os workspaces que expõem script de build |
 | `npm run typecheck` | Executa o TypeScript em todos os workspaces |
 | `npm run lint` | Executa os linters configurados |
 | `npm test` | Executa a suíte completa uma vez |
 | `npm run test:watch` | Executa os testes em modo interativo |
-| `npm run test:browser` | Valida Runtime Gateway em Chromium real |
 | `npm run db:generate` | Gera o Prisma Client |
 | `npm run db:migrate` | Cria/aplica migrations em desenvolvimento |
 | `npm run db:migrate:deploy` | Aplica migrations versionadas em ambientes implantados |
@@ -222,11 +216,10 @@ A suíte combina testes unitários, de integração e end-to-end. Casos dependen
 são ignorados quando PostgreSQL ou Docker estão indisponíveis; a falha permanece visível.
 
 | Escopo | Validação | Dependências |
-| --- | --- | --- |
+|---|---|---|
 | Unitário | Criptografia, RBAC, detectores e cálculo determinístico de risco | Nenhuma |
 | Banco de dados | Constraints, cascades e comportamento real do schema Prisma | PostgreSQL |
 | API | Registro, login, autorização, organizações, projetos e rate limiting | PostgreSQL |
-| Browser | Ticket, redirect, cookies, iframe, headers e WebSocket do Runtime Gateway | PostgreSQL + Chromium |
 | Git Engine | Worktree, snapshot, diff, review, merge e cleanup | Docker |
 | Workspace Engine | Lifecycle, CPU, memória, PIDs e capabilities | Docker |
 | E2E | Login → projeto → workspace → terminal → comando → encerramento | PostgreSQL + Docker |
@@ -239,11 +232,9 @@ compartilhados de infraestrutura. Essa escolha favorece determinismo e reproduti
 A segurança é tratada como fronteira arquitetural, não apenas como validação de interface.
 
 | Controle | Garantia |
-| --- | --- |
+|---|---|
 | Autorização | RBAC por organização (`OWNER` > `ADMIN` > `DEVELOPER`) em rotas sensíveis |
-| Sessão | Cookie `__Host-`, `HttpOnly`, `Secure` e `SameSite=Lax` em produção |
-| Runtime Gateway | Site separado, cookies `__Host-`, tickets HMAC de 60s e autorização revalidada |
-| Conteúdo não confiável | CSP/Permissions/Referrer impostos pelo gateway; `Domain` removido de cookies upstream |
+| Sessão | Cookies `httpOnly` e `SameSite`, com expiração configurável |
 | Segredos | AES-256-GCM em repouso e mascaramento em respostas e logs |
 | Containers | Usuário non-root, `CapDrop: ALL`, `no-new-privileges` e limites de recursos |
 | Comandos | Argumentos estruturados e allow-list nos quality gates |
@@ -254,10 +245,6 @@ A segurança é tratada como fronteira arquitetural, não apenas como validaçã
 > [!IMPORTANT]
 > O Docker socket concede alto privilégio ao processo que o utiliza. Em produção, API e worker devem
 > operar em hosts dedicados, com acesso restrito, hardening do daemon e controles de rede externos.
-
-> [!IMPORTANT]
-> `RUNTIME_BASE_DOMAIN` deve pertencer a um domínio registrável diferente de `DEV_CLOUD_HOST`. Usar
-> apenas outro subdomínio preserva riscos de cookie tossing entre conteúdo de runtime e control plane.
 
 ## CI
 
@@ -279,20 +266,33 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
 
 ## Interface
 
-| Terminal persistente | Workspace Engine |
-| --- | --- |
-| ![Terminal conectado a um workspace Docker](docs/images/terminal.jpg) | ![Gestão do lifecycle de workspaces](docs/images/workspace-engine.jpg) |
-
-| Orquestrações | Autenticação |
-| --- | --- |
-| ![Orquestrações multiagente](docs/images/orchestrations.jpg) | ![Tela de autenticação](docs/images/login.jpg) |
+<table>
+  <tr>
+    <td width="50%">
+      <strong>Terminal persistente</strong><br />
+      <img src="docs/images/terminal.jpg" alt="Terminal conectado a um workspace Docker" width="100%" />
+    </td>
+    <td width="50%">
+      <strong>Workspace Engine</strong><br />
+      <img src="docs/images/workspace-engine.jpg" alt="Gestão do lifecycle de workspaces" width="100%" />
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <strong>Orquestrações</strong><br />
+      <img src="docs/images/orchestrations.jpg" alt="Orquestrações multiagente" width="100%" />
+    </td>
+    <td width="50%">
+      <strong>Autenticação</strong><br />
+      <img src="docs/images/login.jpg" alt="Tela de autenticação" width="100%" />
+    </td>
+  </tr>
+</table>
 
 ## Limites operacionais
 
 - O deployment em `infra/production` é uma baseline para host único; alta disponibilidade,
   autoscaling e isolamento multi-host não fazem parte desta versão.
-- O Runtime Gateway exige domínio registrável próprio, DNS wildcard, certificado wildcard e server
-  block nginx correspondente antes da exposição pública.
 - Workspaces dependem de um Docker Engine acessível pela API e pelo worker.
 - Planejamento por IA exige credenciais válidas do provedor selecionado; o restante do control plane
   pode operar sem elas.
@@ -303,7 +303,6 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
 - [Arquitetura](docs/ARCHITECTURE.md) — componentes e fronteiras de segurança.
 - [Regression Intelligence v2.5](docs/V2.5.md) — detectores, score e Merge Risk Report.
 - [Auditoria v2.5](docs/V2.5-AUDIT.md) — achados de baseline e correções de confiabilidade.
-- [Roadmap de hardening](docs/HARDENING-ROADMAP.md) — riscos, decisões e critérios de produção.
 - [Relatório de implementação v2.5](docs/V2.5-IMPLEMENTATION-REPORT.md) — escopo e validações da versão.
 - [`docs/V0.2.md`](docs/V0.2.md) a [`docs/V2.4.md`](docs/V2.4.md) — evolução incremental das capacidades.
 
@@ -317,10 +316,3 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
 
 Decisões que alterem fronteiras de segurança, persistência, contratos públicos ou semântica de merge
 devem ser acompanhadas de documentação técnica no mesmo pull request.
-
-## Autoria e direitos
-
-O projeto declara autoria e titularidade em [AUTHORS.md](AUTHORS.md), [COPYRIGHT.md](COPYRIGHT.md) e
-[NOTICE.md](NOTICE.md). Declarações, guia de registro e evidências de proveniência estão organizados
-em [docs/legal](docs/legal/README.md). Componentes de terceiros permanecem sujeitos às licenças dos
-respectivos titulares.

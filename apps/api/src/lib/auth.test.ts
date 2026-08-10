@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Role } from '@oliveira/database';
-import { hashPassword, hasRole, verifyPassword } from './auth.js';
+import { hashPassword, hasRole, sessionCookieName, sessionCookieOptions, verifyPassword } from './auth.js';
 
 describe('auth primitives', () => {
   it('hashes credentials with bcrypt and verifies only the original password', async () => {
@@ -18,5 +18,12 @@ describe('auth primitives', () => {
     expect(hasRole(Role.DEVELOPER, Role.DEVELOPER)).toBe(true);
     expect(hasRole(Role.DEVELOPER, Role.ADMIN)).toBe(false);
     expect(hasRole(Role.ADMIN, Role.OWNER)).toBe(false);
+  });
+
+  it('uses a browser-enforced __Host- cookie boundary in production', () => {
+    const name = sessionCookieName('production');
+    expect(name).toBe('__Host-odc_session');
+    expect(sessionCookieOptions(name)).toMatchObject({ secure: true, path: '/', httpOnly: true, sameSite: 'lax' });
+    expect(sessionCookieOptions(name)).not.toHaveProperty('domain');
   });
 });

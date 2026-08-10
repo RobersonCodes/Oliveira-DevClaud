@@ -1,14 +1,11 @@
 # Hardening Roadmap — Oliveira DevCloud
 
-**Status:** Fase 0 concluída. Dos 13 P0 identificados (12 originais + P0-13, encontrado durante a
-correção do P0-4), 11 foram corrigidos e validados com evidência real (build de imagem, migration
-contra banco vazio, testes de integração, relay WebSocket real ponta a ponta). Domínios confirmados
-(`app.<domínio>` para painel+API, `*.runtime.<domínio>` para IDE/preview) e Runtime Gateway
-implementado (P0-2, na camada de aplicação — DNS/certificado wildcard/nginx ficam para o deploy
-real). Só P0-3 (rede Docker dedicada por workspace) e as Fases 1, 5(resto), 6-9 continuam
-pendentes — ver Seção 7.
+**Status:** Fase 0 concluída. Dos 15 P0 registrados, 13 foram corrigidos e validados com evidência
+real (build, integração, relay WebSocket e Chromium). O Runtime Gateway está implementado para um
+site registrável separado do painel; DNS/certificado wildcard/nginx ficam para o deploy real. P0-3
+(rede Docker dedicada por workspace) e as Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
 **Data:** 2026-08-10
-**Método:** leitura direta do código-fonte (sem execução), citações `arquivo:linha`. Nenhuma
+**Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
 
 ## Como ler este documento
@@ -30,7 +27,7 @@ declarado — este documento não infla achados para parecer mais impressionante
 flowchart TB
   user["Usuário"] -->|HTTPS| web["apps/web (Next.js)<br/>bundle com API URL inlinada em build-time"]
   web -->|"fetch/WS, credentials:include<br/>NEXT_PUBLIC_API_URL ou _BASE (inconsistente)"| api["apps/api (Fastify)<br/>mesma origem/porta para painel E proxy de runtime"]
-  api -->|"cookie odc_session<br/>requireOrgRole por rota"| pg[("PostgreSQL")]
+  api -->|"cookie __Host- em produção<br/>requireOrgRole por rota"| pg[("PostgreSQL")]
   api --> redis[("Redis")]
   api -->|"docker.sock montado"| dockerd["Docker daemon (host)"]
   worker["apps/worker (BullMQ)"] -->|"docker.sock montado"| dockerd
@@ -69,7 +66,7 @@ Pontos-chave já confirmados no código:
 
 | Ativo | Onde vive hoje |
 |---|---|
-| Cookie de sessão (`odc_session`) | httpOnly, hash SHA-256 em `Session.tokenHash` (`apps/api/src/lib/auth.ts:13-24`) |
+| Cookie de sessão (`__Host-odc_session` em produção) | `HttpOnly`, `Secure`, `SameSite=Lax`, sem `Domain`; hash SHA-256 em `Session.tokenHash` |
 | Secrets de usuário/projeto | AES-256-GCM em repouso (`packages/secret-manager`) |
 | Código-fonte dos projetos | bind mount do host em `/workspace` dentro do container |
 | Docker socket do host | acesso root-equivalente; hoje em 2 processos (api, worker) |
@@ -92,7 +89,7 @@ Pontos-chave já confirmados no código:
 | Fronteira | Estado hoje | Evidência |
 |---|---|---|
 | Browser ↔ Web/API (internet pública) | Autenticada por cookie, CORS single-origin | `apps/api/src/app.ts:41` |
-| Painel de controle ↔ Conteúdo de runtime (IDE/preview) | **Violada — mesma origem** | `apps/api/src/lib/runtimeProxy.ts:28-47`, `apps/api/src/app.ts:83` |
+| Painel de controle ↔ Conteúdo de runtime (IDE/preview) | Isolada por origem, site registrável, ticket e cookie `__Host-` | `apps/api/src/lib/runtimeGateway.ts` |
 | Workspace ↔ outro Workspace | **Violada — mesma rede bridge** | `packages/workspace-engine/src/index.ts:84` |
 | Workspace ↔ Docker socket do host | Intacta — socket nunca montado em workspace | confirmado via busca exaustiva (agente de pesquisa) |
 | Workspace ↔ Postgres/Redis | Intacta hoje, mas por **acidente de topologia** (redes Compose distintas), não por design explícito | `infra/production/docker-compose.prod.yml` sem `networks:` compartilhada |
@@ -108,7 +105,7 @@ Pontos-chave já confirmados no código:
 | # | Status | Risco | Evidência |
 |---|---|---|---|
 | P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
-| P0-2 | ✅ Corrigido (app, validado em navegador real) / ⏳ nginx+DNS+cert pendentes | **Painel e conteúdo de runtime (IDE/preview) compartilhavam a mesma origem HTTP.** JavaScript servido de dentro de um workspace rodava sob a mesma origem do painel — podia em tese ler/manipular o DOM do painel se embutido, e qualquer fetch feito por esse conteúdo herdava a mesma política de cookies. **Corrigido na camada de aplicação**: novo Runtime Gateway (`runtimeGateway.ts`) serve IDE em `ide-<workspaceId>.<RUNTIME_BASE_DOMAIN>` e preview em `preview-<workspaceId>-<port>.<RUNTIME_BASE_DOMAIN>` — origem genuinamente diferente do painel (`app.<domínio>`). Autorização por ticket assinado (HMAC, TTL de 60s, bearer reutilizável até expirar — não é single-use, e o código/comentário deixam isso explícito — ver `runtimeTicket.ts`) trocado por um cookie host-only (sem atributo `Domain`, escopado exatamente ao subdomínio daquele workspace/porta, nunca a outro) logo no primeiro load; a organização é revalidada em **toda** requisição do gateway, não só na troca do ticket, então remover o usuário da organização derruba o acesso imediatamente mesmo com um cookie de runtime ainda válido. `/api/v1/proxy/*` (a origem antiga, compartilhada) foi depreciado e bloqueado com 410 em produção. **Três revisões sucessivas encontraram e corrigiram três bugs reais, cada um só visível de um jeito diferente:** (1) a primeira versão não validava `Origin` no gateway — `ide-a`/`ide-b` são *same-site* entre si (SameSite compara domínio registrável, RFC6265bis), então o cookie de B é enviado quando A inicia uma conexão contra B; corrigido com Origin exato. (2) exigir `Origin` uniformemente em toda requisição (incluindo GET/HEAD) quebraria a navegação real — pelo Fetch Standard, `Origin` não é garantido em GET/HEAD, especialmente navegação de `<iframe src="...">`; corrigido separando a política por tipo de requisição (WS e métodos mutantes exigem Origin exato; GET/HEAD aceita Origin ausente, com fallback em `Sec-Fetch-Site`/`Sec-Fetch-Mode`) — **só descoberto rodando os testes originais (que setavam `Origin` manualmente em toda chamada) contra um Chromium real**, onde o header realmente ausente em GET revelou a lacuna. (3) rodar o fluxo real no Chromium revelou **dois bugs adicionais que nenhum teste com `app.inject()` conseguiria ver**: o cookie era emitido com `SameSite=Lax`, que nunca é enviado de volta numa navegação de **subframe** (o algoritmo de SameSite classifica pelo *site do documento de nível superior* — o painel — não pelo site do próprio iframe), então o cookie nunca voltava depois do redirect dentro do iframe; corrigido para `SameSite=None; Secure` (seguro em `*.localhost` mesmo em HTTP puro, pela exceção de loopback do Secure Contexts spec que o Chrome implementa). E os headers de segurança do gateway (`Content-Security-Policy: frame-ancestors ...`, incluindo a defesa `connect-src 'self'`) eram setados via `reply.header()` mas nunca chegavam ao cliente nas respostas proxied (não-redirect), porque `reply.hijack()` — necessário para que o `http-proxy` escreva direto na resposta crua — pula por completo o pipeline de serialização do Fastify que normalmente despacharia esses headers; o `X-Frame-Options: SAMEORIGIN` que o `@fastify/helmet` global aplica (via hook que roda cedo o bastante para sobreviver ao hijack) então bloqueava ativamente o embed cross-origin que essa própria rota existe para permitir — erro visível só como `net::ERR_BLOCKED_BY_RESPONSE` num browser real; `app.inject()` reporta `reply.getHeader()` corretamente porque lê o estado interno bufferizado do Fastify, não os bytes reais que saem na rede. Corrigido setando os headers direto em `reply.raw` e removendo explicitamente `X-Frame-Options`. Suíte E2E em Chromium/Playwright criada especificamente para isso (`apps/api/e2e-browser/runtimeGateway.spec.ts`, 3 testes: iframe real com redirect e conteúdo proxied carregando de fato, WebSocket same-origin real dentro do iframe, e o ataque cross-workspace real — cookie válido da vítima automaticamente anexado pelo browser, rejeitado pelo Origin check). **Pendente antes de operar com domínio real**: DNS wildcard (`*.runtime.<domínio>`), certificado TLS wildcard, e um server block correspondente em `nginx.prod.conf` (hoje só termina `DEV_CLOUD_HOST`) — nenhum desses bloqueia o código, que é agnóstico de host/DNS e já validado end-to-end nos testes (32 de integração + 3 em navegador real), incluindo o ataque cross-workspace tanto sintético (vitest) quanto num Chromium de verdade. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts` (32 testes); `apps/api/e2e-browser/runtimeGateway.spec.ts` (3 testes, Chromium real) |
+| P0-2 | ✅ Corrigido (app, validado em navegador real) / ⏳ nginx+DNS+cert pendentes | **Painel e conteúdo de runtime compartilhavam a mesma origem.** O Runtime Gateway agora serve IDE/preview em hosts exclusivos de um `RUNTIME_BASE_DOMAIN` que, em produção, deve pertencer a outro domínio registrável. Um ticket HMAC bearer de 60s é trocado por cookie `__Host-`, host-only, `Secure` e `SameSite=None`; membership e papel são revalidados em toda requisição. WebSocket e mutações exigem `Origin` próprio exato; GET/HEAD tratam corretamente a ausência legítima desse header e usam Fetch Metadata como defesa adicional. CSP, `Referrer-Policy`, `Permissions-Policy` e `nosniff` são impostos tanto no redirect quanto na resposta efetivamente copiada pelo proxy. O proxy remove `X-Frame-Options` conflitante e qualquer atributo `Domain` recebido em `Set-Cookie` upstream. `/api/v1/proxy/*` retorna 410 em produção. Validado com integração e Chromium real, inclusive iframe, redirect, assets, WebSocket e ataque sibling com cookie da vítima. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts`; `apps/api/e2e-browser/runtimeGateway.spec.ts` |
 | P0-3 | ⏳ Pendente | **Todos os workspaces compartilham a rede Docker bridge default — sem isolamento entre tenants.** Um workspace comprometido alcança por IP qualquer outro workspace de qualquer organização, incluindo seu code-server `--auth none` na porta 13337 (que só não é exposta ao host, mas é alcançável na rede interna). Fase 3. | `packages/workspace-engine/src/index.ts:84`, `packages/ide-engine/src/index.ts:55` |
 | P0-4 | ✅ Corrigido | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) validava o header `Origin`.** Qualquer site na internet podia tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não havia defesa em profundidade além da checagem de sessão. Corrigido com `wsOrigin.ts` (comparação exata contra `WEB_ORIGIN`, nunca por sufixo/prefixo) aplicado a terminal e runtime proxy; papel `DEVELOPER` agora também exigido no WS do runtime proxy (antes só checava membership); ambos migrados para `preHandler` de modo que a validação — Origin, sessão, papel, workspace — sempre roda antes de qualquer 101 (ver P0-13). 18 testes cobrindo origin ausente/maliciosa (com domínios parecidos), cookie ausente/inválido/expirado, cross-org. | `apps/api/src/lib/wsOrigin.ts`; `apps/api/src/routes/terminals.ts`; `apps/api/src/lib/runtimeProxy.ts` |
 | P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
@@ -120,6 +117,8 @@ Pontos-chave já confirmados no código:
 | P0-11 | ✅ Corrigido | **`NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_API_BASE` nunca eram passadas ao `docker build` do web.** `Dockerfile.web` não declarava `ARG`/`ENV` para essas variáveis; como são inlinadas em build-time pelo Next.js e `env_file` do compose só afeta runtime, o bundle de produção herdava o fallback `http://localhost:4000` de cada `page.tsx`. Corrigido com `ARG`/`ENV` no Dockerfile + `build.args` no compose; validado buildando a imagem real e confirmando **zero** ocorrências de `localhost:4000` no bundle client-side servido (`.next/static`, excluindo source maps). | `infra/production/Dockerfile.web`; `infra/production/docker-compose.prod.yml` |
 | P0-12 | ✅ Corrigido | **Divergência `NEXT_PUBLIC_API_URL` vs `NEXT_PUBLIC_API_BASE`.** Treze páginas usavam `NEXT_PUBLIC_API_URL`; só `apps/web/app/ide/page.tsx:6` usava `NEXT_PUBLIC_API_BASE`. Corrigido unificando para `NEXT_PUBLIC_API_URL`. | `apps/web/app/ide/page.tsx:6` |
 | P0-13 | ✅ Corrigido | **Conflito entre listeners globais de `upgrade` impedia relay confiável de IDE/preview.** `runtimeProxy.ts` registrava seu próprio `app.server.on('upgrade', ...)` — um listener *global*, não restrito a `/api/v1/proxy/*` — no mesmo `http.Server` em que `@fastify/websocket` **também** registra um listener `upgrade` global (`onUpgrade`, que despacha *qualquer* upgrade pelo roteador completo do Fastify via `fastify.routing()`). Como `/api/v1/proxy/ide/*` e `/api/v1/proxy/preview/*` eram rotas HTTP normais (não `{websocket:true}`), o próprio `@fastify/websocket` completava o handshake (101) e fechava a conexão via seu `noHandle()` interno — **antes** do handler do proxy (que depende de `await` em sessão/Postgres/Docker) conseguir chamar `proxy.ws()`. Confirmado com um cliente HTTP bruto: o 101 chegava ao cliente, e a resposta de rejeição do handler do proxy vazava como bytes soltos por cima da conexão já "aberta". Na prática isso significava que o relay WebSocket de IDE/preview provavelmente nunca funcionou de forma confiável desde que `@fastify/websocket` foi adicionado — independente de qualquer mudança desta sessão. Efeito colateral direto: a checagem de `Origin` do proxy rodava *antes* do match de path nesse mesmo listener global, então também rejeitava incorretamente upgrades de `/api/v1/terminals/*`. **Correção**: removido por completo o listener raw; IDE e preview agora são rotas `wsHandler` explícitas do próprio `@fastify/websocket` (registradas via `app.route({method:'GET', preHandler, handler, wsHandler})`), cujo `preHandler` valida Origin/sessão/papel DEVELOPER/workspace (ou porta registrada, no caso de preview) **antes** de qualquer 101 ser possível — rejeições agora são respostas HTTP normais (401/403/404), nunca handshake seguido de bytes soltos. O relay em si foi extraído para `wsBridge.ts`, reutilizável (texto/binário, propagação de close code com remapeamento de códigos reservados, timeout de conexão ao upstream, guarda de backpressure/`maxPayload`, fila para mensagens do cliente que chegam antes do upstream conectar — bug real encontrado e corrigido durante os testes). Terminal também passou a usar o mesmo padrão `preHandler` para consistência. Validado com 18 testes reais: `app.server.listenerCount('upgrade') === 1`; nenhum byte de rejeição após um 101 (cliente HTTP bruto); relay ponta a ponta de IDE **e** preview contra um servidor WS local real (`internalHost` mockado só na resolução de rede do container, já que não há Docker neste host); 10 testes de `wsBridge` (echo real, texto+binário, propagação/normalização de close code, timeout de conexão, `maxPayload`, backpressure). | `apps/api/src/lib/{runtimeProxy.ts,wsBridge.ts}`; `apps/api/src/routes/terminals.ts`; `apps/api/src/ws-security.test.ts`; `apps/api/src/lib/wsBridge.test.ts` |
+| P0-14 | ✅ Corrigido | **Runtime sibling podia plantar cookie com `Domain` no control plane.** Origem diferente não é fronteira de cookie quando painel e runtimes compartilham o domínio registrável. A configuração de produção agora exige outro site registrável; cookies de sessão e runtime usam prefixo `__Host-`, e o proxy remove `Domain` de cookies upstream. | `.env.production.example`; `apps/api/src/{lib/auth.ts,routes/auth.ts,lib/runtimeGateway.ts}` |
+| P0-15 | ✅ Corrigido | **Headers de segurança podiam ser sobrescritos pelo container.** `http-proxy` copia headers upstream depois do handler; defini-los apenas em `reply.raw` não era autoritativo. O gateway agora reescreve `proxyRes.headers`, remove `X-Frame-Options` e possui E2E com upstream deliberadamente hostil. | `apps/api/src/lib/runtimeGateway.ts`; `apps/api/e2e-browser/runtimeGateway.spec.ts` |
 
 ### P1 — risco real, mitigação parcial ou depende de configuração correta
 
@@ -200,13 +199,13 @@ intocados.
 
 ## 7. Status e próxima etapa recomendada
 
-**Concluído nesta sessão:** dos 13 P0 (12 originais + P0-13, achado durante a correção do P0-4), 11
-foram corrigidos, testados e validados com evidência real de execução (não só leitura de código):
+**Concluído nesta sessão:** dos 15 P0 registrados (12 originais + 3 descobertos durante o
+hardening), 13 foram corrigidos, testados e validados com evidência real de execução:
 
 | Correção | Como foi validado |
 |---|---|
 | P0-1 — bind mount de workspace | `docker compose config` confirma o path do host resolvido corretamente |
-| P0-2 — Runtime Gateway (isolamento de origem, app) | 32 testes de integração: ticket cross-workspace/cross-purpose rejeitado, ticket expirado, membership revogada (via ticket e via cookie já emitido), cookie host-only, headers de segurança (incl. `connect-src 'self'`), Origin ausente/`null`/duplicada/lookalike/esquema-porta errados, política separada por tipo de requisição (GET/HEAD vs. WS/mutante, com fallback em Sec-Fetch-*), **ataque cross-workspace real com cookie válido da vítima (HTTP e WS)**, relay real ponta a ponta — **mais 3 testes num Chromium real** (`e2e-browser/runtimeGateway.spec.ts`): iframe real navega pelo ticket→redirect→cookie e carrega o conteúdo proxied de verdade; WebSocket same-origin aberto de dentro do iframe funciona; e o mesmo ataque cross-workspace, desta vez com o browser de verdade anexando automaticamente o cookie válido da vítima, ainda é rejeitado. Essa última bateria encontrou e corrigiu 2 bugs que os testes de integração não conseguiam ver (cookie `SameSite=Lax` nunca voltava numa navegação de subframe cross-site; headers de segurança/`X-Frame-Options` do Helmet não sobreviviam ao `reply.hijack()` do proxy) |
+| P0-2/P0-14/P0-15 — Runtime Gateway e cookies | 32 testes de integração + 3 em Chromium real: ticket e cookie escopados, membership revogada, `Origin`/Fetch Metadata, relay WS, ataque sibling, prefixos `__Host-`, headers autoritativos contra upstream hostil e remoção de `Domain` em `Set-Cookie` proxied |
 | P0-4 — Origin/papel em WebSocket | 18 testes: origin ausente/maliciosa, cookie ausente/inválido/expirado, cross-org |
 | P0-5 — métricas do host protegidas | Testes de integração para anônimo, OWNER de tenant e operador da allowlist |
 | P0-6 — job de migration | build real da imagem + `prisma migrate deploy` contra Postgres vazio, tabelas confirmadas via `\dt` |
@@ -224,20 +223,21 @@ apps/api/tsconfig.json`) e build de produção do web (`next build`) rodam limpo
 `git-engine`, `workspace-engine`) falham pela mesma razão pré-existente e documentada na Fase 0 (sem
 relação com as correções acima): este host Windows não tem `/var/run/docker.sock`, então essas
 suítes — que já falhavam antes de qualquer mudança desta sessão — continuam falhando exatamente do
-mesmo jeito. Nenhuma regressão foi introduzida (141 de 147 testes passam, contra 64 de 70 antes da
-sessão — a diferença são só os testes novos escritos para as correções acima).
+mesmo jeito. Nenhuma regressão foi introduzida; a contagem exata da última execução fica registrada
+no relatório do commit/CI para não congelar números que mudam a cada novo teste.
 
 **Runtime Gateway (P0-2) — o que foi implementado:**
 - `apps/api/src/lib/runtimeTicket.ts` — ticket assinado (HMAC-SHA256), stateless, TTL de 60s.
 - `apps/api/src/lib/runtimeGateway.ts` — rota de emissão (`POST /api/v1/runtime-tickets`, no painel,
   autenticada normalmente) + rota `constraints:{host: regex}` do próprio Fastify para
-  `*.<RUNTIME_BASE_DOMAIN>`, que troca ticket por cookie host-only (nunca `Domain` amplo) na primeira
+  `*.<RUNTIME_BASE_DOMAIN>`, que troca ticket por cookie `__Host-` host-only na primeira
   requisição, remove o ticket da URL via redirect 302, e **revalida membership da organização em toda
   requisição** (não só na troca do ticket) — remover o usuário derruba o acesso imediatamente mesmo
   com cookie de runtime ainda dentro do TTL.
-- Headers de segurança no domínio de runtime: `Content-Security-Policy: frame-ancestors <WEB_ORIGIN>;
-  connect-src 'self'`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, `X-Content-Type-Options:
-  nosniff`.
+- Headers de segurança autoritativos no domínio de runtime: `Content-Security-Policy: frame-ancestors
+  <WEB_ORIGIN>; connect-src 'self'`, `Referrer-Policy: no-referrer`, `Permissions-Policy` e `nosniff`.
+  Eles são reescritos em `proxyRes`, portanto o container não pode enfraquecê-los; `Domain` também é
+  removido de todo `Set-Cookie` upstream.
 - `apps/api/src/lib/runtimeProxy.ts` (a origem antiga, compartilhada) depreciado, bloqueado com 410
   quando `NODE_ENV=production`, ainda funcional em dev durante a transição.
 - `apps/web/app/ide/page.tsx` migrado para solicitar ticket antes de montar a IDE/abrir previews;
@@ -252,18 +252,11 @@ sessão — a diferença são só os testes novos escritos para as correções a
   válido de outro via `SameSite` comparando *site* (domínio registrável), não origem exata — ver
   evidência detalhada na tabela de P0 acima. Justificativa completa no comentário de
   `requireRuntimeAccess()`/`validateOriginForGetOrHead()`.
-- **Cookie do runtime com `SameSite=None; Secure`** (não `Lax`) — só descoberto rodando o fluxo real
-  num Chromium via Playwright: `Lax` nunca é enviado de volta numa navegação de *subframe* cross-site
-  (o algoritmo de SameSite usa o site do documento de nível superior, não o do próprio iframe), então
-  o cookie emitido no primeiro redirect nunca voltava na requisição seguinte, mesmo dentro do mesmo
-  iframe. `Secure` funciona em `*.localhost` mesmo sobre HTTP puro (Chrome trata loopback como
-  contexto seguro), então não precisa ser condicional a `NODE_ENV`.
-- **Headers de segurança setados em `reply.raw`, não via `reply.header()`**, e `X-Frame-Options`
-  removido explicitamente — outro achado exclusivo do navegador real: `reply.hijack()` (necessário
-  para o `http-proxy` escrever a resposta proxied direto) pula o pipeline de serialização do Fastify,
-  então headers enfileirados via `reply.header()` antes do hijack nunca chegavam à rede; o
-  `X-Frame-Options: SAMEORIGIN` que o `@fastify/helmet` global aplica sobrevivia (roda cedo demais
-  para ser afetado) e bloqueava ativamente o embed cross-origin que essa rota existe para permitir.
+- **Cookie do runtime `__Host-`, `SameSite=None; Secure`** — necessário porque produção usa um site
+  registrável separado para conteúdo não confiável. O prefixo impede cookie tossing com `Domain`.
+- **Headers impostos em `reply.raw` e em `proxyRes.headers`**, com `X-Frame-Options` removido. A dupla
+  aplicação cobre redirect/hijack e impede que uma resposta controlada pelo workspace sobrescreva a
+  política do gateway.
 
 **Suíte de navegador real:** `apps/api/e2e-browser/runtimeGateway.spec.ts`, rodada via
 `npx playwright test` dentro de `apps/api` (config em `apps/api/playwright.config.ts`; requer
@@ -274,10 +267,10 @@ interceptada é tratada pelo Local Network Access do Chrome como espaço de ende
 suas requisições a um alvo loopback bloqueadas (`net::ERR_BLOCKED_BY_LOCAL_NETWORK_ACCESS_CHECKS`) —
 mais um comportamento que só aparece contra um browser de verdade.
 
-**Pendente antes de operar o Runtime Gateway com domínio real:** DNS wildcard
-(`*.runtime.<domínio>`), certificado TLS wildcard, e um server block em `nginx.prod.conf`
-correspondente (hoje só termina `DEV_CLOUD_HOST` = `app.<domínio>`) — nada disso bloqueia o código em
-si, que é host-agnóstico e já validado end-to-end via `Host` header spoofado nos testes.
+**Pendente antes de operar o Runtime Gateway com domínio real:** adquirir/configurar um domínio
+registrável separado do control plane, DNS wildcard, certificado TLS wildcard e server block em
+`nginx.prod.conf`. O exemplo de produção usa `.example.com` no painel e `.example.net` no runtime
+justamente para tornar essa fronteira explícita.
 
 **Pendente no roadmap geral:** P0-3 (rede Docker dedicada por workspace — isolamento entre
 workspaces na mesma rede `bridge`) e as Fases 1, 5 (o restante), 6-9 por completo.

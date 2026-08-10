@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma, Role } from '@oliveira/database';
-import { createSession, getSessionUser, hashPassword, hashToken, SESSION_COOKIE, verifyPassword } from '../lib/auth.js';
+import { createSession, getSessionUser, hashPassword, hashToken, SESSION_COOKIE, sessionCookieOptions, verifyPassword } from '../lib/auth.js';
 import { slugify } from '../lib/slug.js';
 import { audit } from '../lib/audit.js';
 
@@ -37,7 +37,7 @@ export async function authRoutes(app: FastifyInstance) {
       return created;
     });
     const session = await createSession(user.id, request);
-    reply.setCookie(SESSION_COOKIE, session.token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', expires: session.expiresAt });
+    reply.setCookie(SESSION_COOKIE, session.token, { ...sessionCookieOptions(), expires: session.expiresAt });
     await audit({ userId: user.id, action: 'USER_REGISTERED', resource: 'User', resourceId: user.id, ipAddress: request.ip });
     return reply.code(201).send({ id: user.id, email: user.email, name: user.name });
   });
@@ -62,7 +62,7 @@ export async function authRoutes(app: FastifyInstance) {
       await prisma.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockedUntil: null } });
     }
     const session = await createSession(user.id, request);
-    reply.setCookie(SESSION_COOKIE, session.token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', expires: session.expiresAt });
+    reply.setCookie(SESSION_COOKIE, session.token, { ...sessionCookieOptions(), expires: session.expiresAt });
     await audit({ userId: user.id, action: 'USER_LOGIN', resource: 'Session', ipAddress: request.ip });
     return { id: user.id, email: user.email, name: user.name };
   });
@@ -70,7 +70,9 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/logout', async (request, reply) => {
     const token = request.cookies?.[SESSION_COOKIE];
     if (token) await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
-    reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    // __Host- cookies are only accepted (including deletion cookies) with Secure + Path=/ and no
+    // Domain, so logout must use the exact same security attributes as login/register.
+    reply.clearCookie(SESSION_COOKIE, sessionCookieOptions());
     return reply.code(204).send();
   });
 

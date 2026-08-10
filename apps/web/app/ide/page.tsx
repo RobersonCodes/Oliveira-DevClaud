@@ -55,8 +55,8 @@ function IdePageContent() {
 
   useEffect(() => { void load(); }, [workspaceId]);
 
-  // A fresh, single-use ticket is requested every time the IDE goes from not-running to running —
-  // the iframe's src is only ever set to a URL a ticket has just authorized, never reused stale.
+  // A fresh, short-lived bearer ticket is requested every time the IDE goes from not-running to
+  // running. It remains replayable until its 60-second expiry, but is scoped to this runtime target.
   useEffect(() => {
     if (status !== 'running' || !workspaceId) { setIdeUrl(''); return; }
     let cancelled = false;

@@ -51,7 +51,18 @@ test.beforeAll(async () => {
   // Stand-in for code-server: a real HTTP+WS server on one port, serving a recognizable page and
   // echoing WS messages — proxied to via the gateway exactly like a real workspace container would be.
   fakeIdeServer = http.createServer((_req, res) => {
-    res.writeHead(200, { 'content-type': 'text/html' });
+    // Deliberately hostile upstream headers: the gateway, not workspace-controlled code, owns the
+    // browser security boundary. This also verifies that Domain is stripped from application
+    // cookies while preserving them as host-only cookies for the proxied app.
+    res.writeHead(200, {
+      'content-type': 'text/html',
+      'content-security-policy': "frame-ancestors 'none'; connect-src https://evil.example",
+      'x-frame-options': 'DENY',
+      'referrer-policy': 'unsafe-url',
+      'permissions-policy': 'camera=*',
+      'x-content-type-options': 'off',
+      'set-cookie': `upstream_runtime_cookie=value; Domain=${RUNTIME_BASE_DOMAIN}; Path=/; SameSite=None; Secure`
+    });
     res.end('<!doctype html><html><body id="marker">FAKE_IDE_LOADED_OK</body></html>');
   });
   fakeIde = new WebSocketServer({ server: fakeIdeServer });
@@ -112,19 +123,39 @@ function ideFrame(page: import('@playwright/test').Page) {
 }
 
 test.describe('Runtime Gateway — real browser (Chromium)', () => {
-  test('an iframe embedded in a real panel page navigates through the ticket redirect and loads the real proxied content, with no header spoofing', async ({ page }) => {
+  test('an iframe loads through the ticket redirect and the gateway overrides hostile upstream headers/cookie scope', async ({ page, context }) => {
     const { sessionCookie, organizationId } = await registerUserAndOrg();
     const workspace = await makeWorkspace(organizationId);
     const ticket = await issueTicket(sessionCookie, workspace.id);
     const iframeSrc = `http://${ideHost(workspace.id)}/?t=${ticket}`;
     const url = serveAtPanel('/panel-test-page', iframeSrc);
 
+    const runtimeResponsePromise = page.waitForResponse(response => {
+      const responseUrl = new URL(response.url());
+      return response.status() === 200 && responseUrl.hostname.startsWith('ide-');
+    });
     await page.goto(url);
+    const runtimeResponse = await runtimeResponsePromise;
     await expect.poll(() => ideFrame(page), { timeout: 10_000 }).not.toBeNull();
     const frame = ideFrame(page)!;
 
     await expect.poll(() => frame.url(), { timeout: 10_000 }).not.toContain('t=');
     await expect(frame.locator('#marker')).toHaveText('FAKE_IDE_LOADED_OK', { timeout: 10_000 });
+
+    const headers = await runtimeResponse.allHeaders();
+    expect(headers['content-security-policy']).toContain(`frame-ancestors ${panelOrigin()}`);
+    expect(headers['content-security-policy']).toContain("connect-src 'self'");
+    expect(headers['x-frame-options']).toBeUndefined();
+    expect(headers['referrer-policy']).toBe('no-referrer');
+    expect(headers['permissions-policy']).toBe('camera=(), microphone=(), geolocation=()');
+    expect(headers['x-content-type-options']).toBe('nosniff');
+
+    const host = ideHost(workspace.id).split(':')[0]!;
+    const cookies = await context.cookies();
+    const gatewayCookie = cookies.find(cookie => cookie.name === `__Host-odc_runtime_ide_${workspace.id}`);
+    expect(gatewayCookie).toMatchObject({ domain: host, path: '/', httpOnly: true, secure: true, sameSite: 'None' });
+    const upstreamCookie = cookies.find(cookie => cookie.name === 'upstream_runtime_cookie');
+    expect(upstreamCookie?.domain).toBe(host);
   });
 
   test('a same-origin WebSocket opened from inside the loaded IDE frame succeeds', async ({ page }) => {
