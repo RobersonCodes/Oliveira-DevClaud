@@ -45,7 +45,7 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | _preencher com o hash do commit desta etapa_ |
+| Commit de referência | `11c36c8` |
 | Estado conhecido | 14 de 15 P0 corrigidos (nenhum P0 aberto); wiring real de P0-2 (nginx/DNS/cert) pendente |
 | Etapa ativa | Etapa 1 — isolamento de rede por workspace |
 | Responsável | Claude |
