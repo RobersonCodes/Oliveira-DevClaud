@@ -1,10 +1,11 @@
 # Hardening Roadmap — Oliveira DevCloud
 
-**Status:** Fase 0 concluída. Dos 12 P0, os 9 que não dependiam da decisão de isolamento de origem
-(P0-1, P0-5 a P0-12) foram corrigidos e validados com evidência real (build de imagem, migration
-contra banco vazio, testes de integração). P0-2, P0-3, P0-4 (isolamento de origem/rede) e as Fases
-1-9 continuam pendentes — ver Seção 7.
-**Data:** 2026-08-09
+**Status:** Fase 0 concluída. Dos 13 P0 identificados (12 originais + P0-13, encontrado durante a
+correção do P0-4), 10 foram corrigidos e validados com evidência real (build de imagem, migration
+contra banco vazio, testes de integração, relay WebSocket real ponta a ponta). P0-2 e P0-3
+(isolamento de origem/rede — dependem da decisão de domínio/Runtime Gateway) e as Fases 1, 5(resto),
+6-9 continuam pendentes — ver Seção 7.
+**Data:** 2026-08-10
 **Método:** leitura direta do código-fonte (sem execução), citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
 
@@ -107,7 +108,7 @@ Pontos-chave já confirmados no código:
 | P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
 | P0-2 | ⏳ Pendente | **Painel e conteúdo de runtime (IDE/preview) compartilham a mesma origem HTTP.** JavaScript servido de dentro de um workspace (preview de app do usuário, ou XSS num arquivo do repositório aberto no code-server) roda sob a mesma origem do painel — pode em tese ler/manipular o DOM do painel se embutido, e qualquer fetch feito por esse conteúdo herda a mesma política de cookies. Depende da decisão de arquitetura da Fase 2 (subdomínio de runtime + wildcard cert). | `apps/api/src/lib/runtimeProxy.ts:28-47`, `apps/api/src/app.ts:83` |
 | P0-3 | ⏳ Pendente | **Todos os workspaces compartilham a rede Docker bridge default — sem isolamento entre tenants.** Um workspace comprometido alcança por IP qualquer outro workspace de qualquer organização, incluindo seu code-server `--auth none` na porta 13337 (que só não é exposta ao host, mas é alcançável na rede interna). Fase 3. | `packages/workspace-engine/src/index.ts:84`, `packages/ide-engine/src/index.ts:55` |
-| P0-4 | ⏳ Pendente | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) valida o header `Origin`.** Qualquer site na internet pode tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não há defesa em profundidade além da checagem de sessão. Fase 6. | `apps/api/src/routes/terminals.ts:64-108`; `apps/api/src/lib/runtimeProxy.ts:49-80` |
+| P0-4 | ✅ Corrigido | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) validava o header `Origin`.** Qualquer site na internet podia tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não havia defesa em profundidade além da checagem de sessão. Corrigido com `wsOrigin.ts` (comparação exata contra `WEB_ORIGIN`, nunca por sufixo/prefixo) aplicado a terminal e runtime proxy; papel `DEVELOPER` agora também exigido no WS do runtime proxy (antes só checava membership); ambos migrados para `preHandler` de modo que a validação — Origin, sessão, papel, workspace — sempre roda antes de qualquer 101 (ver P0-13). 18 testes cobrindo origin ausente/maliciosa (com domínios parecidos), cookie ausente/inválido/expirado, cross-org. | `apps/api/src/lib/wsOrigin.ts`; `apps/api/src/routes/terminals.ts`; `apps/api/src/lib/runtimeProxy.ts` |
 | P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
 | P0-6 | ✅ Corrigido | **Migrations do Prisma nunca rodam automaticamente em produção.** Nem o `CMD` do `Dockerfile.api` nem `docker-compose.prod.yml` executam `prisma migrate deploy` — um host limpo sobe a API contra um schema vazio. Corrigido com serviço `migrate` one-shot (`depends_on: service_completed_successfully`); validado de ponta a ponta contra Postgres vazio usando a imagem real. | `infra/production/docker-compose.prod.yml` |
 | P0-7 | ✅ Corrigido | **Nginx de produção não substitui `${DEV_CLOUD_HOST}`.** O arquivo é montado direto em `/etc/nginx/conf.d/default.conf` (não em `/etc/nginx/templates/*.template`, único mecanismo que dispara `envsubst` na imagem oficial do nginx) — `server_name ${DEV_CLOUD_HOST}` fica literal, quebrando roteamento por host/TLS. Corrigido montando em `/etc/nginx/templates/default.conf.template` + `DEV_CLOUD_HOST` no ambiente do serviço; validado rodando o container real e confirmando a substituição no config renderizado. | `infra/production/nginx.prod.conf`; `infra/production/docker-compose.prod.yml` |
@@ -116,6 +117,7 @@ Pontos-chave já confirmados no código:
 | P0-10 | ✅ Corrigido | **Zero graceful shutdown em `apps/api` e `apps/worker`.** Nenhum handler de `SIGTERM`/`SIGINT` existia em nenhum dos dois processos — `docker stop`/rolling deploy matava conexões WS, jobs BullMQ em voo e conexões Prisma/Redis abruptamente. Corrigido com handlers que fecham HTTP/WS, BullMQ Workers, Redis e Prisma, com timeout de força-saída; validado chamando a mesma lógica de fechamento diretamente (sem depender de sinal POSIX, que o Windows não emula fielmente — produção roda em container Linux). | `apps/api/src/index.ts`; `apps/worker/src/index.ts`; `packages/setup-queue/src/index.ts` |
 | P0-11 | ✅ Corrigido | **`NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_API_BASE` nunca eram passadas ao `docker build` do web.** `Dockerfile.web` não declarava `ARG`/`ENV` para essas variáveis; como são inlinadas em build-time pelo Next.js e `env_file` do compose só afeta runtime, o bundle de produção herdava o fallback `http://localhost:4000` de cada `page.tsx`. Corrigido com `ARG`/`ENV` no Dockerfile + `build.args` no compose; validado buildando a imagem real e confirmando **zero** ocorrências de `localhost:4000` no bundle client-side servido (`.next/static`, excluindo source maps). | `infra/production/Dockerfile.web`; `infra/production/docker-compose.prod.yml` |
 | P0-12 | ✅ Corrigido | **Divergência `NEXT_PUBLIC_API_URL` vs `NEXT_PUBLIC_API_BASE`.** Treze páginas usavam `NEXT_PUBLIC_API_URL`; só `apps/web/app/ide/page.tsx:6` usava `NEXT_PUBLIC_API_BASE`. Corrigido unificando para `NEXT_PUBLIC_API_URL`. | `apps/web/app/ide/page.tsx:6` |
+| P0-13 | ✅ Corrigido | **Conflito entre listeners globais de `upgrade` impedia relay confiável de IDE/preview.** `runtimeProxy.ts` registrava seu próprio `app.server.on('upgrade', ...)` — um listener *global*, não restrito a `/api/v1/proxy/*` — no mesmo `http.Server` em que `@fastify/websocket` **também** registra um listener `upgrade` global (`onUpgrade`, que despacha *qualquer* upgrade pelo roteador completo do Fastify via `fastify.routing()`). Como `/api/v1/proxy/ide/*` e `/api/v1/proxy/preview/*` eram rotas HTTP normais (não `{websocket:true}`), o próprio `@fastify/websocket` completava o handshake (101) e fechava a conexão via seu `noHandle()` interno — **antes** do handler do proxy (que depende de `await` em sessão/Postgres/Docker) conseguir chamar `proxy.ws()`. Confirmado com um cliente HTTP bruto: o 101 chegava ao cliente, e a resposta de rejeição do handler do proxy vazava como bytes soltos por cima da conexão já "aberta". Na prática isso significava que o relay WebSocket de IDE/preview provavelmente nunca funcionou de forma confiável desde que `@fastify/websocket` foi adicionado — independente de qualquer mudança desta sessão. Efeito colateral direto: a checagem de `Origin` do proxy rodava *antes* do match de path nesse mesmo listener global, então também rejeitava incorretamente upgrades de `/api/v1/terminals/*`. **Correção**: removido por completo o listener raw; IDE e preview agora são rotas `wsHandler` explícitas do próprio `@fastify/websocket` (registradas via `app.route({method:'GET', preHandler, handler, wsHandler})`), cujo `preHandler` valida Origin/sessão/papel DEVELOPER/workspace (ou porta registrada, no caso de preview) **antes** de qualquer 101 ser possível — rejeições agora são respostas HTTP normais (401/403/404), nunca handshake seguido de bytes soltos. O relay em si foi extraído para `wsBridge.ts`, reutilizável (texto/binário, propagação de close code com remapeamento de códigos reservados, timeout de conexão ao upstream, guarda de backpressure/`maxPayload`, fila para mensagens do cliente que chegam antes do upstream conectar — bug real encontrado e corrigido durante os testes). Terminal também passou a usar o mesmo padrão `preHandler` para consistência. Validado com 18 testes reais: `app.server.listenerCount('upgrade') === 1`; nenhum byte de rejeição após um 101 (cliente HTTP bruto); relay ponta a ponta de IDE **e** preview contra um servidor WS local real (`internalHost` mockado só na resolução de rede do container, já que não há Docker neste host); 10 testes de `wsBridge` (echo real, texto+binário, propagação/normalização de close code, timeout de conexão, `maxPayload`, backpressure). | `apps/api/src/lib/{runtimeProxy.ts,wsBridge.ts}`; `apps/api/src/routes/terminals.ts`; `apps/api/src/ws-security.test.ts`; `apps/api/src/lib/wsBridge.test.ts` |
 
 ### P1 — risco real, mitigação parcial ou depende de configuração correta
 
@@ -196,32 +198,37 @@ intocados.
 
 ## 7. Status e próxima etapa recomendada
 
-**Concluído nesta sessão:** dos 12 P0, os 9 que não dependiam da decisão de isolamento de origem
+**Concluído nesta sessão:** dos 13 P0 (12 originais + P0-13, achado durante a correção do P0-4), 10
 foram corrigidos, testados e validados com evidência real de execução (não só leitura de código):
 
 | Correção | Como foi validado |
 |---|---|
 | P0-1 — bind mount de workspace | `docker compose config` confirma o path do host resolvido corretamente |
+| P0-4 — Origin/papel em WebSocket | 18 testes: origin ausente/maliciosa, cookie ausente/inválido/expirado, cross-org |
 | P0-5 — métricas do host protegidas | Testes de integração para anônimo, OWNER de tenant e operador da allowlist |
 | P0-6 — job de migration | build real da imagem + `prisma migrate deploy` contra Postgres vazio, tabelas confirmadas via `\dt` |
 | P0-7 — template do nginx | container nginx real, `envsubst` confirmado no config renderizado |
 | P0-8 — deduplicação + claim transacional | Testes em filas Redis isoladas cobrem coalescência, separação entre orquestrações e tick posterior ao job ativo |
-| P0-9 — sync de cancelamento de agente | Testes de integração contra Postgres e compare-and-swap no worker |
+| P0-9 — sync de cancelamento de agente | Testes de integração contra Postgres com compare-and-swap, inclusive contra sobrescrever um COMPLETED concorrente |
 | P0-10 — graceful shutdown | lógica de fechamento (`app.close`, `prisma.$disconnect`) exercitada diretamente, sem hang/erro |
 | P0-11 — env var do build web | build real da imagem, grep confirma zero `localhost:4000` no bundle client-side |
 | P0-12 — divergência de nome de env var | typecheck limpo após unificação |
+| P0-13 — conflito de listeners `upgrade` | 18 testes: `listenerCount('upgrade')===1`, nenhum byte pós-101, relay real de IDE **e** preview ponta a ponta, 10 testes de `wsBridge` (echo real, close code, timeout, backpressure) |
 
-Typecheck (`npm run typecheck`) e a suíte de testes (`vitest run`) rodam limpos no restante do
-projeto — os únicos 3 arquivos que falham (`e2e.test.ts`, `git-engine`, `workspace-engine`) falham
-pela mesma razão pré-existente e documentada na Fase 0 (sem relação com as correções acima): este
-host Windows não tem `/var/run/docker.sock`, então essas suítes — que já falhavam antes de qualquer
-mudança desta sessão — continuam falhando exatamente do mesmo jeito. Nenhuma regressão foi
-introduzida (77 de 83 testes passam, contra 64 de 70 antes — a diferença de 13 são só os testes
-novos escritos para as correções acima).
+Typecheck (`npm run typecheck`, monorepo inteiro) e build de produção (`tsc -p apps/api/tsconfig.json`)
+rodam limpos. A suíte de testes (`vitest run`) roda limpa no restante do projeto — os únicos 3
+arquivos que falham (`e2e.test.ts`, `git-engine`, `workspace-engine`) falham pela mesma razão
+pré-existente e documentada na Fase 0 (sem relação com as correções acima): este host Windows não
+tem `/var/run/docker.sock`, então essas suítes — que já falhavam antes de qualquer mudança desta
+sessão — continuam falhando exatamente do mesmo jeito. Nenhuma regressão foi introduzida (106 de 112
+testes passam, contra 64 de 70 antes da sessão — a diferença são só os testes novos escritos para as
+correções acima).
 
-**Pendente:** P0-2, P0-3, P0-4 (isolamento de origem e de rede — núcleo das Fases 2-4) e as Fases
-1, 5 (o restante), 6-9 por completo. Nada disso foi commitado — as mudanças estão apenas no working
-tree, aguardando revisão e autorização explícita para commit/push.
+**Pendente:** P0-2 e P0-3 (isolamento de origem e de rede — núcleo das Fases 2-4, dependem da decisão
+de domínio) e as Fases 1, 5 (o restante), 6-9 por completo.
 
-A sequência sugerida continua sendo: confirmar a arquitetura-alvo da Fase 2 (subdomínio de runtime +
-wildcard cert, a decisão de maior custo de reversão) antes de atacar P0-2/P0-3/P0-4.
+A sequência combinada é: confirmar a arquitetura de domínios (`app.<domínio>` para painel+API via
+`/api`, `*.runtime.<domínio>` para IDE/preview isolados — domínio real configurável por env, sem
+depender de DNS/certificado para implementar) → isolamento de origem → WebSockets (concluído aqui,
+P0-4/P0-13) → redes Docker por workspace (P0-3) → Runtime Gateway (reaproveitando `wsBridge.ts`
+construído aqui) → PWA/mobile → testes finais.
