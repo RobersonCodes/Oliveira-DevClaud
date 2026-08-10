@@ -1,9 +1,10 @@
 # Hardening Roadmap — Oliveira DevCloud
 
-**Status:** Fase 0 concluída. Dos 15 P0 registrados, 13 foram corrigidos e validados com evidência
-real (build, integração, relay WebSocket e Chromium). O Runtime Gateway está implementado para um
-site registrável separado do painel; DNS/certificado wildcard/nginx ficam para o deploy real. P0-3
-(rede Docker dedicada por workspace) e as Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
+**Status:** Fase 0 concluída. Dos 15 P0 registrados, 14 foram corrigidos e validados com evidência
+real (build, integração, relay WebSocket, Chromium e — a partir desta sessão — containers/redes Docker
+reais). O Runtime Gateway está implementado para um site registrável separado do painel; DNS/
+certificado wildcard/nginx ficam para o deploy real. As Fases 1, 5(resto), 6-9 continuam pendentes —
+ver Seção 7.
 **Data:** 2026-08-10
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -90,7 +91,7 @@ Pontos-chave já confirmados no código:
 |---|---|---|
 | Browser ↔ Web/API (internet pública) | Autenticada por cookie, CORS single-origin | `apps/api/src/app.ts:41` |
 | Painel de controle ↔ Conteúdo de runtime (IDE/preview) | Isolada por origem, site registrável, ticket e cookie `__Host-` | `apps/api/src/lib/runtimeGateway.ts` |
-| Workspace ↔ outro Workspace | **Violada — mesma rede bridge** | `packages/workspace-engine/src/index.ts:84` |
+| Workspace ↔ outro Workspace | Isolada — rede Docker dedicada por workspace, sem rota entre redes bridge distintas | `packages/workspace-engine/src/network.ts` |
 | Workspace ↔ Docker socket do host | Intacta — socket nunca montado em workspace | confirmado via busca exaustiva (agente de pesquisa) |
 | Workspace ↔ Postgres/Redis | Intacta hoje, mas por **acidente de topologia** (redes Compose distintas), não por design explícito | `infra/production/docker-compose.prod.yml` sem `networks:` compartilhada |
 | API/Worker ↔ Docker daemon | **Privilégio não reduzido** — 2 processos com socket bruto, sem broker/allow-list | `infra/production/docker-compose.prod.yml:22,30` |
@@ -106,7 +107,7 @@ Pontos-chave já confirmados no código:
 |---|---|---|---|
 | P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
 | P0-2 | ✅ Corrigido (app, validado em navegador real) / ⏳ nginx+DNS+cert pendentes | **Painel e conteúdo de runtime compartilhavam a mesma origem.** O Runtime Gateway agora serve IDE/preview em hosts exclusivos de um `RUNTIME_BASE_DOMAIN` que, em produção, deve pertencer a outro domínio registrável. Um ticket HMAC bearer de 60s é trocado por cookie `__Host-`, host-only, `Secure` e `SameSite=None`; membership e papel são revalidados em toda requisição. WebSocket e mutações exigem `Origin` próprio exato; GET/HEAD tratam corretamente a ausência legítima desse header e usam Fetch Metadata como defesa adicional. CSP, `Referrer-Policy`, `Permissions-Policy` e `nosniff` são impostos tanto no redirect quanto na resposta efetivamente copiada pelo proxy. O proxy remove `X-Frame-Options` conflitante e qualquer atributo `Domain` recebido em `Set-Cookie` upstream. `/api/v1/proxy/*` retorna 410 em produção. Validado com integração e Chromium real, inclusive iframe, redirect, assets, WebSocket e ataque sibling com cookie da vítima. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts`; `apps/api/e2e-browser/runtimeGateway.spec.ts` |
-| P0-3 | ⏳ Pendente | **Todos os workspaces compartilham a rede Docker bridge default — sem isolamento entre tenants.** Um workspace comprometido alcança por IP qualquer outro workspace de qualquer organização, incluindo seu code-server `--auth none` na porta 13337 (que só não é exposta ao host, mas é alcançável na rede interna). Fase 3. | `packages/workspace-engine/src/index.ts:84`, `packages/ide-engine/src/index.ts:55` |
+| P0-3 | ✅ Corrigido | **Todos os workspaces compartilhavam a rede Docker bridge default — sem isolamento entre tenants.** Cada workspace agora recebe sua própria rede Docker dedicada (`odc-ws-net-<workspaceId>`, driver `bridge`), criada/removida de forma idempotente e nunca compartilhada entre workspaces — Docker não roteia entre redes bridge distintas por padrão, o que é o que efetivamente bloqueia o acesso cross-workspace por IP. O Runtime Gateway (relay) é conectado apenas à rede do workspace que está servindo no momento, via `docker network connect`/`disconnect` ao redor de create()/destroy(), identificado em produção por `RELAY_CONTAINER_NAME`/`container_name: odc-api`. Validado com Docker real (Docker Desktop, não CI) neste host: dois workspaces reais, um não consegue nem abrir uma conexão TCP para uma porta com listener ativo no outro; `create()` reaproveita a mesma rede em chamadas repetidas; `destroy()` remove container+rede sem tocar na rede de outro workspace e é idempotente; o relay é conectado/desconectado corretamente; `pruneOrphanedNetworks()` remove só redes rotuladas com zero containers. `Privileged=false`, ausência de `docker.sock` no workspace e `CapDrop:['ALL']`/`no-new-privileges` já existiam e seguem cobertos pelos testes existentes. | `packages/workspace-engine/src/network.ts`; `packages/workspace-engine/src/index.ts`; `packages/workspace-engine/src/network.test.ts`; `packages/ide-engine/src/index.ts`; `infra/production/docker-compose.prod.yml` |
 | P0-4 | ✅ Corrigido | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) validava o header `Origin`.** Qualquer site na internet podia tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não havia defesa em profundidade além da checagem de sessão. Corrigido com `wsOrigin.ts` (comparação exata contra `WEB_ORIGIN`, nunca por sufixo/prefixo) aplicado a terminal e runtime proxy; papel `DEVELOPER` agora também exigido no WS do runtime proxy (antes só checava membership); ambos migrados para `preHandler` de modo que a validação — Origin, sessão, papel, workspace — sempre roda antes de qualquer 101 (ver P0-13). 18 testes cobrindo origin ausente/maliciosa (com domínios parecidos), cookie ausente/inválido/expirado, cross-org. | `apps/api/src/lib/wsOrigin.ts`; `apps/api/src/routes/terminals.ts`; `apps/api/src/lib/runtimeProxy.ts` |
 | P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
 | P0-6 | ✅ Corrigido | **Migrations do Prisma nunca rodam automaticamente em produção.** Nem o `CMD` do `Dockerfile.api` nem `docker-compose.prod.yml` executam `prisma migrate deploy` — um host limpo sobe a API contra um schema vazio. Corrigido com serviço `migrate` one-shot (`depends_on: service_completed_successfully`); validado de ponta a ponta contra Postgres vazio usando a imagem real. | `infra/production/docker-compose.prod.yml` |
@@ -199,8 +200,8 @@ intocados.
 
 ## 7. Status e próxima etapa recomendada
 
-**Concluído nesta sessão:** dos 15 P0 registrados (12 originais + 3 descobertos durante o
-hardening), 13 foram corrigidos, testados e validados com evidência real de execução:
+**Concluído nesta e em sessões anteriores:** dos 15 P0 registrados (12 originais + 3 descobertos
+durante o hardening), 14 foram corrigidos, testados e validados com evidência real de execução:
 
 | Correção | Como foi validado |
 |---|---|
@@ -216,15 +217,27 @@ hardening), 13 foram corrigidos, testados e validados com evidência real de exe
 | P0-11 — env var do build web | build real da imagem, grep confirma zero `localhost:4000` no bundle client-side |
 | P0-12 — divergência de nome de env var | typecheck limpo após unificação |
 | P0-13 — conflito de listeners `upgrade` | 18 testes: `listenerCount('upgrade')===1`, nenhum byte pós-101, relay real de IDE **e** preview ponta a ponta, 10 testes de `wsBridge` (echo real, close code, timeout, backpressure) |
+| P0-3 — rede Docker dedicada por workspace | 6 testes com Docker real (Docker Desktop, host Windows deste agente — primeira vez que este repositório valida contra um daemon Docker real fora do CI Linux): duas redes distintas por dois workspaces reais; bloqueio de conexão TCP cross-workspace contra uma porta com listener real; reaproveitamento idempotente da rede em `create()` repetido; `destroy()` remove container+rede sem afetar a rede de outro workspace e é idempotente (bug real encontrado e corrigido: a 2ª chamada a `destroy()` lançava 404 porque `container.remove()` não tratava "already gone"); relay conectado/desconectado corretamente na rede certa; `pruneOrphanedNetworks()` remove só rede órfã rotulada. Suíte existente de `workspace-engine` (8 testes) e `git-engine` (3 testes) também rodaram contra esse mesmo daemon real e passaram sem regressão. |
 
-Typecheck (`npm run typecheck`, monorepo inteiro), build de produção da API (`tsc -p
-apps/api/tsconfig.json`) e build de produção do web (`next build`) rodam limpos. A suíte de testes
-(`vitest run`) roda limpa no restante do projeto — os únicos 3 arquivos que falham (`e2e.test.ts`,
-`git-engine`, `workspace-engine`) falham pela mesma razão pré-existente e documentada na Fase 0 (sem
-relação com as correções acima): este host Windows não tem `/var/run/docker.sock`, então essas
-suítes — que já falhavam antes de qualquer mudança desta sessão — continuam falhando exatamente do
-mesmo jeito. Nenhuma regressão foi introduzida; a contagem exata da última execução fica registrada
-no relatório do commit/CI para não congelar números que mudam a cada novo teste.
+Typecheck (`npm run typecheck`, monorepo inteiro), lint, build de produção da API (`tsc -p
+apps/api/tsconfig.json`), build de produção do web (`next build`) e build dos demais pacotes rodam
+limpos.
+
+**Atualização desta sessão (Etapa 1/Fase 3):** ao contrário das sessões anteriores, este host Windows
+tinha o Docker Desktop instalável mas não iniciado; ele foi iniciado nesta sessão, o que tornou
+possível — pela primeira vez neste repositório fora do CI Linux — rodar a suíte inteira contra
+Postgres, Redis **e** Docker reais (Postgres/Redis efêmeros via `docker run`, migrations aplicadas de
+verdade, imagem `oliveira-devcloud/workspace-node:1.0` buildada de verdade). Resultado: 164 de 166
+testes passaram. As únicas 2 falhas (`apps/api/src/ws-security.test.ts`, casos "passes Origin/cookie/
+role checks (fails later, resolving the real container)" para IDE e preview) foram isoladas com
+`git stash` e comprovadamente **pré-existentes e não relacionadas à Fase 3**: falham identicamente no
+código antes de qualquer mudança desta sessão, porque o teste espera `500` para um `containerId` de
+fixture inexistente, mas com um daemon Docker real alcançável o erro que `dockerode` propaga já vem
+com `statusCode: 404` (Fastify honra esse status automaticamente) — um pressuposto do teste sobre o
+formato do erro num ambiente sem Docker algum, não uma regressão de rede/isolamento. Registrado aqui
+como um defeito de teste conhecido para quem revisitar P0-4/P0-13 ou a Fase 9; não bloqueia a Fase 3.
+Nenhuma outra regressão foi introduzida; a contagem exata de cada execução fica registrada no
+relatório do commit/CI para não congelar números que mudam a cada novo teste.
 
 **Runtime Gateway (P0-2) — o que foi implementado:**
 - `apps/api/src/lib/runtimeTicket.ts` — ticket assinado (HMAC-SHA256), stateless, TTL de 60s.
@@ -272,9 +285,12 @@ registrável separado do control plane, DNS wildcard, certificado TLS wildcard e
 `nginx.prod.conf`. O exemplo de produção usa `.example.com` no painel e `.example.net` no runtime
 justamente para tornar essa fronteira explícita.
 
-**Pendente no roadmap geral:** P0-3 (rede Docker dedicada por workspace — isolamento entre
-workspaces na mesma rede `bridge`) e as Fases 1, 5 (o restante), 6-9 por completo.
+**Pendente no roadmap geral:** o último P0 (P0-3) foi corrigido nesta sessão — não resta nenhum P0
+aberto. Continuam pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o
+agendamento periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para
+a Fase 7 (item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua
+entrega na Fase 7").
 
-A sequência sugerida agora é: redes Docker por workspace (P0-3, o último P0) → wiring de nginx/DNS/
-certificado real para o Runtime Gateway já pronto → PWA/mobile → testes finais em CI/Linux (onde
-`git-engine`/`workspace-engine`/`e2e` finalmente rodam de verdade).
+A sequência sugerida agora é: Runtime Broker/Fase 4 (retirar `docker.sock` de api/worker) → cliente
+HTTP/WS centralizado do frontend/Fase 1 → wiring de nginx/DNS/certificado real para o Runtime Gateway
+já pronto/Fase 2 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).

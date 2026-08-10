@@ -1,4 +1,5 @@
 import Docker from 'dockerode';
+import { WORKSPACE_NETWORK_NAME_PREFIX } from '@oliveira/workspace-engine';
 
 export const IDE_PORT = 13337;
 
@@ -19,9 +20,12 @@ export class DockerIdeEngine {
   async internalHost(containerId: string): Promise<string> {
     const info = await this.container(containerId).inspect();
     const networks = info.NetworkSettings.Networks ?? {};
-    const preferred = process.env.WORKSPACE_NETWORK;
-    const preferredIp = preferred ? networks[preferred]?.IPAddress : undefined;
-    const ip = preferredIp || Object.values(networks).map(n => n.IPAddress).find(Boolean) || info.NetworkSettings.IPAddress;
+    // Each workspace container is attached to exactly one dedicated network (see
+    // workspace-engine/src/network.ts) — that name is preferred defensively in case more than one
+    // network is ever present, but any attached network's address is a correct fallback since a
+    // workspace container never joins another workspace's network.
+    const dedicated = Object.entries(networks).find(([name]) => name.startsWith(WORKSPACE_NETWORK_NAME_PREFIX))?.[1]?.IPAddress;
+    const ip = dedicated || Object.values(networks).map(n => n.IPAddress).find(Boolean) || info.NetworkSettings.IPAddress;
     if (!ip) throw Object.assign(new Error('WORKSPACE_NETWORK_ADDRESS_UNAVAILABLE'), { statusCode: 503 });
     return ip;
   }

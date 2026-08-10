@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import crypto from 'node:crypto';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DockerWorkspaceEngine } from './index.js';
+import { pruneOrphanedNetworks } from './network.js';
 
 // Real Docker container lifecycle — no mocking of dockerode. Uses a lightweight `alpine:3.20`
 // override instead of the real (heavyweight, apt/code-server-installing) workspace image: this
@@ -41,6 +42,9 @@ afterEach(async () => {
     await container.stop({ t: 1 }).catch(() => undefined);
     await container.remove({ force: true }).catch(() => undefined);
   }
+  // create() now also creates a dedicated network per workspace (Fase 3/P0-3); most of the tests
+  // here only clean up the container, not the workspace, so sweep whatever that leaves orphaned.
+  await pruneOrphanedNetworks(docker).catch(() => undefined);
 });
 
 afterAll(async () => {

@@ -74,7 +74,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const { workspaceId } = request.params as { workspaceId: string };
     const { workspace, user } = await loadWorkspace(request, workspaceId, Role.ADMIN);
     await prisma.workspace.update({ where: { id: workspace.id }, data: { status: WorkspaceStatus.DESTROYING } });
-    if (workspace.containerId) await engine.destroy(workspace.containerId).catch(error => app.log.warn(error));
+    if (workspace.containerId) await engine.destroy(workspace.containerId, workspace.id).catch(error => app.log.warn(error));
     await prisma.workspace.delete({ where: { id: workspace.id } });
     await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'WORKSPACE_DESTROYED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
     await recordActivity({ organizationId: workspace.project.organizationId, userId: user.id, type: 'workspace.destroyed', message: 'Workspace removido' });

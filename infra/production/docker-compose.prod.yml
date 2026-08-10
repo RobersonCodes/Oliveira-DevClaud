@@ -23,8 +23,19 @@ services:
     command: ["npm","run","db:migrate:deploy"]
   api:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
+    # Fixed name so the container can identify and reconnect *itself* (see RELAY_CONTAINER_NAME
+    # below) to each workspace's dedicated network — `docker network connect` needs a stable
+    # container name/ID, and Compose otherwise assigns a fresh one on every recreate.
+    container_name: odc-api
     restart: unless-stopped
     env_file: ../../.env.production
+    environment:
+      # Must match `container_name` above. Lets workspace-engine (running inside this very
+      # container) join a workspace's isolated network so IDE/preview relay can reach it by IP —
+      # without this, api is only on the compose default network and per-workspace networks are
+      # unreachable from here. Unset in dev/CI on purpose: there, this process runs directly on the
+      # host, which can already route to any Docker bridge network without joining it explicitly.
+      RELAY_CONTAINER_NAME: odc-api
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }

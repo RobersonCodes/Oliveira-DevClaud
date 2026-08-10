@@ -51,3 +51,28 @@ O terminal usa xterm.js no browser, WebSocket autenticado no control plane e Doc
 ## v0.9 Review & Merge boundary
 
 Orchestrated agent branches are never merged directly into the main checkout. The API snapshots completed agent worktrees, creates an ephemeral `review/<orchestrationId>` branch, merges agent branches there, detects conflicts, and runs allow-listed integration gates in that combined codebase. Human approval by `ADMIN`/`OWNER` is required for the final merge. Approval uses optimistic concurrency: the main `HEAD` must still equal the commit captured when review began.
+
+## Hardening Fase 3 — rede Docker dedicada por workspace (P0-3)
+
+Cada workspace passou a receber sua própria rede Docker (`odc-ws-net-<workspaceId>`, driver `bridge`,
+labels `dev.oliveira.devcloud=workspace-network` + `dev.oliveira.workspace-id`), criada/reaproveitada
+de forma idempotente por `packages/workspace-engine/src/network.ts` e conectada ao container do
+workspace via `HostConfig.NetworkMode` na criação — não existe mais uma rede `bridge`/`WORKSPACE_NETWORK`
+compartilhada entre todos os workspaces. Como o Docker não roteia entre redes bridge distintas por
+padrão, isso é o que efetivamente impede que o workspace A alcance o workspace B por IP.
+
+O Runtime Gateway (`apps/api`) continua precisando alcançar o container de cada workspace por IP para
+retransmitir IDE/preview (`ide-engine`'s `internalHost()`), então o próprio container `api` — em
+produção, identificado por `RELAY_CONTAINER_NAME`/`container_name: odc-api` em
+`infra/production/docker-compose.prod.yml` — é conectado à rede do workspace via
+`docker network connect` no momento da criação, e desconectado dela em `destroy()`. Em dev/CI, onde o
+processo roda direto no host (não containerizado), essa conexão é desnecessária e não acontece —
+o host já enxerga qualquer rede bridge do Docker sem precisar se juntar a ela explicitamente.
+
+`destroy()` remove o container e, em seguida, desconecta o relay e remove a rede — nunca por nome
+adivinhado, sempre pelo nome derivado deterministicamente do `workspaceId`, então jamais afeta a rede
+de outro workspace. Se a rede ainda tiver algum endpoint preso (ex.: uma falha de desconexão), a
+remoção é deixada para `pruneOrphanedNetworks()` (mesmo módulo), que remove apenas redes com o label
+acima e zero containers conectados; hoje é invocável sob demanda e pensada para ser agendada
+periodicamente pelo reaper da Fase 7 (ainda não implementada como job agendado — ver
+`docs/HARDENING-ROADMAP.md`).

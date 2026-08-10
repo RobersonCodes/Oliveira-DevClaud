@@ -6,6 +6,7 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "dependencies": {
+    "@oliveira/workspace-engine": "*",
     "dockerode": "^4.0.6"
   },
   "devDependencies": {
