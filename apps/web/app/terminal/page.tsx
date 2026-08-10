@@ -4,8 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { apiFetch, apiWebSocket } from '../../lib/apiClient';
 
 type TerminalSession = {
   id: string;
@@ -46,8 +45,7 @@ function TerminalCanvas({ session }: { session: TerminalSession }) {
       fit.fit();
       terminal.current = xterm;
 
-      const wsBase = API.replace(/^http/, 'ws');
-      const ws = new WebSocket(`${wsBase}/api/v1/terminals/${session.id}/connect`);
+      const ws = apiWebSocket(`/api/v1/terminals/${session.id}/connect`);
       ws.binaryType = 'arraybuffer';
       socket.current = ws;
 
@@ -108,7 +106,7 @@ export default function TerminalPage() {
 
   useEffect(() => {
     if (!workspaceId) return;
-    fetch(`${API}/api/v1/terminals?workspaceId=${encodeURIComponent(workspaceId)}`, { credentials: 'include' })
+    apiFetch(`/api/v1/terminals?workspaceId=${encodeURIComponent(workspaceId)}`)
       .then(async r => r.ok ? r.json() : Promise.reject(await r.json()))
       .then((items: TerminalSession[]) => { setSessions(items); setSelected(items[0] ?? null); })
       .catch(() => setMessage('Não foi possível carregar os terminais deste workspace.'));
@@ -117,8 +115,8 @@ export default function TerminalPage() {
   async function createTerminal() {
     if (!workspaceId) { setMessage('Informe um workspaceId na URL.'); return; }
     setMessage('Criando sessão persistente...');
-    const response = await fetch(`${API}/api/v1/terminals`, {
-      method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' },
+    const response = await apiFetch('/api/v1/terminals', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId, title: `Terminal ${sessions.length + 1}`, cols: 120, rows: 34 })
     });
     const body = await response.json().catch(() => ({}));
@@ -129,7 +127,7 @@ export default function TerminalPage() {
   }
 
   async function closeTerminal(id: string) {
-    await fetch(`${API}/api/v1/terminals/${id}`, { method: 'DELETE', credentials: 'include' });
+    await apiFetch(`/api/v1/terminals/${id}`, { method: 'DELETE' });
     setSessions(current => current.filter(item => item.id !== id));
     if (selected?.id === id) setSelected(null);
   }

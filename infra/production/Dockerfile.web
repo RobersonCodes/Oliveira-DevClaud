@@ -3,13 +3,8 @@ WORKDIR /app
 COPY package*.json tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
-# Next.js inlines NEXT_PUBLIC_* into the client bundle at `next build` time, not at container start —
-# `env_file`/`environment` in docker-compose only affect the running container's process.env, which
-# is too late. It must be passed as a build ARG (docker-compose.prod.yml wires this to the
-# NEXT_PUBLIC_API_URL variable in .env.production) or every page falls back to its hardcoded
-# `http://localhost:4000` default, which only works on the machine running the browser, never in
-# production.
-ARG NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+# Fase 1 hardening: the client bundle no longer references any API host at all — every request is
+# same-origin and relative (see apps/web/lib/apiClient.ts and apps/web/next.config.js), routed by
+# nginx in production. There is nothing left to inline as a build ARG here.
 RUN npm install && npm run build -w @oliveira/web
 CMD ["npm","run","start","-w","@oliveira/web"]

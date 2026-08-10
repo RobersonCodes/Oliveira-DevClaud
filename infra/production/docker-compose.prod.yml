@@ -78,13 +78,7 @@ services:
       migrate: { condition: service_completed_successfully }
       runtime-broker: { condition: service_healthy }
   web:
-    build:
-      context: ../..
-      dockerfile: infra/production/Dockerfile.web
-      # Build-time only (see the comment in Dockerfile.web) — env_file below is for the container's
-      # runtime env, which Next.js's already-built client bundle can no longer read.
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.web }
     restart: unless-stopped
     env_file: ../../.env.production
     depends_on: [api]

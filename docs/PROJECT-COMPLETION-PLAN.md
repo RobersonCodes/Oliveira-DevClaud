@@ -45,13 +45,13 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `5f35dfa` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
-| Etapa ativa | Etapa 4 — cliente HTTP/WebSocket centralizado do frontend (Fase 1) |
+| Commit de referência | _preencher após o commit desta sessão_ |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; Fase 1 (cliente HTTP/WS centralizado) concluída; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
+| Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo (Fase 5) |
 | Responsável | Claude |
-| Status | `PENDENTE` |
-| Próxima ação única | Inventariar `fetch`, URLs de API e conexões WebSocket em `apps/web` e desenhar o cliente HTTP/WS centralizado (Fase 1) |
-| Bloqueios externos | Nenhum bloqueio externo conhecido para a Etapa 4. Etapa 2 permanece `PARCIAL`, aguardando o usuário executar `docs/RUNTIME-GATEWAY-DEPLOY.md` no servidor real. |
+| Status | `EM ANDAMENTO` |
+| Próxima ação única | Auditar Dockerfiles de produção (`infra/production/Dockerfile.{api,web,worker}`): build multi-stage, usuário não-root, healthcheck e instalação determinística de dependências (P1-6 do roadmap) |
+| Bloqueios externos | Nenhum bloqueio externo conhecido para a Etapa 5. Etapa 2 permanece `PARCIAL`, aguardando o usuário executar `docs/RUNTIME-GATEWAY-DEPLOY.md` no servidor real. |
 
 ### Baseline de validação conhecido
 
@@ -145,7 +145,7 @@ fase apenas porque um novo risco foi descoberto.
 
 ### Fase 1 — cliente web HTTP/WebSocket centralizado
 
-**Status:** `PARCIAL`
+**Status:** `CONCLUÍDA`
 
 **Execução:** Claude — Etapa 4.
 
@@ -154,24 +154,69 @@ same-origin e uma única política para HTTP e WebSocket.
 
 **Implementação:**
 
-- [ ] Inventariar `fetch`, URLs de API e conexões WebSocket em `apps/web`.
-- [ ] Criar cliente central para HTTP, erros e sessão expirada.
-- [ ] Derivar WebSocket de `window.location` e caminhos relativos.
-- [ ] Migrar login, dashboard, projetos, IDE, terminal e Command Center.
-- [ ] Remover fallbacks de produção para `localhost:4000`.
-- [ ] Cobrir 401, sessão expirada, indisponibilidade e reconexão.
-- [ ] Atualizar documentação e variáveis de ambiente obsoletas.
+- [x] Inventariar `fetch`, URLs de API e conexões WebSocket em `apps/web`.
+- [x] Criar cliente central para HTTP, erros e sessão expirada.
+- [x] Derivar WebSocket de `window.location` e caminhos relativos.
+- [x] Migrar login, dashboard, projetos, IDE, terminal e Command Center.
+- [x] Remover fallbacks de produção para `localhost:4000`.
+- [x] Cobrir 401, sessão expirada, indisponibilidade e reconexão.
+- [x] Atualizar documentação e variáveis de ambiente obsoletas.
 
 **Critérios de aceite:**
 
-- Zero `localhost:4000` no bundle servido em produção.
-- Nenhuma página implementa isoladamente a política de autenticação/sessão.
-- HTTP funciona sob HTTPS e WebSocket sob WSS pelo nginx.
-- Sessão expirada leva o usuário ao login sem falha silenciosa.
+- [x] Zero `localhost:4000` no bundle servido em produção.
+- [x] Nenhuma página implementa isoladamente a política de autenticação/sessão.
+- [x] HTTP funciona sob HTTPS e WebSocket sob WSS pelo nginx. (produção: nginx já fazia isso antes da
+      Fase 1; validado nesta fase que o client não injeta mais nenhum host próprio que quebraria isso.
+      WSS ponta a ponta em domínio real segue dependente da Etapa 2, como já registrado na Fase 2.)
+- [x] Sessão expirada leva o usuário ao login sem falha silenciosa.
 
 **Validação mínima:** typecheck, lint, build web, busca no bundle e Playwright do fluxo de sessão.
 
-**Evidências:** _preencher durante a execução._
+**Evidências:**
+
+- `apps/web/lib/apiClient.ts` (novo): `apiFetch`/`apiJson` (redirect para `/login` em `401`, exceto
+  `/api/v1/auth/*`), `apiWebSocketUrl`/`apiWebSocket` (deriva `ws:`/`wss:` de `window.location.protocol`,
+  host relativo), `apiEventSource` (`EventSource` com `withCredentials:true`).
+- `apps/web/next.config.js` (novo): `rewrites()` só ativo em dev (`API_PORT`, default `4000`); em
+  produção o nginx já roteia `/api/` antes de chegar ao Next — código morto em produção por desenho.
+- 14 páginas migradas (`login`, `page.tsx` raiz, `projects`, `ide`, `terminal`, `command-center`,
+  `agents`, `orchestrations`, `onboarding`, `import`, `code-intelligence`, `contract-intelligence`,
+  `repository-map`, `settings/secrets`): removido `NEXT_PUBLIC_API_URL`/fallback `localhost:4000`,
+  toda chamada usa `apiFetch`/`apiJson` com caminho relativo. `ide/page.tsx` mantém comentário
+  explícito de que a URL de runtime ticket NÃO deve virar relativa (cross-origin por desenho,
+  Fase 2/P0-2). `terminal/page.tsx` usa `apiWebSocket`; `onboarding/page.tsx` usa `apiEventSource`.
+- `infra/production/Dockerfile.web`, `infra/production/docker-compose.prod.yml`, `.env.example`,
+  `.env.production.example` e `.env.production`: `NEXT_PUBLIC_API_URL`/`ARG`/`ENV`/`build.args`
+  removidos, substituídos por comentário explicando o roteamento same-origin.
+- `npm run typecheck` e `npm run lint`: aprovados no monorepo após a migração.
+- `npm run build -w @oliveira/web`: aprovado; busca por `localhost:4000` no diretório `.next` de
+  build de produção retornou zero ocorrências.
+- **Validação end-to-end com infraestrutura real** (Postgres/Redis efêmeros via `docker run`, Docker
+  Desktop real, `next dev` na porta 3001 fazendo o rewrite para a API real na porta 4000), sessão de
+  2026-08-10:
+  - HTTP via proxy: `POST /api/v1/auth/register` (201 + `Set-Cookie`), `GET /api/v1/organizations`
+    sem cookie (401 real da API, não 404 do Next — prova que o rewrite alcançou o destino) e com
+    cookie (200 com dados reais) — todos por `http://localhost:3001` (nunca `:4000`).
+  - Pilha completa Fase 1 → Fase 4 (broker) → Docker real: criação de organização, projeto e
+    workspace real (`containerId` real, `status: RUNNING`) inteiramente via `http://localhost:3001`.
+  - WebSocket de terminal via proxy: sessão de terminal real criada, conectada via
+    `ws://localhost:3001/api/v1/terminals/<id>/connect` (upgrade concluído pelo rewrite do
+    `next.config.js`), I/O bidirecional real confirmado com um comando `echo` de fato executado
+    dentro do tmux do container e ecoado de volta pelo WebSocket.
+  - SSE (`EventSource`) via proxy: `setup job` real criado e consumido via
+    `GET http://localhost:3001/api/v1/setup/jobs/<id>/events` com `curl -N`, múltiplos eventos
+    `event: setup` distintos recebidos em stream (não um único corpo bufferizado), confirmando que o
+    rewrite não quebra respostas de streaming HTTP.
+  - Achado durante essa validação (não bloqueante para esta fase, registrado como `P1-18` em
+    `docs/HARDENING-ROADMAP.md`): o handler WS de terminal no backend (`apps/api/src/routes/terminals.ts`)
+    tem um bug pré-existente, não relacionado à mudança same-origin — usa `Buffer.isBuffer(raw)` para
+    decidir se o payload é o envelope JSON `{type:'input'|'resize',...}`, mas a lib `ws` sempre entrega
+    `data` como `Buffer` (mesmo para frames de texto), então esse branch nunca é `false` e o parse JSON
+    nunca roda; cada tecla digitada no terminal real escreve o JSON literal no pty em vez do caractere,
+    e `resize` nunca é aplicado. Confirmado isoladamente com um servidor `ws` mínimo e reproduzido fim a
+    fim contra um terminal real. Fora do escopo da Fase 1 (o mecanismo de proxy/roteamento em si
+    funciona corretamente); fica pendente para correção em fase própria.
 
 ---
 
@@ -654,6 +699,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Claude | Fase 3 (Etapa 1) | `CONCLUÍDA` | Rede Docker dedicada por workspace implementada (`packages/workspace-engine/src/network.ts`), `create()`/`destroy()` e `ide-engine` atualizados, `docker-compose.prod.yml`/env examples atualizados; 6 testes novos + suíte existente validados localmente contra Docker real (Docker Desktop iniciado nesta sessão) e depois em CI Linux real via push (`gh run` 31383975282) — local `npm test`: 164/166; CI: 163/166 + 1 ignorado; em ambos os casos as únicas falhas são o mesmo par pré-existente e não relacionado em `ws-security.test.ts`, isolado via `git stash`; `typecheck`/`lint`/`build` limpos em ambos os ambientes; nenhuma rede/container órfão após a execução; commits `11c36c8`, `68258a9` | Iniciar Etapa 2 (nginx/DNS/cert reais do Runtime Gateway) — depende de acesso a um domínio registrável separado |
 | 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário confirmou os domínios reais (painel `app.oliveiradevcloud.com`, runtime `runtime.oliveiradevcloud-content.com`). Server block real do Runtime Gateway escrito em `infra/production/nginx.prod.conf` (location morta `/runtime/` removida); `docker-compose.prod.yml` com `RUNTIME_BASE_DOMAIN` no nginx; `.env.production(.example)` e `.gitignore` atualizados; novo runbook `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS, certbot HTTP-01/DNS-01, renovação, checklist, recuperação de falha). Validado com Docker real nesta sessão (`nginx:1.27-alpine`, certs autoassinados, `--add-host` simulando a rede do compose): `envsubst` renderiza os domínios reais corretamente, `nginx -t` limpo sem warnings. DNS wildcard, certificado TLS wildcard e validação em domínio real seguem pendentes — dependem de execução do usuário no servidor real, fora do alcance desta sessão | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md`; Claude pode adiantar a Etapa 3 (Fase 4) nesse meio-tempo, se autorizado |
 | 2026-08-10 | Claude | Fase 4 (Etapa 3) | `CONCLUÍDA` | Runtime Broker implementado do zero: `apps/runtime-broker` (novo serviço, único detentor de `docker.sock`) + `packages/runtime-broker-client` (cliente compartilhado). Levantamento prévio achou 14 pontos reais de acesso a `dockerode` (roadmap catalogava só 10) — os 12 pontos únicos (2 eram duplicatas, consolidadas em `packages/repository-bootstrap`) migrados: `workspace-engine`, `ide-engine`, `terminal-engine` (WS interativo real), `git-engine`, `setup-engine`, `review-engine`, `repository-intelligence`, `code-intelligence`, `contract-intelligence`, `agent-engine`, `repository-bootstrap`. Contrato do broker deliberadamente estreito (não é passthrough genérico do Docker) — imagem/bind/rede sempre derivados internamente, nunca aceitos do chamador; `Privileged`/`CapAdd` nem existem no schema. `docker-compose.prod.yml`: novo serviço `runtime-broker` com `docker.sock`; `docker.sock` removido de `api`/`worker` (confirmado via `docker compose config`). Validação: 13 testes de contrato do broker + teste próprio (novo, contra broker+Docker reais) para cada um dos 12 pontos migrados + `apps/api/src/e2e.test.ts` passando de ponta a ponta pelo broker real + correção genuína de `ws-security.test.ts` (as 2 falhas "pré-existentes" da Fase 3 eram, na real, um broker inalcançável mascarado de 500 — agora sobe um broker real e espera o 404 correto). Suíte completa: **189/189 testes, 24/24 arquivos, zero falhas**; `typecheck`/`lint`/`build` limpos no monorepo inteiro. Bug real encontrado e corrigido: `RuntimeBrokerClient` mandava `content-type` mesmo sem body, quebrando `DELETE`/`POST` vazios. P1-5 do roadmap fechado | Etapa 4: cliente HTTP/WS centralizado do frontend (Fase 1) |
+| 2026-08-10 | Claude | Fase 1 (Etapa 4) | `CONCLUÍDA` | `apps/web/lib/apiClient.ts` novo (HTTP/WS/SSE centralizados, redirect automático em `401` exceto rotas de auth); `apps/web/next.config.js` novo (rewrite dev-only para a API); 14 páginas migradas, `NEXT_PUBLIC_API_URL` removido do bundle/Dockerfile/compose/env examples. Validação com Postgres/Redis/Docker reais nesta sessão via `next dev` (porta 3001) proxiando para a API real (porta 4000): HTTP GET/POST/JSON/cookie confirmado; pilha completa Fase 1→Fase 4→Docker real criando organização/projeto/workspace reais; WebSocket de terminal confirmado com I/O bidirecional real (comando `echo` executado no tmux do container e ecoado de volta) através do proxy; SSE de `setup jobs` confirmado com múltiplos eventos reais em stream através do proxy. `typecheck`/`lint`/`build web` limpos; zero `localhost:4000` no build de produção. P1-13 do roadmap fechado. Achado durante a validação (fora do escopo desta fase, não corrigido): bug pré-existente no handler WS de terminal do backend (`apps/api/src/routes/terminals.ts:102-117`) — `Buffer.isBuffer(raw)` é sempre verdadeiro para mensagens da lib `ws` (texto ou binário), então o protocolo JSON `{type:'input'\|'resize'}` nunca é interpretado e cada tecla digitada escreve o envelope JSON literal no pty; registrado como `P1-18` no roadmap | Etapa 5: infraestrutura reproduzível em host limpo (Fase 5) |
 
 ### Modelo para futuras entradas
 

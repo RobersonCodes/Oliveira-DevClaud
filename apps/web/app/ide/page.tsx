@@ -2,8 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { apiFetch } from '../../lib/apiClient';
 
 type Port = { id: string; port: number; label?: string | null; protocol: string };
 
@@ -16,9 +15,12 @@ type Port = { id: string; port: number; label?: string | null; protocol: string 
 // to navigate the panel itself out from under the user.
 const IDE_IFRAME_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-popups allow-popups-to-escape-sandbox';
 
+// The ticket request itself is same-origin (/api/v1/...), but the URL it returns is deliberately
+// NOT same-origin — it points at the Runtime Gateway's own isolated domain (ide-<id>.runtime.<...>),
+// a different registrable site from the panel by design (P0-2). Never rewrite/relativize `data.url`.
 async function requestRuntimeTicket(workspaceId: string, purpose: 'ide' | 'preview', port?: number): Promise<string> {
-  const res = await fetch(`${API}/api/v1/runtime-tickets`, {
-    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+  const res = await apiFetch('/api/v1/runtime-tickets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ workspaceId, purpose, port })
   });
   if (!res.ok) throw new Error('RUNTIME_TICKET_REQUEST_FAILED');
@@ -43,8 +45,8 @@ function IdePageContent() {
   async function load() {
     if (!workspaceId) return;
     const [statusRes, portsRes] = await Promise.all([
-      fetch(`${API}/api/v1/workspaces/${workspaceId}/ide/status`, { credentials: 'include' }),
-      fetch(`${API}/api/v1/workspaces/${workspaceId}/ports`, { credentials: 'include' })
+      apiFetch(`/api/v1/workspaces/${workspaceId}/ide/status`),
+      apiFetch(`/api/v1/workspaces/${workspaceId}/ports`)
     ]);
     if (statusRes.ok) {
       const data = await statusRes.json();
@@ -68,20 +70,20 @@ function IdePageContent() {
 
   async function startIde() {
     setStatus('starting'); setMessage('');
-    const res = await fetch(`${API}/api/v1/workspaces/${workspaceId}/ide/start`, { method: 'POST', credentials: 'include' });
+    const res = await apiFetch(`/api/v1/workspaces/${workspaceId}/ide/start`, { method: 'POST' });
     if (!res.ok) { setStatus('error'); setMessage('Não foi possível iniciar a IDE.'); return; }
     setStatus('running');
   }
 
   async function stopIde() {
-    await fetch(`${API}/api/v1/workspaces/${workspaceId}/ide/stop`, { method: 'POST', credentials: 'include' });
+    await apiFetch(`/api/v1/workspaces/${workspaceId}/ide/stop`, { method: 'POST' });
     setStatus('stopped');
   }
 
   async function addPort() {
     const parsed = Number(port);
-    const res = await fetch(`${API}/api/v1/workspaces/${workspaceId}/ports`, {
-      method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+    const res = await apiFetch(`/api/v1/workspaces/${workspaceId}/ports`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ port: parsed, label })
     });
     if (!res.ok) { setMessage('Não foi possível registrar essa porta.'); return; }
