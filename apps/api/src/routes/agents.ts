@@ -176,9 +176,25 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!task.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     await engine.cancel(task.workspace.containerId, task.id).catch(() => undefined);
     const now = new Date();
-    await prisma.agentTask.update({ where: { id: task.id }, data: { status: AgentTaskStatus.CANCELLED, finishedAt: now, reviewStatus: AgentReviewStatus.READY } });
+    // A task started as part of an orchestration DAG has a matching OrchestrationStep; killing the
+    // agent's tmux session here without also moving that step out of RUNNING left it stuck forever
+    // (the worker's tick() only reconciles COMPLETED/FAILED/UNKNOWN runtimes, and the killed session
+    // reports neither — it just stops existing). Cancelling the step, and the orchestration it
+    // belongs to, keeps both in sync with the agent actually being stopped.
+    const step = await prisma.orchestrationStep.findUnique({ where: { agentTaskId: task.id } });
     const latestRun = task.runs[0];
-    if (latestRun) await prisma.agentRun.update({ where: { id: latestRun.id }, data: { cancelledAt: now, finishedAt: now } });
+    await prisma.$transaction([
+      ...(step && step.status === 'RUNNING'
+        ? [
+            prisma.orchestrationStep.update({ where: { id: step.id }, data: { status: 'CANCELLED', finishedAt: now } }),
+            prisma.orchestration.update({ where: { id: step.orchestrationId }, data: { status: 'CANCELLED', finishedAt: now } })
+          ]
+        : []),
+      prisma.agentTask.update({ where: { id: task.id }, data: { status: AgentTaskStatus.CANCELLED, finishedAt: now, reviewStatus: AgentReviewStatus.READY } }),
+      ...(latestRun
+        ? [prisma.agentRun.update({ where: { id: latestRun.id }, data: { cancelledAt: now, finishedAt: now } })]
+        : [])
+    ]);
     await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CANCELLED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip });
     return { ok: true };
   });

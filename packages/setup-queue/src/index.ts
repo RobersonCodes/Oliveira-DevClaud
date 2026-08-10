@@ -7,4 +7,5 @@ export class SetupQueue {
   enqueue(setupJobId:string){ return this.queue.add('provision',{setupJobId},{jobId:setupJobId,attempts:1,removeOnComplete:100,removeOnFail:500}); }
   async remove(setupJobId:string){ const job=await this.queue.getJob(setupJobId); if(job) await job.remove(); }
   async requeue(setupJobId:string){ await this.remove(setupJobId).catch(()=>undefined); return this.enqueue(setupJobId); }
+  close(){ return this.queue.close(); }
 }

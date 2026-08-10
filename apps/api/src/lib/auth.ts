@@ -55,3 +55,18 @@ export async function requireOrgRole(request: FastifyRequest, organizationId: st
   if (!membership || !hasRole(membership.role, required)) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
   return { user, membership };
 }
+
+// Organization roles are tenant-scoped and cannot authorize host-wide data. Keep the operator
+// allowlist outside tenant membership until the schema gains an explicit global platform role.
+export async function requireHostAdmin(request: FastifyRequest) {
+  const { user } = await requireUser(request);
+  const allowed = new Set(
+    (process.env.HOST_ADMIN_EMAILS ?? '')
+      .split(',')
+      .map(email => email.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (allowed.size === 0) throw Object.assign(new Error('HOST_ADMIN_NOT_CONFIGURED'), { statusCode: 503 });
+  if (!allowed.has(user.email.toLowerCase())) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
+  return user;
+}

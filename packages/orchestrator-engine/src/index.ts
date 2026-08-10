@@ -42,11 +42,21 @@ export function readyStepKeys(steps: Array<{key:string; status:string; dependsOn
 
 export class OrchestrationQueue {
   readonly queue: Queue;
-  constructor(url = process.env.REDIS_URL ?? 'redis://localhost:6379') {
+  constructor(
+    url = process.env.REDIS_URL ?? 'redis://localhost:6379',
+    queueName = 'oliveira-orchestrations'
+  ) {
     const connection = new IORedis(url, { maxRetriesPerRequest: null });
-    this.queue = new Queue('oliveira-orchestrations', { connection });
+    this.queue = new Queue(queueName, { connection });
   }
   async tick(orchestrationId: string) {
-    await this.queue.add('tick', { orchestrationId }, { jobId: `tick-${orchestrationId}-${Date.now()}`, removeOnComplete: 200, removeOnFail: 500 });
+    // Coalesce concurrent callers while preserving one trailing tick when the active tick requests
+    // its continuation. A stable jobId alone discards that continuation because the active job owns
+    // the id until it completes; keepLastIfActive explicitly retains the latest pending request.
+    await this.queue.add('tick', { orchestrationId }, {
+      deduplication: { id: `tick-${orchestrationId}`, keepLastIfActive: true },
+      removeOnComplete: true,
+      removeOnFail: 500
+    });
   }
 }

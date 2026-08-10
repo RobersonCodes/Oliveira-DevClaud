@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
-const API = process.env.NEXT_PUBLIC_API_BASE ?? 'http://localhost:4000';
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
 
 type Port = { id: string; port: number; label?: string | null; protocol: string };
 

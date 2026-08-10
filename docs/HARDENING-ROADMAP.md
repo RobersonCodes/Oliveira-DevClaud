@@ -1,0 +1,227 @@
+# Hardening Roadmap — Oliveira DevCloud
+
+**Status:** Fase 0 concluída. Dos 12 P0, os 9 que não dependiam da decisão de isolamento de origem
+(P0-1, P0-5 a P0-12) foram corrigidos e validados com evidência real (build de imagem, migration
+contra banco vazio, testes de integração). P0-2, P0-3, P0-4 (isolamento de origem/rede) e as Fases
+1-9 continuam pendentes — ver Seção 7.
+**Data:** 2026-08-09
+**Método:** leitura direta do código-fonte (sem execução), citações `arquivo:linha`. Nenhuma
+afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
+
+## Como ler este documento
+
+- **P0** = explorável/quebra produção hoje, ou perda de dados/isolamento entre tenants. Bloqueia
+  publicação na internet.
+- **P1** = risco real mas com barreira parcial hoje, ou lacuna que vira P0 sob carga/escala.
+- **P2** = dívida técnica, robustez, ou requisito de produto (mobile) sem impacto de segurança
+  direto.
+
+Cada risco cita o código exato que o comprova. Onde a mitigação já existe parcialmente, isso está
+declarado — este documento não infla achados para parecer mais impressionante.
+
+---
+
+## 1. Fluxo de arquitetura atual
+
+```mermaid
+flowchart TB
+  user["Usuário"] -->|HTTPS| web["apps/web (Next.js)<br/>bundle com API URL inlinada em build-time"]
+  web -->|"fetch/WS, credentials:include<br/>NEXT_PUBLIC_API_URL ou _BASE (inconsistente)"| api["apps/api (Fastify)<br/>mesma origem/porta para painel E proxy de runtime"]
+  api -->|"cookie odc_session<br/>requireOrgRole por rota"| pg[("PostgreSQL")]
+  api --> redis[("Redis")]
+  api -->|"docker.sock montado"| dockerd["Docker daemon (host)"]
+  worker["apps/worker (BullMQ)"] -->|"docker.sock montado"| dockerd
+  api -->|"http-proxy, sem checagem de Origin"| proxy["/api/v1/proxy/ide/*<br/>/api/v1/proxy/preview/*"]
+  proxy -->|"IP interno da bridge default"| ws1["Workspace A<br/>code-server --auth none"]
+  dockerd -.->|"todos na mesma bridge"| ws1
+  dockerd -.->|"todos na mesma bridge"| ws2["Workspace B<br/>(outro usuário/org)"]
+  ws1 -.->|"alcança por IP<br/>(sem isolamento)"| ws2
+```
+
+Pontos-chave já confirmados no código:
+
+1. O painel (control plane) e o conteúdo de runtime (IDE/preview de workspace) são servidos **sob
+   a mesma origem HTTP** — `apps/api/src/app.ts:83` registra `registerRuntimeProxy(app)` no mesmo
+   Fastify app que `/api/v1/auth`, sem separação de domínio/porta
+   (`apps/api/src/lib/runtimeProxy.ts:28-47`).
+2. Todos os workspaces (de qualquer usuário/organização) compartilham a rede Docker `bridge`
+   default (`packages/workspace-engine/src/index.ts:84`, `.env.example:14`) — nenhuma rede
+   dedicada por workspace.
+3. `docker.sock` está montado em **dois** serviços (`api` e `worker`,
+   `infra/production/docker-compose.prod.yml:22,30`), e cada pacote de domínio
+   (`workspace-engine`, `terminal-engine`, `ide-engine`, `git-engine`, `agent-engine`,
+   `setup-engine`, `review-engine`, `repository-intelligence`, `code-intelligence`,
+   `contract-intelligence`) instancia seu próprio cliente Dockerode — não existe um broker central
+   nem allow-list de operações.
+4. O frontend não usa caminho relativo (`/api/v1/...`); usa URL absoluta inlinada em build-time via
+   `NEXT_PUBLIC_API_URL` (13 arquivos) ou `NEXT_PUBLIC_API_BASE` (1 arquivo divergente,
+   `apps/web/app/ide/page.tsx:6`) — ambos com fallback `http://localhost:4000` que fica
+   hardcoded no bundle se a env var não estiver definida no `docker build`.
+
+---
+
+## 2. Modelo de ameaças
+
+### 2.1 Ativos protegidos
+
+| Ativo | Onde vive hoje |
+|---|---|
+| Cookie de sessão (`odc_session`) | httpOnly, hash SHA-256 em `Session.tokenHash` (`apps/api/src/lib/auth.ts:13-24`) |
+| Secrets de usuário/projeto | AES-256-GCM em repouso (`packages/secret-manager`) |
+| Código-fonte dos projetos | bind mount do host em `/workspace` dentro do container |
+| Docker socket do host | acesso root-equivalente; hoje em 2 processos (api, worker) |
+| Dados de outros tenants (Postgres) | isolado por RBAC de aplicação, não por schema/DB separado |
+| Containers de workspace de outros usuários | isolados só por namespace do Docker, não por rede |
+| `SECRETS_MASTER_KEY_BASE64` | variável de ambiente, chave mestra de todo o secret-manager |
+
+### 2.2 Atores de ameaça
+
+| Ator | Capacidade assumida |
+|---|---|
+| **Visitante anônimo na internet** | requisições HTTP/WS diretas à API pública |
+| **Usuário autenticado malicioso** | sessão válida em uma organização própria, tenta escalar para outra org/workspace |
+| **Código executado dentro de um workspace** (dependência maliciosa do usuário, ou agente de IA comprometido/injeção de prompt) | execução arbitrária dentro do container do workspace, incluindo o code-server `--auth none` |
+| **Outro tenant/organização** | usuário legítimo de uma org tentando alcançar dados/containers de outra |
+| **Operador/insider com acesso ao host** | fora de escopo de mitigação por software, mas relevante para runbook |
+
+### 2.3 Fronteiras de confiança (estado atual)
+
+| Fronteira | Estado hoje | Evidência |
+|---|---|---|
+| Browser ↔ Web/API (internet pública) | Autenticada por cookie, CORS single-origin | `apps/api/src/app.ts:41` |
+| Painel de controle ↔ Conteúdo de runtime (IDE/preview) | **Violada — mesma origem** | `apps/api/src/lib/runtimeProxy.ts:28-47`, `apps/api/src/app.ts:83` |
+| Workspace ↔ outro Workspace | **Violada — mesma rede bridge** | `packages/workspace-engine/src/index.ts:84` |
+| Workspace ↔ Docker socket do host | Intacta — socket nunca montado em workspace | confirmado via busca exaustiva (agente de pesquisa) |
+| Workspace ↔ Postgres/Redis | Intacta hoje, mas por **acidente de topologia** (redes Compose distintas), não por design explícito | `infra/production/docker-compose.prod.yml` sem `networks:` compartilhada |
+| API/Worker ↔ Docker daemon | **Privilégio não reduzido** — 2 processos com socket bruto, sem broker/allow-list | `infra/production/docker-compose.prod.yml:22,30` |
+| code-server dentro do workspace | **Sem autenticação própria** (`--auth none`) — depende 100% do proxy da API | `packages/ide-engine/src/index.ts:55` |
+
+---
+
+## 3. Riscos priorizados
+
+### P0 — bloqueia publicação / quebra produção / rompe isolamento entre tenants
+
+| # | Status | Risco | Evidência |
+|---|---|---|---|
+| P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
+| P0-2 | ⏳ Pendente | **Painel e conteúdo de runtime (IDE/preview) compartilham a mesma origem HTTP.** JavaScript servido de dentro de um workspace (preview de app do usuário, ou XSS num arquivo do repositório aberto no code-server) roda sob a mesma origem do painel — pode em tese ler/manipular o DOM do painel se embutido, e qualquer fetch feito por esse conteúdo herda a mesma política de cookies. Depende da decisão de arquitetura da Fase 2 (subdomínio de runtime + wildcard cert). | `apps/api/src/lib/runtimeProxy.ts:28-47`, `apps/api/src/app.ts:83` |
+| P0-3 | ⏳ Pendente | **Todos os workspaces compartilham a rede Docker bridge default — sem isolamento entre tenants.** Um workspace comprometido alcança por IP qualquer outro workspace de qualquer organização, incluindo seu code-server `--auth none` na porta 13337 (que só não é exposta ao host, mas é alcançável na rede interna). Fase 3. | `packages/workspace-engine/src/index.ts:84`, `packages/ide-engine/src/index.ts:55` |
+| P0-4 | ⏳ Pendente | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) valida o header `Origin`.** Qualquer site na internet pode tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não há defesa em profundidade além da checagem de sessão. Fase 6. | `apps/api/src/routes/terminals.ts:64-108`; `apps/api/src/lib/runtimeProxy.ts:49-80` |
+| P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
+| P0-6 | ✅ Corrigido | **Migrations do Prisma nunca rodam automaticamente em produção.** Nem o `CMD` do `Dockerfile.api` nem `docker-compose.prod.yml` executam `prisma migrate deploy` — um host limpo sobe a API contra um schema vazio. Corrigido com serviço `migrate` one-shot (`depends_on: service_completed_successfully`); validado de ponta a ponta contra Postgres vazio usando a imagem real. | `infra/production/docker-compose.prod.yml` |
+| P0-7 | ✅ Corrigido | **Nginx de produção não substitui `${DEV_CLOUD_HOST}`.** O arquivo é montado direto em `/etc/nginx/conf.d/default.conf` (não em `/etc/nginx/templates/*.template`, único mecanismo que dispara `envsubst` na imagem oficial do nginx) — `server_name ${DEV_CLOUD_HOST}` fica literal, quebrando roteamento por host/TLS. Corrigido montando em `/etc/nginx/templates/default.conf.template` + `DEV_CLOUD_HOST` no ambiente do serviço; validado rodando o container real e confirmando a substituição no config renderizado. | `infra/production/nginx.prod.conf`; `infra/production/docker-compose.prod.yml` |
+| P0-8 | ✅ Corrigido | **Corrida de concorrência no worker duplica agentes/containers.** O agendamento agora usa deduplicação BullMQ com `keepLastIfActive`, preservando um tick posterior sem executar dois em paralelo para a mesma orquestração. A garantia principal fica no banco: criação do `AgentTask` e claim condicional do step ocorrem na mesma transação, e somente o vencedor inicia efeitos externos. Filas de teste têm nomes aleatórios e nunca limpam a fila de produção. | `packages/orchestrator-engine/src/index.ts`; `packages/orchestrator-engine/src/index.test.ts`; `apps/worker/src/index.ts` |
+| P0-9 | ✅ Corrigido | **Cancelar um agente individualmente deixava o step da orquestração travado para sempre.** `POST /cancel` agora sincroniza task, run, step e orquestração na mesma transação. O worker trata `UNKNOWN`, mas suas transições usam compare-and-swap em `status:'RUNNING'`, impedindo que um snapshot antigo sobrescreva `CANCELLED` com `FAILED`. | `apps/api/src/routes/agents.ts`; `apps/worker/src/index.ts` |
+| P0-10 | ✅ Corrigido | **Zero graceful shutdown em `apps/api` e `apps/worker`.** Nenhum handler de `SIGTERM`/`SIGINT` existia em nenhum dos dois processos — `docker stop`/rolling deploy matava conexões WS, jobs BullMQ em voo e conexões Prisma/Redis abruptamente. Corrigido com handlers que fecham HTTP/WS, BullMQ Workers, Redis e Prisma, com timeout de força-saída; validado chamando a mesma lógica de fechamento diretamente (sem depender de sinal POSIX, que o Windows não emula fielmente — produção roda em container Linux). | `apps/api/src/index.ts`; `apps/worker/src/index.ts`; `packages/setup-queue/src/index.ts` |
+| P0-11 | ✅ Corrigido | **`NEXT_PUBLIC_API_URL`/`NEXT_PUBLIC_API_BASE` nunca eram passadas ao `docker build` do web.** `Dockerfile.web` não declarava `ARG`/`ENV` para essas variáveis; como são inlinadas em build-time pelo Next.js e `env_file` do compose só afeta runtime, o bundle de produção herdava o fallback `http://localhost:4000` de cada `page.tsx`. Corrigido com `ARG`/`ENV` no Dockerfile + `build.args` no compose; validado buildando a imagem real e confirmando **zero** ocorrências de `localhost:4000` no bundle client-side servido (`.next/static`, excluindo source maps). | `infra/production/Dockerfile.web`; `infra/production/docker-compose.prod.yml` |
+| P0-12 | ✅ Corrigido | **Divergência `NEXT_PUBLIC_API_URL` vs `NEXT_PUBLIC_API_BASE`.** Treze páginas usavam `NEXT_PUBLIC_API_URL`; só `apps/web/app/ide/page.tsx:6` usava `NEXT_PUBLIC_API_BASE`. Corrigido unificando para `NEXT_PUBLIC_API_URL`. | `apps/web/app/ide/page.tsx:6` |
+
+### P1 — risco real, mitigação parcial ou depende de configuração correta
+
+| # | Risco | Evidência |
+|---|---|---|
+| P1-1 | `trustProxy: true` confia cegamente em qualquer proxy upstream — se a API for exposta sem um proxy confiável na frente, `request.ip` (usado em rate-limit e audit log) é falsificável pelo header `X-Forwarded-For` do próprio atacante. | `apps/api/src/app.ts:36` |
+| P1-2 | Cookie de sessão só recebe `secure: true` se `NODE_ENV==='production'` estiver setado corretamente no deploy — se a env var faltar, o cookie trafega sem flag `Secure`. | `apps/api/src/routes/auth.ts:40,65` |
+| P1-3 | `CORS origin` cai para `http://localhost:3000` se `WEB_ORIGIN` não estiver definida em produção — libera CORS com `credentials:true` para uma origem de desenvolvimento. | `apps/api/src/app.ts:41` |
+| P1-4 | Handshake WS do `runtimeProxy` verifica apenas membership na organização do workspace, não o papel mínimo `DEVELOPER` que as rotas HTTP paralelas exigem — inconsistência de autorização entre HTTP e WS para o mesmo recurso. | `apps/api/src/lib/runtimeProxy.ts:70-71` vs. rotas HTTP com `requireOrgRole(..., Role.DEVELOPER)` |
+| P1-5 | `docker.sock` montado em **dois** serviços (api e worker) em vez de um broker único — dobra a superfície de um processo com acesso root-equivalente ao host. | `infra/production/docker-compose.prod.yml:22,30` |
+| P1-6 | Dockerfiles de produção usam `npm install` (não `npm ci`), são single-stage (copiam o monorepo inteiro, sem `.dockerignore`), rodam como root e não têm `HEALTHCHECK`. | `infra/production/Dockerfile.{api,web,worker}` |
+| P1-7 | PostgreSQL já possui healthcheck e bloqueia migration/API/worker corretamente; Redis ainda usa apenas `service_started`, sem healthcheck de prontidão no Compose de produção. | `infra/production/docker-compose.prod.yml` |
+| P1-8 | `/ready` só verifica Postgres — não verifica Redis nem o daemon Docker, então o orquestrador de containers pode considerar a API "pronta" mesmo com Redis/Docker fora do ar. | `apps/api/src/app.ts:58-61` |
+| P1-9 | Imagem de workspace (`oliveira-devcloud/workspace-node:1.0`) nunca é publicada em registry — precisa ser buildada manualmente em todo host novo, passo operacional não documentado. | ausência confirmada em CI e infra |
+| P1-10 | CLIs de agente (Codex/Claude) não são instalados em nenhuma imagem; se ausentes, `agent-engine` lança exceção não tratada dentro do loop de `tick()` do worker. | `packages/agent-engine/src/index.ts:57,62-63`; `apps/worker/src/index.ts:42` (sem try/catch ao redor) |
+| P1-11 | `destroy()` de workspace remove o container mas nunca o diretório do host — leak de armazenamento permanente; não existe cota por workspace nem job de limpeza de órfãos. | `packages/workspace-engine/src/index.ts:97`; ausência de reaper confirmada |
+| P1-12 | Nenhum teste valida isolamento de rede entre workspaces, `Privileged=false`, `ReadonlyRootfs`, ausência de `docker.sock`, ou non-root real na imagem de produção (os testes de container usam `alpine`, que roda como root por padrão — diferente da imagem real). | `packages/workspace-engine/src/index.test.ts` (escopo confirmado, gaps confirmados) |
+| P1-13 | Frontend não tem módulo central de cliente HTTP/WS — 14 páginas duplicam a mesma lógica; só 1 de 14 trata `401` redirecionando para `/login` (`apps/web/app/projects/page.tsx:5`); as outras 13 falham silenciosamente se a sessão expirar. | levantamento completo em apps/web (agente de pesquisa) |
+| P1-14 | Nenhum teste cobre autenticação de WebSocket com cookie ausente/inválido/expirado, ou tentativa de conectar a terminal/workspace de outra organização. | ausência confirmada |
+| P1-15 | A fila do `orchestrator-engine` e o cancelamento via API ganharam regressões automatizadas; ainda faltam testes diretos do loop do worker, `setup-queue`, `terminal-engine`, `ide-engine`, `agent-engine` e `review-engine`. | inventário de testes atual |
+| P1-16 | Existe um `app/icon.png` estático, mas ainda faltam manifest, variantes Apple/PWA, service worker, viewport/safe-area e navegação mobile substituta onde o desktop é ocultado. | `apps/web/app/icon.png`; `apps/web/app/layout.tsx`; `apps/web/app/styles.css` |
+| P1-17 | Nenhum `attempts`/`backoff` configurado em nenhuma fila BullMQ — qualquer falha (transitória ou não) finaliza a orquestração inteira sem retry. | `packages/orchestrator-engine/src/index.ts:50`; `packages/setup-queue/src/index.ts:7` |
+
+### P2 — dívida técnica / robustez / produto, sem exploração direta
+
+| # | Risco |
+|---|---|
+| P2-1 | `nginx.prod.conf` sem CSP, `Referrer-Policy`, `Permissions-Policy`, `frame-ancestors`/`X-Frame-Options`; sem `X-Forwarded-For`; sem `proxy_read_timeout` explícito para WS. |
+| P2-2 | `infra/nginx/devcloud.conf` (não referenciado pelo compose) é config morta/confusa — sem TLS, presente no repo sem indicação de status. |
+| P2-3 | Instalação do code-server via `curl \| sh` (versão fixada, mas sem verificação de checksum). |
+| P2-4 | Sem `bodyLimit`/timeout de servidor HTTP customizados na API (usa defaults do Fastify). |
+| P2-5 | Sem gerenciamento de sessões (listar/revogar dispositivos), sem MFA/passkeys, sem recuperação de conta/verificação de e-mail. |
+| P2-6 | Sem métricas de fila BullMQ (profundidade, tempo por estágio, falhas, retries). |
+| P2-7 | 3 padrões de navegação divergentes coexistindo no frontend (dívida de consistência de UI, não é bug de segurança). |
+| P2-8 | Sem Playwright/teste de browser algum; sem teste de acessibilidade (axe). |
+
+---
+
+## 4. Decisões arquiteturais propostas (com trade-offs)
+
+Estas são propostas para as Fases 1-9 — nenhuma foi implementada ainda; ficam aqui para alinhamento
+antes da execução.
+
+| Decisão | Alternativa considerada | Por que a escolha proposta |
+|---|---|---|
+| Cliente HTTP/WS same-origin (`/api/v1/...` relativo, WS derivado de `window.location`) em vez de `NEXT_PUBLIC_API_URL` absoluto | Manter URL absoluta e apenas corrigir o build-arg do Dockerfile | Elimina a classe inteira de bugs P0-11/P0-12/divergência de env var; resolve de graça o problema de `SameSite=Lax` cross-site citado em P1; exige que o nginx já rotea `/api/` para a API (`infra/production/nginx.prod.conf:13` já faz isso) |
+| Runtime Gateway com subdomínio dedicado (`ide-<id>.runtime.<dominio>`) + ticket de curta duração | Manter proxy sob `/api/v1/proxy/*` só com CSP/sandbox de iframe reforçados | Resolve P0-2 na raiz (isolamento de origem real); a alternativa mais barata (CSP/sandbox) reduz mas não elimina o risco, e o enunciado da missão pede isolamento de origem explicitamente |
+| Rede Docker dedicada por workspace | Uma rede compartilhada só entre workspaces (sem API/worker) | Rede por workspace é o único jeito de garantir que workspace A não alcança workspace B por IP; uma rede "compartilhada só entre workspaces" ainda permite isso |
+| `runtime-broker` interno com allow-list de operações, único detentor do `docker.sock` | Manter api+worker com socket, adicionando só validação de input | Reduz de 2 para 1 o número de processos com acesso root-equivalente ao host; centraliza auditoria; custo é uma chamada de rede interna a mais por operação Docker |
+| Job de migration `one-shot` separado antes do boot da API | `prisma migrate deploy` no entrypoint da própria API | Evita condição de corrida se `api` escalar para múltiplas réplicas (todas tentando migrar ao mesmo tempo); mais simples de auditar em log próprio |
+| Volumes Docker nomeados por workspace (via `docker volume create`) em vez de bind mount de path do host | Corrigir só o path do bind mount para um diretório real do host | Volumes nomeados são resolvidos pelo próprio daemon Docker sem ambiguidade de "path visto por quem" — elimina a classe de bug P0-1 permanentemente, não só a instância atual |
+
+---
+
+## 5. Critérios de aceite consolidados (por fase)
+
+- **Fase 1:** nenhuma ocorrência de `http://localhost:4000` no bundle de produção; IDE/terminal/login/dashboard/Command Center usam um único módulo de cliente; build de produção passa; WS funciona sob HTTPS/WSS.
+- **Fase 2:** JS de um preview não lê o painel nem faz requisição autenticada com a sessão do control plane; ticket de um workspace não abre outro; ticket expirado é rejeitado; usuário removido da organização perde acesso imediatamente.
+- **Fase 3:** dois workspaces reais, um não alcança a IDE/preview do outro (teste automatizado).
+- **Fase 4:** API pública não detém `docker.sock` diretamente; broker valida imagem/mounts/capabilities/rede antes de qualquer operação; porta do broker não é publicada na internet.
+- **Fase 5:** em host limpo, a documentação permite configurar → obter imagens → migrar → iniciar → criar usuário/projeto/workspace → abrir IDE/terminal → rodar agente → reiniciar serviços sem perder o workspace.
+- **Fase 6:** métricas de host exigem `ADMIN`/`OWNER`; `Origin` validado em WS; `trustProxy` restrito ao proxy real; rate limit por usuário além de por IP.
+- **Fase 7:** dois ticks concorrentes não duplicam step; cancelamento sempre sincroniza `OrchestrationStep`; heartbeat + recovery cobrem `AgentTask`/`Orchestration`, não só `SetupJob`.
+- **Fase 8:** PWA instalável, navegação mobile nunca desaparece sem substituto, touch targets ≥44px, terminal com toolbar de teclas especiais.
+- **Fase 9:** cada garantia acima tem teste automatizado que falha se a regressão voltar.
+
+---
+
+## 6. Confirmação de preservação de alterações do usuário
+
+Nenhuma alteração pré-existente do usuário foi tocada, revertida ou sobrescrita. Durante a correção
+dos P0 isolados, `git status` mostrou em determinado momento arquivos não rastreados
+(`AUTHORS.md`, `COPYRIGHT.md`, `NOTICE.md`, `docs/legal/`, `.tmp-docs/`) gerados por um processo
+paralelo do usuário (declaração de autoria/registro no INPI) — foram identificados e deixados
+intocados.
+
+---
+
+## 7. Status e próxima etapa recomendada
+
+**Concluído nesta sessão:** dos 12 P0, os 9 que não dependiam da decisão de isolamento de origem
+foram corrigidos, testados e validados com evidência real de execução (não só leitura de código):
+
+| Correção | Como foi validado |
+|---|---|
+| P0-1 — bind mount de workspace | `docker compose config` confirma o path do host resolvido corretamente |
+| P0-5 — métricas do host protegidas | Testes de integração para anônimo, OWNER de tenant e operador da allowlist |
+| P0-6 — job de migration | build real da imagem + `prisma migrate deploy` contra Postgres vazio, tabelas confirmadas via `\dt` |
+| P0-7 — template do nginx | container nginx real, `envsubst` confirmado no config renderizado |
+| P0-8 — deduplicação + claim transacional | Testes em filas Redis isoladas cobrem coalescência, separação entre orquestrações e tick posterior ao job ativo |
+| P0-9 — sync de cancelamento de agente | Testes de integração contra Postgres e compare-and-swap no worker |
+| P0-10 — graceful shutdown | lógica de fechamento (`app.close`, `prisma.$disconnect`) exercitada diretamente, sem hang/erro |
+| P0-11 — env var do build web | build real da imagem, grep confirma zero `localhost:4000` no bundle client-side |
+| P0-12 — divergência de nome de env var | typecheck limpo após unificação |
+
+Typecheck (`npm run typecheck`) e a suíte de testes (`vitest run`) rodam limpos no restante do
+projeto — os únicos 3 arquivos que falham (`e2e.test.ts`, `git-engine`, `workspace-engine`) falham
+pela mesma razão pré-existente e documentada na Fase 0 (sem relação com as correções acima): este
+host Windows não tem `/var/run/docker.sock`, então essas suítes — que já falhavam antes de qualquer
+mudança desta sessão — continuam falhando exatamente do mesmo jeito. Nenhuma regressão foi
+introduzida (77 de 83 testes passam, contra 64 de 70 antes — a diferença de 13 são só os testes
+novos escritos para as correções acima).
+
+**Pendente:** P0-2, P0-3, P0-4 (isolamento de origem e de rede — núcleo das Fases 2-4) e as Fases
+1, 5 (o restante), 6-9 por completo. Nada disso foi commitado — as mudanças estão apenas no working
+tree, aguardando revisão e autorização explícita para commit/push.
+
+A sequência sugerida continua sendo: confirmar a arquitetura-alvo da Fase 2 (subdomínio de runtime +
+wildcard cert, a decisão de maior custo de reversão) antes de atacar P0-2/P0-3/P0-4.

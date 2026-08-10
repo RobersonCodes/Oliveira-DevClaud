@@ -198,6 +198,88 @@ describe('organizations — membership-scoped listing (real Postgres)', () => {
   });
 });
 
+describe('host metrics — platform-operator-only routes (real Postgres)', () => {
+  it('rejects anonymous requests to both host metrics endpoints', async () => {
+    const legacy = await app.inject({ method: 'GET', url: '/api/v1/system' });
+    const summary = await app.inject({ method: 'GET', url: '/api/v1/system/metrics-summary' });
+    expect(legacy.statusCode).toBe(401);
+    expect(summary.statusCode).toBe(401);
+  });
+
+  it('does not treat an organization OWNER as a host operator', async () => {
+    const previous = process.env.HOST_ADMIN_EMAILS;
+    delete process.env.HOST_ADMIN_EMAILS;
+    try {
+      const owner = await registerUser();
+      const legacy = await app.inject({ method: 'GET', url: '/api/v1/system', headers: { cookie: owner.sessionCookie } });
+      expect(legacy.statusCode).toBe(503);
+    } finally {
+      if (previous === undefined) delete process.env.HOST_ADMIN_EMAILS;
+      else process.env.HOST_ADMIN_EMAILS = previous;
+    }
+  });
+
+  it('allows only an explicitly configured host operator', async () => {
+    const previous = process.env.HOST_ADMIN_EMAILS;
+    const operator = await registerUser();
+    const otherOwner = await registerUser();
+    process.env.HOST_ADMIN_EMAILS = operator.body.email.toUpperCase();
+    try {
+      const denied = await app.inject({ method: 'GET', url: '/api/v1/system', headers: { cookie: otherOwner.sessionCookie } });
+      expect(denied.statusCode).toBe(403);
+      const legacy = await app.inject({ method: 'GET', url: '/api/v1/system', headers: { cookie: operator.sessionCookie } });
+      expect(legacy.statusCode).toBe(200);
+      expect(legacy.json()).toHaveProperty('workspaces');
+      const summary = await app.inject({ method: 'GET', url: '/api/v1/system/metrics-summary', headers: { cookie: operator.sessionCookie } });
+      expect(summary.statusCode).toBe(200);
+      expect(summary.json()).toHaveProperty('host.cpus');
+    } finally {
+      if (previous === undefined) delete process.env.HOST_ADMIN_EMAILS;
+      else process.env.HOST_ADMIN_EMAILS = previous;
+    }
+  });
+});
+
+describe('agent cancellation — keeps AgentTask, OrchestrationStep and Orchestration in sync (real Postgres)', () => {
+  it('cancelling an agent tied to a RUNNING orchestration step cancels the step and the orchestration too', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie }, payload: { organizationId, name: 'Cancel Sync Project' } });
+    expect(project.statusCode).toBe(201);
+
+    // Fixture built directly against Postgres (not via POST /workspaces) so this test doesn't need a
+    // real Docker daemon: the behavior under test is DB-state synchronization, and the route already
+    // swallows engine.cancel() failures (`.catch(() => undefined)`) for exactly this reason — a
+    // workspace whose container no longer exists must still update its records correctly.
+    const workspace = await prisma.workspace.create({ data: { projectId: project.json().id, containerId: 'test-container-not-real', status: 'RUNNING' } });
+    const orchestration = await prisma.orchestration.create({ data: { workspaceId: workspace.id, title: 'Test orchestration', objective: 'Prove cancel sync', status: 'RUNNING', startedAt: new Date() } });
+    const task = await prisma.agentTask.create({ data: { workspaceId: workspace.id, agent: 'CLAUDE', title: 'Do the thing', prompt: 'Do the thing', status: 'RUNNING', startedAt: new Date() } });
+    const step = await prisma.orchestrationStep.create({ data: { orchestrationId: orchestration.id, key: 'do-the-thing', title: 'Do the thing', type: 'AGENT', agent: 'CLAUDE', prompt: 'Do the thing', status: 'RUNNING', agentTaskId: task.id, startedAt: new Date() } });
+
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/agents/${task.id}/cancel`, headers: { cookie: sessionCookie } });
+    expect(cancel.statusCode).toBe(200);
+
+    const [taskAfter, stepAfter, orchestrationAfter] = await Promise.all([
+      prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } }),
+      prisma.orchestrationStep.findUniqueOrThrow({ where: { id: step.id } }),
+      prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })
+    ]);
+    expect(taskAfter.status).toBe('CANCELLED');
+    expect(stepAfter.status).toBe('CANCELLED');
+    expect(orchestrationAfter.status).toBe('CANCELLED');
+  });
+
+  it('cancelling a standalone agent task with no orchestration step still succeeds', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie }, payload: { organizationId, name: 'Standalone Cancel Project' } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.json().id, containerId: 'test-container-not-real', status: 'RUNNING' } });
+    const task = await prisma.agentTask.create({ data: { workspaceId: workspace.id, agent: 'CODEX', title: 'Ad-hoc task', prompt: 'Ad-hoc task', status: 'RUNNING', startedAt: new Date() } });
+
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/agents/${task.id}/cancel`, headers: { cookie: sessionCookie } });
+    expect(cancel.statusCode).toBe(200);
+    expect((await prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe('CANCELLED');
+  });
+});
+
 describe('rate limiting — the /register route\'s stricter per-route limit actually engages', () => {
   let limitedApp: FastifyInstance;
   const limitedUserIds: string[] = [];

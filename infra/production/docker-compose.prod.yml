@@ -13,24 +13,53 @@ services:
     restart: unless-stopped
     command: ["redis-server","--appendonly","yes"]
     volumes: [redis_data:/data]
+  # One-shot: applies Prisma migrations against a possibly-empty database before api/worker start.
+  # Reuses the api image (same deps/schema) rather than a separate Dockerfile to avoid drift.
+  migrate:
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
+    restart: "no"
+    env_file: ../../.env.production
+    depends_on: { postgres: { condition: service_healthy } }
+    command: ["npm","run","db:migrate:deploy"]
   api:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
     restart: unless-stopped
     env_file: ../../.env.production
-    depends_on: [postgres,redis]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - workspace_data:/var/lib/oliveira-devcloud/workspaces
+      # Workspace containers are created as *siblings* by the host Docker daemon (via the socket
+      # above), not as children of this container — so the daemon resolves Binds paths against the
+      # HOST filesystem, never against this container's filesystem. A named volume here would give
+      # api/worker a path like /var/lib/.../workspaces that only exists inside THIS container, and
+      # the daemon would silently bind-mount an empty/wrong host directory into every new workspace.
+      # Using the identical path as a host bind mount keeps "the path workspace-engine writes to"
+      # and "the path the host daemon reads from" the same directory. Operator must ensure
+      # WORKSPACE_ROOT_HOST exists and is writable by uid 10001 (the workspace image's non-root
+      # user) before first run.
+      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces
   worker:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.worker }
     restart: unless-stopped
     env_file: ../../.env.production
-    depends_on: [postgres,redis]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+      migrate: { condition: service_completed_successfully }
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - workspace_data:/var/lib/oliveira-devcloud/workspaces
+      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces
   web:
-    build: { context: ../.., dockerfile: infra/production/Dockerfile.web }
+    build:
+      context: ../..
+      dockerfile: infra/production/Dockerfile.web
+      # Build-time only (see the comment in Dockerfile.web) — env_file below is for the container's
+      # runtime env, which Next.js's already-built client bundle can no longer read.
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?set NEXT_PUBLIC_API_URL}
     restart: unless-stopped
     env_file: ../../.env.production
     depends_on: [api]
@@ -38,8 +67,15 @@ services:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports: ["80:80","443:443"]
+    environment:
+      DEV_CLOUD_HOST: ${DEV_CLOUD_HOST:?set DEV_CLOUD_HOST}
     volumes:
-      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # Mounted under /etc/nginx/templates/ (not conf.d/ directly) so the official nginx image's
+      # docker-entrypoint.sh runs envsubst on it at container start, substituting ${DEV_CLOUD_HOST}
+      # from the environment above before writing the result to conf.d/default.conf. Mounting
+      # straight into conf.d/ (the previous setup) never triggers envsubst — server_name would be
+      # the literal, unexpanded string "${DEV_CLOUD_HOST}".
+      - ./nginx.prod.conf:/etc/nginx/templates/default.conf.template:ro
       - ./certs:/etc/nginx/certs:ro
     depends_on: [web,api]
-volumes: { postgres_data: {}, redis_data: {}, workspace_data: {} }
+volumes: { postgres_data: {}, redis_data: {} }

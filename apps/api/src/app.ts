@@ -26,6 +26,7 @@ import { codeIntelligenceRoutes } from './routes/code-intelligence.js';
 import { contextIntelligenceRoutes } from './routes/context-intelligence.js';
 import { contractIntelligenceRoutes } from './routes/contract-intelligence.js';
 import { registerRuntimeProxy } from './lib/runtimeProxy.js';
+import { requireHostAdmin } from './lib/auth.js';
 
 /**
  * Builds a fully-registered Fastify instance without binding it to a port, so integration tests
@@ -59,7 +60,10 @@ export async function buildApp(opts: { logger?: boolean; disableRateLimit?: bool
     try { await prisma.$queryRaw`SELECT 1`; return { status: 'ready', database: 'ok' }; }
     catch { return reply.code(503).send({ status: 'not-ready', database: 'error' }); }
   });
-  app.get('/api/v1/system', async () => ({ workspaces: await prisma.workspace.count(), activeAgents: await prisma.agentTask.count({ where: { status: 'RUNNING' } }) }));
+  app.get('/api/v1/system', async (request) => {
+    await requireHostAdmin(request);
+    return { workspaces: await prisma.workspace.count(), activeAgents: await prisma.agentTask.count({ where: { status: 'RUNNING' } }) };
+  });
 
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
   await app.register(organizationRoutes, { prefix: '/api/v1/organizations' });

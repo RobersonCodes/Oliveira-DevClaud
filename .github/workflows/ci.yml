@@ -9,6 +9,7 @@ jobs:
       # Real database — the database package's integration tests (packages/database/src/index.test.ts)
       # run real Prisma queries, not mocks, against this service container.
       DATABASE_URL: postgresql://oliveira:oliveira@localhost:5432/devcloud?schema=public
+      REDIS_URL: redis://localhost:6379
       # Real workspace containers (workspace-engine/git-engine tests, and the minimal E2E journey)
       # bind-mount this path from the host; the runner's default WORKSPACE_ROOT isn't writable.
       WORKSPACE_ROOT: /tmp/odc-workspaces
@@ -22,6 +23,12 @@ jobs:
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U oliveira -d devcloud"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
