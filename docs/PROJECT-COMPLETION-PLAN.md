@@ -45,7 +45,7 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `158e546` |
+| Commit de referência | `5f35dfa` |
 | Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
 | Etapa ativa | Etapa 4 — cliente HTTP/WebSocket centralizado do frontend (Fase 1) |
 | Responsável | Claude |
