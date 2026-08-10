@@ -17,6 +17,13 @@ import { pruneOrphanedNetworks } from './network.js';
 const IMAGE = 'alpine:3.20';
 const docker = new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
 
+// The broker's own ceiling clamp (16 cores) is not host-aware, and Docker itself hard-rejects a
+// NanoCpus quota above the real host CPU count — so how high the ceiling test can safely push
+// depends on the machine running it (CI commonly has far fewer cores than a dev machine). Resolved
+// at module scope so it's available synchronously for `it.skipIf` below — same pattern as
+// packages/workspace-engine's own equivalent test.
+const hostCpus = (await docker.info()).NCPU as number;
+
 let workspaceRoot: string;
 const containerIds: string[] = [];
 
@@ -153,13 +160,26 @@ describe('Runtime Broker — workspace container lifecycle', () => {
     });
   }, 45_000);
 
-  it('clamps resource limits instead of applying them verbatim', async () => {
+  it('clamps memory above the max down to 32768MB instead of applying it verbatim', async () => {
     await withBroker(async client => {
       const workspaceId = crypto.randomUUID();
-      const created = await client.createWorkspaceContainer(workspaceId, { projectId: crypto.randomUUID(), limits: { cpuLimit: 999, memoryMb: 999_999 } });
+      const created = await client.createWorkspaceContainer(workspaceId, { projectId: crypto.randomUUID(), limits: { cpuLimit: 1, memoryMb: 999_999 } });
       containerIds.push(created.containerId);
       const raw = await docker.getContainer(created.containerId).inspect();
       expect(raw.HostConfig.Memory).toBe(32768 * 1024 * 1024);
+    });
+  }, 30_000);
+
+  // Requesting the app's 16-core ceiling only makes sense on a host that actually has 16+ cores —
+  // Docker rejects the request outright otherwise (same constraint as workspace-engine's own
+  // equivalent test, since the broker's clamp logic is identical).
+  it.skipIf(hostCpus < 16)('clamps an above-maximum cpu request down to 16 cores instead of applying it verbatim', async () => {
+    await withBroker(async client => {
+      const workspaceId = crypto.randomUUID();
+      const created = await client.createWorkspaceContainer(workspaceId, { projectId: crypto.randomUUID(), limits: { cpuLimit: 999, memoryMb: 512 } });
+      containerIds.push(created.containerId);
+      const raw = await docker.getContainer(created.containerId).inspect();
+      expect(raw.HostConfig.NanoCpus).toBe(16 * 1_000_000_000);
     });
   }, 30_000);
 });
