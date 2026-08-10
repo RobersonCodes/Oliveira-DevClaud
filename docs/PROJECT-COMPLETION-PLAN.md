@@ -45,7 +45,7 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `68258a9` |
+| Commit de referência | `158e546` |
 | Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
 | Etapa ativa | Etapa 2 — Runtime Gateway: DNS, TLS e nginx reais |
 | Responsável | Claude (parte de código concluída) → usuário (DNS/TLS/validação no servidor) |
