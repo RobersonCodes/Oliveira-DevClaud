@@ -340,3 +340,10 @@ adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 A sequência sugerida agora é: usuário executa o runbook de DNS/TLS reais
 (`docs/RUNTIME-GATEWAY-DEPLOY.md`) para fechar a Fase 2 → cliente HTTP/WS centralizado do
 frontend/Fase 1 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).
+
+**Marco de CI (Fase 4, 2026-08-10):** run
+[31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do
+workflow `CI` é a primeira vez neste projeto em que o job `quality` inteiro passa 100% verde —
+`Lint`, `Typecheck`, `Test` (189/189), `Build` e `Security audit`, todos ✓. As três suítes Docker
+que a Fase 0 documentava como bloqueadas em CI (`git-engine`, `workspace-engine`, `e2e.test.ts`)
+rodam de verdade e passam.

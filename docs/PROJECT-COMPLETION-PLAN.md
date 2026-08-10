@@ -67,11 +67,19 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
   mudança, mesmo resultado; detalhe em `docs/HARDENING-ROADMAP.md` Seção 7. Nenhuma rede/container de
   teste ficou órfã após a execução.
 - CI Linux (GitHub Actions), run
-  [31383975282](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31383975282):
-  `typecheck`/`lint` verdes; `Test` 163 aprovados / 2 falhas (as mesmas 2 pré-existentes e não
-  relacionadas de `ws-security.test.ts`) / 1 ignorado, 166 no total — confirma a validação local.
-  `Build`/`Security audit` não rodaram porque o job encerra no primeiro `Test` vermelho; não avaliados
+  [31383975282](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31383975282)
+  (Fase 3): `typecheck`/`lint` verdes; `Test` 163 aprovados / 2 falhas (as mesmas 2 pré-existentes e
+  não relacionadas de `ws-security.test.ts`, na época) / 1 ignorado, 166 no total. `Build`/
+  `Security audit` não rodaram porque o job encerra no primeiro `Test` vermelho; não avaliados
   nesta run.
+- **Fase 4 (2026-08-10):** suíte local `vitest run` — **189 de 189 aprovados, 24 de 24 arquivos**,
+  zero falhas (inclusive `ws-security.test.ts` agora corrigido de verdade, não mais pré-existente).
+  CI Linux, run
+  [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630):
+  **job `quality` inteiro verde** — `Lint`, `Typecheck`, `Test`, `Build` e `Security audit` todos
+  ✓ — primeira vez neste projeto em que o CI passa 100%, incluindo as suítes Docker
+  (`git-engine`/`workspace-engine`/`e2e`) que antes só rodavam de verdade em CI Linux e nunca tinham
+  sido confirmadas verdes ali.
 
 Os números acima são apenas o baseline. Substitua-os pelos resultados reais de cada nova execução.
 
@@ -430,6 +438,15 @@ rede/porta.
   falhas, incluindo o `ws-security.test.ts` agora corrigido de verdade. `npm run typecheck`,
   `npm run lint` e `npm run build` limpos no monorepo inteiro. Nenhuma rede/container de teste
   ficou órfão (verificado após cada rodada).
+- **Confirmado em CI Linux real após push** (commits `5f35dfa`, `ba8f956`, `00f1a7e`): primeira vez
+  no histórico deste projeto em que o job `quality` inteiro do GitHub Actions passa 100% verde —
+  `Lint`, `Typecheck`, `Test`, `Build` **e** `Security audit`, todos ✓ (runs
+  [31393640561](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31393640561) e,
+  após corrigir um teste sensível à contagem de CPU do runner (4 núcleos — o mesmo tipo de
+  constraint que `workspace-engine` já tratava, faltava replicar no teste novo do broker),
+  [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630)).
+  Nenhuma das 3 suítes Docker antes bloqueadas em CI (`git-engine`, `workspace-engine`, `e2e`)
+  segue bloqueada — todas rodam de verdade agora.
 - `docker compose --env-file <dummy> -f infra/production/docker-compose.prod.yml config` validado:
   `docker.sock` só no `runtime-broker`; `api` só com o bind mount do workspace root; `worker` sem
   nenhum volume.
