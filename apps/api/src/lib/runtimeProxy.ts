@@ -35,6 +35,15 @@ function stripPrefix(url: string | undefined, prefix: string) {
   return out.startsWith('/') ? out : `/${out}`;
 }
 
+// Deprecated: superseded by the Runtime Gateway (runtimeGateway.ts), which serves IDE/preview from
+// an origin-isolated *.runtime.<domain> host instead of same-origin with the control plane under
+// /api/v1/proxy/*. Blocked outright in production — untrusted workspace/preview content must never
+// run same-origin with the panel there. Left reachable in development only, for any tooling still
+// pointed at the old path during the transition.
+function rejectInProduction() {
+  if (process.env.NODE_ENV === 'production') throw Object.assign(new Error('DEPRECATED_USE_RUNTIME_GATEWAY'), { statusCode: 410 });
+}
+
 // Shared by every proxy route below, and run as a `preHandler` — which, for a WebSocket route,
 // executes strictly *before* @fastify/websocket completes the handshake (the 101 only gets sent
 // once the route's own handler/wsHandler runs). Throwing here rejects the request with a normal
@@ -42,6 +51,7 @@ function stripPrefix(url: string | undefined, prefix: string) {
 // are all validated before any 101 is possible, for both the HTTP and the WS path through this
 // same route.
 async function requireIdeAccess(request: FastifyRequest) {
+  rejectInProduction();
   if (!isAllowedWsOrigin(request.headers.origin)) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED'), { statusCode: 403 });
   const { workspaceId } = request.params as { workspaceId: string };
   const workspace = await resolveWorkspace(workspaceId);
@@ -51,6 +61,7 @@ async function requireIdeAccess(request: FastifyRequest) {
 }
 
 async function requirePreviewAccess(request: FastifyRequest) {
+  rejectInProduction();
   if (!isAllowedWsOrigin(request.headers.origin)) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED'), { statusCode: 403 });
   const { workspaceId, port: rawPort } = request.params as { workspaceId: string; port: string };
   const port = Number(rawPort);

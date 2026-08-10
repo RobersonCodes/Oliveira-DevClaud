@@ -26,6 +26,7 @@ import { codeIntelligenceRoutes } from './routes/code-intelligence.js';
 import { contextIntelligenceRoutes } from './routes/context-intelligence.js';
 import { contractIntelligenceRoutes } from './routes/contract-intelligence.js';
 import { registerRuntimeProxy } from './lib/runtimeProxy.js';
+import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtimeGateway.js';
 import { requireHostAdmin } from './lib/auth.js';
 
 /**
@@ -84,6 +85,12 @@ export async function buildApp(opts: { logger?: boolean; disableRateLimit?: bool
   await app.register(codeIntelligenceRoutes, { prefix: '/api/v1/code-intelligence' });
   await app.register(contextIntelligenceRoutes, { prefix: '/api/v1/context-intelligence' });
   await app.register(contractIntelligenceRoutes, { prefix: '/api/v1/contract-intelligence' });
+  await registerRuntimeTicketRoute(app);
+  registerRuntimeGateway(app);
+  // Deprecated: superseded by the Runtime Gateway above (origin-isolated, ticket-authenticated).
+  // Kept temporarily so in-flight iframes/links don't break mid-deploy; blocked outright in
+  // production (see registerRuntimeProxy) since it serves untrusted workspace content same-origin
+  // with the control plane.
   registerRuntimeProxy(app);
 
   return app;

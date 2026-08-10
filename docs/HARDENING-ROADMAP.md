@@ -1,10 +1,12 @@
 # Hardening Roadmap — Oliveira DevCloud
 
 **Status:** Fase 0 concluída. Dos 13 P0 identificados (12 originais + P0-13, encontrado durante a
-correção do P0-4), 10 foram corrigidos e validados com evidência real (build de imagem, migration
-contra banco vazio, testes de integração, relay WebSocket real ponta a ponta). P0-2 e P0-3
-(isolamento de origem/rede — dependem da decisão de domínio/Runtime Gateway) e as Fases 1, 5(resto),
-6-9 continuam pendentes — ver Seção 7.
+correção do P0-4), 11 foram corrigidos e validados com evidência real (build de imagem, migration
+contra banco vazio, testes de integração, relay WebSocket real ponta a ponta). Domínios confirmados
+(`app.<domínio>` para painel+API, `*.runtime.<domínio>` para IDE/preview) e Runtime Gateway
+implementado (P0-2, na camada de aplicação — DNS/certificado wildcard/nginx ficam para o deploy
+real). Só P0-3 (rede Docker dedicada por workspace) e as Fases 1, 5(resto), 6-9 continuam
+pendentes — ver Seção 7.
 **Data:** 2026-08-10
 **Método:** leitura direta do código-fonte (sem execução), citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -106,7 +108,7 @@ Pontos-chave já confirmados no código:
 | # | Status | Risco | Evidência |
 |---|---|---|---|
 | P0-1 | ✅ Corrigido | **Bind mount de workspace resolve para path errado em produção.** `docker-compose.prod.yml` monta o volume nomeado `workspace_data` em `/var/lib/oliveira-devcloud/workspaces` *dentro* dos containers `api`/`worker`, mas `workspace-engine` usa esse mesmo path para pedir ao **daemon do host** (via `docker.sock`) que faça um bind mount — o daemon resolve o path no filesystem do **host**, onde ele não existe. Resultado: containers de workspace novos recebem `/workspace` vazio/errado em produção. O CI já contorna isso setando `WORKSPACE_ROOT` para um path real do host (comentário em `.github/workflows/ci.yml`), mas a baseline de produção nunca foi corrigida. Corrigido trocando o volume nomeado por um bind mount de `${WORKSPACE_ROOT_HOST}` (novo, documentado em `.env.production.example`); validado com `docker compose config`. | `infra/production/docker-compose.prod.yml`; `packages/workspace-engine/src/index.ts:41,85` |
-| P0-2 | ⏳ Pendente | **Painel e conteúdo de runtime (IDE/preview) compartilham a mesma origem HTTP.** JavaScript servido de dentro de um workspace (preview de app do usuário, ou XSS num arquivo do repositório aberto no code-server) roda sob a mesma origem do painel — pode em tese ler/manipular o DOM do painel se embutido, e qualquer fetch feito por esse conteúdo herda a mesma política de cookies. Depende da decisão de arquitetura da Fase 2 (subdomínio de runtime + wildcard cert). | `apps/api/src/lib/runtimeProxy.ts:28-47`, `apps/api/src/app.ts:83` |
+| P0-2 | ✅ Corrigido (app) / ⏳ nginx+DNS+cert pendentes | **Painel e conteúdo de runtime (IDE/preview) compartilhavam a mesma origem HTTP.** JavaScript servido de dentro de um workspace rodava sob a mesma origem do painel — podia em tese ler/manipular o DOM do painel se embutido, e qualquer fetch feito por esse conteúdo herdava a mesma política de cookies. **Corrigido na camada de aplicação**: novo Runtime Gateway (`runtimeGateway.ts`) serve IDE em `ide-<workspaceId>.<RUNTIME_BASE_DOMAIN>` e preview em `preview-<workspaceId>-<port>.<RUNTIME_BASE_DOMAIN>` — origem genuinamente diferente do painel (`app.<domínio>`). Autorização por ticket assinado (HMAC, TTL de 60s, nunca armazenado — ver `runtimeTicket.ts`) trocado por um cookie host-only (sem atributo `Domain`, escopado exatamente ao subdomínio daquele workspace/porta, nunca a outro) logo no primeiro load; a organização é revalidada em **toda** requisição do gateway, não só na troca do ticket, então remover o usuário da organização derruba o acesso imediatamente mesmo com um cookie de runtime ainda válido. `/api/v1/proxy/*` (a origem antiga, compartilhada) foi depreciado e bloqueado com 410 em produção. **Pendente antes de operar com domínio real**: DNS wildcard (`*.runtime.<domínio>`), certificado TLS wildcard, e um server block correspondente em `nginx.prod.conf` (hoje só termina `DEV_CLOUD_HOST`) — nenhum desses bloqueia o código, que é agnóstico de host/DNS e já validado end-to-end nos testes. | `apps/api/src/lib/{runtimeGateway.ts,runtimeTicket.ts}`; `apps/api/src/runtimeGateway.test.ts` (18 testes) |
 | P0-3 | ⏳ Pendente | **Todos os workspaces compartilham a rede Docker bridge default — sem isolamento entre tenants.** Um workspace comprometido alcança por IP qualquer outro workspace de qualquer organização, incluindo seu code-server `--auth none` na porta 13337 (que só não é exposta ao host, mas é alcançável na rede interna). Fase 3. | `packages/workspace-engine/src/index.ts:84`, `packages/ide-engine/src/index.ts:55` |
 | P0-4 | ✅ Corrigido | **Nenhum WebSocket (terminal, IDE proxy, preview proxy) validava o header `Origin`.** Qualquer site na internet podia tentar abrir uma conexão WS contra a API do usuário logado (o cookie é enviado automaticamente pelo browser em `SameSite=Lax` para WS same-site/top-level); não havia defesa em profundidade além da checagem de sessão. Corrigido com `wsOrigin.ts` (comparação exata contra `WEB_ORIGIN`, nunca por sufixo/prefixo) aplicado a terminal e runtime proxy; papel `DEVELOPER` agora também exigido no WS do runtime proxy (antes só checava membership); ambos migrados para `preHandler` de modo que a validação — Origin, sessão, papel, workspace — sempre roda antes de qualquer 101 (ver P0-13). 18 testes cobrindo origin ausente/maliciosa (com domínios parecidos), cookie ausente/inválido/expirado, cross-org. | `apps/api/src/lib/wsOrigin.ts`; `apps/api/src/routes/terminals.ts`; `apps/api/src/lib/runtimeProxy.ts` |
 | P0-5 | ✅ Corrigido | **Rotas de métricas do host são públicas, sem autenticação.** `GET /api/v1/system/metrics-summary` e `GET /api/v1/system` não chamam `requireUser`/`requireOrgRole` — expõem CPU, load average, memória, disco e contagem de workspaces/agentes ativos para qualquer requisição anônima. Corrigido com `requireHostAdmin` e allowlist explícita `HOST_ADMIN_EMAILS`; papéis de organização não concedem acesso global. Testes cobrem anônimo, OWNER de tenant não autorizado e operador configurado. | `apps/api/src/routes/system.ts`; `apps/api/src/app.ts`; `apps/api/src/lib/auth.ts` |
@@ -198,12 +200,13 @@ intocados.
 
 ## 7. Status e próxima etapa recomendada
 
-**Concluído nesta sessão:** dos 13 P0 (12 originais + P0-13, achado durante a correção do P0-4), 10
+**Concluído nesta sessão:** dos 13 P0 (12 originais + P0-13, achado durante a correção do P0-4), 11
 foram corrigidos, testados e validados com evidência real de execução (não só leitura de código):
 
 | Correção | Como foi validado |
 |---|---|
 | P0-1 — bind mount de workspace | `docker compose config` confirma o path do host resolvido corretamente |
+| P0-2 — Runtime Gateway (isolamento de origem, app) | 18 testes: ticket cross-workspace/cross-purpose rejeitado, ticket expirado, membership revogada (via ticket e via cookie já emitido), cookie host-only, headers de segurança, relay real ponta a ponta |
 | P0-4 — Origin/papel em WebSocket | 18 testes: origin ausente/maliciosa, cookie ausente/inválido/expirado, cross-org |
 | P0-5 — métricas do host protegidas | Testes de integração para anônimo, OWNER de tenant e operador da allowlist |
 | P0-6 — job de migration | build real da imagem + `prisma migrate deploy` contra Postgres vazio, tabelas confirmadas via `\dt` |
@@ -215,20 +218,43 @@ foram corrigidos, testados e validados com evidência real de execução (não s
 | P0-12 — divergência de nome de env var | typecheck limpo após unificação |
 | P0-13 — conflito de listeners `upgrade` | 18 testes: `listenerCount('upgrade')===1`, nenhum byte pós-101, relay real de IDE **e** preview ponta a ponta, 10 testes de `wsBridge` (echo real, close code, timeout, backpressure) |
 
-Typecheck (`npm run typecheck`, monorepo inteiro) e build de produção (`tsc -p apps/api/tsconfig.json`)
-rodam limpos. A suíte de testes (`vitest run`) roda limpa no restante do projeto — os únicos 3
-arquivos que falham (`e2e.test.ts`, `git-engine`, `workspace-engine`) falham pela mesma razão
-pré-existente e documentada na Fase 0 (sem relação com as correções acima): este host Windows não
-tem `/var/run/docker.sock`, então essas suítes — que já falhavam antes de qualquer mudança desta
-sessão — continuam falhando exatamente do mesmo jeito. Nenhuma regressão foi introduzida (106 de 112
-testes passam, contra 64 de 70 antes da sessão — a diferença são só os testes novos escritos para as
-correções acima).
+Typecheck (`npm run typecheck`, monorepo inteiro), build de produção da API (`tsc -p
+apps/api/tsconfig.json`) e build de produção do web (`next build`) rodam limpos. A suíte de testes
+(`vitest run`) roda limpa no restante do projeto — os únicos 3 arquivos que falham (`e2e.test.ts`,
+`git-engine`, `workspace-engine`) falham pela mesma razão pré-existente e documentada na Fase 0 (sem
+relação com as correções acima): este host Windows não tem `/var/run/docker.sock`, então essas
+suítes — que já falhavam antes de qualquer mudança desta sessão — continuam falhando exatamente do
+mesmo jeito. Nenhuma regressão foi introduzida (131 de 137 testes passam, contra 64 de 70 antes da
+sessão — a diferença são só os testes novos escritos para as correções acima).
 
-**Pendente:** P0-2 e P0-3 (isolamento de origem e de rede — núcleo das Fases 2-4, dependem da decisão
-de domínio) e as Fases 1, 5 (o restante), 6-9 por completo.
+**Runtime Gateway (P0-2) — o que foi implementado:**
+- `apps/api/src/lib/runtimeTicket.ts` — ticket assinado (HMAC-SHA256), stateless, TTL de 60s.
+- `apps/api/src/lib/runtimeGateway.ts` — rota de emissão (`POST /api/v1/runtime-tickets`, no painel,
+  autenticada normalmente) + rota `constraints:{host: regex}` do próprio Fastify para
+  `*.<RUNTIME_BASE_DOMAIN>`, que troca ticket por cookie host-only (nunca `Domain` amplo) na primeira
+  requisição, remove o ticket da URL via redirect 302, e **revalida membership da organização em toda
+  requisição** (não só na troca do ticket) — remover o usuário derruba o acesso imediatamente mesmo
+  com cookie de runtime ainda dentro do TTL.
+- Headers de segurança no domínio de runtime: `Content-Security-Policy: frame-ancestors <WEB_ORIGIN>`,
+  `Referrer-Policy: no-referrer`, `Permissions-Policy`, `X-Content-Type-Options: nosniff`.
+- `apps/api/src/lib/runtimeProxy.ts` (a origem antiga, compartilhada) depreciado, bloqueado com 410
+  quando `NODE_ENV=production`, ainda funcional em dev durante a transição.
+- `apps/web/app/ide/page.tsx` migrado para solicitar ticket antes de montar a IDE/abrir previews;
+  iframe com `sandbox` mínimo documentado linha a linha.
+- Deliberadamente **sem** checagem de Origin no gateway (diferente de terminal/proxy antigo) — a
+  origem legítima de uma chamada same-origin do próprio code-server é o domínio de runtime, não o
+  painel; a defesa contra CSRF cross-site vem do modelo de credencial (ticket nunca fica acessível a
+  outra origem; cookie de runtime é `SameSite=Lax` + host-only). Justificativa completa no comentário
+  de `requireRuntimeAccess()`.
 
-A sequência combinada é: confirmar a arquitetura de domínios (`app.<domínio>` para painel+API via
-`/api`, `*.runtime.<domínio>` para IDE/preview isolados — domínio real configurável por env, sem
-depender de DNS/certificado para implementar) → isolamento de origem → WebSockets (concluído aqui,
-P0-4/P0-13) → redes Docker por workspace (P0-3) → Runtime Gateway (reaproveitando `wsBridge.ts`
-construído aqui) → PWA/mobile → testes finais.
+**Pendente antes de operar o Runtime Gateway com domínio real:** DNS wildcard
+(`*.runtime.<domínio>`), certificado TLS wildcard, e um server block em `nginx.prod.conf`
+correspondente (hoje só termina `DEV_CLOUD_HOST` = `app.<domínio>`) — nada disso bloqueia o código em
+si, que é host-agnóstico e já validado end-to-end via `Host` header spoofado nos testes.
+
+**Pendente no roadmap geral:** P0-3 (rede Docker dedicada por workspace — isolamento entre
+workspaces na mesma rede `bridge`) e as Fases 1, 5 (o restante), 6-9 por completo.
+
+A sequência sugerida agora é: redes Docker por workspace (P0-3, o último P0) → wiring de nginx/DNS/
+certificado real para o Runtime Gateway já pronto → PWA/mobile → testes finais em CI/Linux (onde
+`git-engine`/`workspace-engine`/`e2e` finalmente rodam de verdade).
