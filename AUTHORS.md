@@ -6,6 +6,8 @@
 
 Identificador público: **RobersonCodes**
 
+Crédito profissional: **Engenheiro de Software Roberson de Oliveira**
+
 Autor da concepção, arquitetura, implementação original e documentação da Oliveira DevCloud, conforme
 o histórico de versões mantido neste repositório.
 

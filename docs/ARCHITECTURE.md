@@ -1,4 +1,4 @@
-# Oliveira DevCloud — Architecture v0.1
+# Oliveira DevCloud — Arquitetura atual
 
 ## Goal
 Remote, browser-accessible development control plane with persistent workspaces, Git integration, web terminals and AI agents.
@@ -124,3 +124,42 @@ não uma referência morta: o serviço `nginx` (dockerizado, `infra/production/n
 publicando 80/443 diretamente) existe no compose atrás de um profile — `docker compose --profile
 standalone-nginx up -d` — e fica desligado por padrão. Não é o que está em uso nesta implantação; ver
 `docs/RUNTIME-GATEWAY-DEPLOY.md` para os dois caminhos completos.
+
+## Hardening Fase 5 — artefatos e prontidão de produção
+
+API, web, worker e Runtime Broker são construídos por Dockerfiles multi-stage com instalação
+determinística (`npm ci`). Os pacotes internos usados no servidor publicam JavaScript compilado em
+`dist/`; as imagens finais executam somente esses artefatos como UID/GID `10001:10001`. API e worker
+incluem OpenSSL, requisito do engine Prisma na base Debian slim. O Runtime Broker permanece
+non-root mesmo sendo o único detentor de `docker.sock`: o Compose adiciona somente o GID numérico do
+grupo dono do socket (`DOCKER_GID`) como grupo suplementar.
+
+Liveness e readiness são separadas. A API só responde pronta quando PostgreSQL, Redis e Runtime
+Broker estão prontos; o broker só responde pronto depois de `docker.ping()`. O Compose aguarda
+PostgreSQL e Redis saudáveis, executa migrations como job one-shot, aguarda broker saudável e apenas
+então inicia API/worker; o web aguarda a API saudável. Essa cadeia evita anunciar o painel como
+operacional quando banco, filas ou o daemon que hospeda os workspaces estão indisponíveis.
+
+### Imagem de workspace e cadeia de fornecimento
+
+A imagem de workspace possui versão operacional `1.1.0`. O code-server `4.121.0` é obtido do release
+oficial por arquitetura (`amd64`/`arm64`) e seu SHA-256 é verificado antes da extração; pnpm também é
+fixado em `11.21.0`. Codex CLI `0.147.0` e Claude Code `2.1.226` são instalados por `npm ci` a partir
+de um lockfile próprio da imagem; autoatualização fica desabilitada para evitar drift depois do
+build. O usuário de runtime é `devcloud`/UID `10001`. O workflow
+`.github/workflows/workspace-image.yml` é a fronteira de publicação planejada: produz a imagem GHCR
+com tags por commit/versão, provenance e SBOM. Até existir uma execução remota confirmada, produção
+deve usar o build local versionado descrito em `docs/PRODUCTION-OPERATIONS.md`; a existência do
+workflow, sozinha, não prova que o artefato está publicado.
+
+Persistência de PostgreSQL e dos diretórios de workspace, instalação limpa, upgrade, rollback e
+recuperação de desastre estão definidos em `docs/PRODUCTION-OPERATIONS.md`. A topologia não muda:
+PostgreSQL usa volume Docker; workspaces usam diretório real do host porque o Runtime Broker entrega
+esse bind ao daemon Docker. `docker compose down -v` não faz parte de nenhum procedimento normal de
+operação ou reinício.
+
+O `agent-engine` executa Codex em modo não interativo com sandbox `workspace-write` e sem prompts de
+aprovação, e Claude em modo `--print`/`acceptEdits`. A autenticação não faz parte da imagem: é criada
+pelo usuário no terminal do workspace. Se uma CLI estiver ausente ou falhar antes de iniciar, o
+worker marca tarefa, etapa e orquestração como `FAILED`, registra somente metadados sanitizados e
+retorna ao loop BullMQ sem relançar o erro local.

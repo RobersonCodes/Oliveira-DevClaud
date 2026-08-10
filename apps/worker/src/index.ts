@@ -13,6 +13,10 @@ import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
 const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine();
 const safeSystemCommands = new Set(['npm test','npm run test','npm run build','npm run lint','npm run typecheck']);
+const safeAgentStartErrorCode = (error: unknown) => {
+  const message = error instanceof Error ? error.message : '';
+  return /^[A-Z][A-Z0-9_]{2,79}$/.test(message) ? message : 'AGENT_START_FAILED';
+};
 
 async function tick(orchestrationId:string){
   const o=await prisma.orchestration.findUnique({where:{id:orchestrationId},include:{workspace:true,steps:{include:{agentTask:{select:{status:true}}}}}}); if(!o||o.status==='CANCELLED'||o.status==='COMPLETED'||o.status==='FAILED') return;
@@ -91,7 +95,17 @@ async function tick(orchestrationId:string){
           prisma.orchestrationStep.updateMany({where:{id:step.id,status:'RUNNING',agentTaskId:task.id},data:{status:'FAILED',finishedAt:now}}),
           prisma.orchestration.updateMany({where:{id:o.id,status:{not:'CANCELLED'}},data:{status:'FAILED',finishedAt:now}})
         ]);
-        throw error;
+        // A missing CLI or another task-local startup failure must fail this
+        // orchestration, not reject the BullMQ processor and destabilize the worker loop. Database
+        // failures above still throw naturally because they happen before this log/return.
+        console.error('Agent startup failed', {
+          orchestrationId: o.id,
+          stepId: step.id,
+          taskId: task.id,
+          agent: task.agent,
+          errorCode: safeAgentStartErrorCode(error)
+        });
+        return;
       }
     } else {
       // v0.9: SYSTEM steps are declarations of integration quality gates.

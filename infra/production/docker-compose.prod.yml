@@ -13,6 +13,11 @@ services:
     restart: unless-stopped
     command: ["redis-server","--appendonly","yes"]
     volumes: [redis_data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
   # One-shot: applies Prisma migrations against a possibly-empty database before api/worker start.
   # Reuses the api image (same deps/schema) rather than a separate Dockerfile to avoid drift.
   migrate:
@@ -44,8 +49,11 @@ services:
       # needs to know the *string* (WORKSPACE_ROOT below) to hand the daemon. Compare to api, which
       # DOES need the real bind mount, because it also `fs.mkdir`/`fs.chown`s that path directly
       # (see the comment on api's own volumes) before ever asking the broker to create a container.
+    # The broker itself stays non-root. Grant only the host docker.sock group as a supplemental
+    # numeric GID (obtain with `stat -c '%g' /var/run/docker.sock` and set DOCKER_GID).
+    group_add: ["${DOCKER_GID:?set DOCKER_GID to the host docker.sock group id}"]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:5001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -64,7 +72,7 @@ services:
     ports: ["127.0.0.1:${DEVCLOUD_API_HOST_PORT:-18081}:4000"]
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_started }
+      redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
       runtime-broker: { condition: service_healthy }
     volumes:
@@ -79,7 +87,7 @@ services:
     env_file: ../../.env.production
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_started }
+      redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
       runtime-broker: { condition: service_healthy }
   web:
@@ -96,7 +104,8 @@ services:
     # they collide with something already running. For a VPS *exclusiva* (no other site), see the
     # `nginx` service below (profile-gated, off by default).
     ports: ["127.0.0.1:${DEVCLOUD_WEB_HOST_PORT:-18080}:3000"]
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
   # Optional, off by default: full standalone nginx for a VPS EXCLUSIVA (no other site sharing
   # 80/443). Activate explicitly with `docker compose --profile standalone-nginx up -d` — never on a
   # host that already runs another nginx/site on 80/443 (that's exactly the shared-host scenario

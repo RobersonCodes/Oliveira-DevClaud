@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `6c4cbfe` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; Fase 1 (cliente HTTP/WS centralizado) concluída; Fase 2 `PARCIAL` — domínios trocados (`app.aifunnelpro.com.br`/`runtime.tiremax.shop`), DNS propagado, VPS confirmada compartilhada com o Tiremax, HTTP já comprovadamente chega ao nginx do host (não é bloqueio de firewall); falta aplicar server blocks + certificados + deploy reais |
-| Etapa ativa | Pendências da Etapa 2 — deploy real do Runtime Gateway; Etapa 5 segue ativa em paralelo após a validação local da Etapa 2 |
+| Commit de referência | `875fa15` |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server e CLIs Codex/Claude reproduzíveis com falha isolada no worker estão concluídos (P1-6/P1-7/P1-8/P1-10/P2-3 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
+| Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo; deploy real da Etapa 2 aguarda acesso SSH restrito |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Obter acesso SSH restrito à VPS para aplicar o bootstrap HTTP-only, emitir certificados e trocar para a config final (`docs/RUNTIME-GATEWAY-DEPLOY.md` §2-4), preservando o Tiremax |
+| Próxima ação única | Revisar e testar timeouts, limites de corpo e headers do nginx/API da Fase 5 (P2-1/P2-4), sem antecipar a revisão ampla de identidade da Fase 6 |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Nenhum bloqueio externo conhecido para a validação local nem para a Etapa 5. |
 
 ### Baseline de validação conhecido
@@ -565,20 +565,21 @@ rede/porta.
 
 ### Fase 5 — infraestrutura reproduzível e operação em host limpo
 
-**Status:** `PARCIAL`
+**Status:** `EM ANDAMENTO`
 
 **Execução:** Codex — Etapa 5 reatribuída pelo usuário após o encerramento dos créditos do Claude.
 
 **Implementação:**
 
-- [ ] Auditar Dockerfiles: build multi-stage, usuário não-root e healthchecks.
-- [ ] Usar instalação determinística de dependências.
+- [x] Auditar Dockerfiles: build multi-stage, usuário não-root e healthchecks.
+- [x] Usar instalação determinística de dependências.
 - [ ] Publicar e versionar imagens de workspace em registry confiável.
-- [ ] Verificar checksum/assinatura de artefatos como code-server.
-- [ ] Incluir Postgres, Redis, broker e dependências reais em readiness.
+- [x] Verificar checksum/assinatura de artefatos como code-server.
+- [x] Instalar/versionar CLIs Codex e Claude e isolar falhas de inicialização no worker.
+- [x] Incluir Postgres, Redis, broker e dependências reais em readiness.
 - [ ] Revisar timeouts, limites e headers do nginx/API.
-- [ ] Documentar instalação limpa, upgrade, rollback e disaster recovery.
-- [ ] Automatizar migrations antes da API.
+- [x] Documentar instalação limpa, upgrade, rollback e disaster recovery.
+- [x] Automatizar migrations antes da API.
 - [ ] Provar persistência após reinício dos serviços.
 
 **Critério de aceite:** seguindo somente a documentação, um host limpo consegue configurar, migrar,
@@ -587,7 +588,39 @@ ambiente sem perda.
 
 **Validação mínima:** ensaio completo em VM Linux limpa e registro dos comandos/resultados.
 
-**Evidências:** migration one-shot e parte do build já constam no roadmap; completar o restante.
+**Evidências:** migration one-shot preservada; P1-6/P1-7/P1-8 fechados no roadmap. `npm ci`,
+`typecheck`, `lint`, builds de todos os pacotes e dos quatro apps passaram; as quatro imagens Linux
+foram construídas com zero vulnerabilidades no audit, sem alerta OpenSSL do Prisma. Inspeção das
+imagens confirmou UID/GID `10001:10001`, comandos e healthchecks. Imports dos quatro runtimes
+passaram depois de `npm prune --omit=dev`. A suíte real do Runtime Broker passou `14/14` contra o
+Docker Desktop (na primeira tentativa o teste não coletou porque usou `/var/run/docker.sock`;
+repetido com `DOCKER_SOCKET=//./pipe/docker_engine`, o caminho correto no Windows). A validação fim a
+fim em VM Linux limpa continua pendente e impede concluir a fase inteira. A imagem de workspace
+`oliveira-devcloud/workspace-node:1.1.0` foi construída de verdade e validada com UID `10001`,
+code-server `4.121.0`, pnpm `11.21.0`, Node `22`, Python `3.11` e Java `17`; após instalar as CLIs,
+o digest local passou a
+`sha256:35468c9c4f2de8536ab1b33a609935a24f0c357e7a004fa9aca88e797a85d53c`. O download do
+code-server agora valida SHA-256 por arquitetura e o build falha em divergência. O workflow
+`.github/workflows/workspace-image.yml` prepara publicação versionada em GHCR com provenance e SBOM,
+mas nenhuma imagem foi publicada nesta sessão; P1-9 permanece parcial. Instalação limpa, upgrade,
+rollback, backup/restore, persistência e desastre foram consolidados em
+`docs/PRODUCTION-OPERATIONS.md`; os ensaios reais do runbook continuam pendentes.
+Validação documental desta atualização: todos os links locais dos cinco documentos ativos passaram,
+`git diff --check` ficou limpo e `docker-compose --env-file .env.production.example -f
+infra/production/docker-compose.prod.yml config --quiet` terminou com código zero. O plugin local
+`docker compose` não está disponível neste terminal Windows (a primeira tentativa foi rejeitada por
+esse motivo); o binário legado `docker-compose` validou o mesmo arquivo. O host de produção continua
+exigindo Compose v2, como declarado no runbook.
+
+P1-10 também foi fechado nesta sessão: `infra/workspace-images/node/package.json` e seu lockfile
+fixam Codex CLI `0.147.0`, Claude Code `2.1.226` e pnpm `11.21.0`; a imagem real, como UID `10001`,
+executou `codex --version`/`claude --version`; `npm audit --omit=dev --audit-level=high` retornou zero
+vulnerabilidades. A inspeção do help revelou e evitou um defeito de compatibilidade: `--full-auto`
+foi removido do Codex atual e o engine agora usa `workspace-write` + aprovação `never`, combinação
+presente na CLI e coberta pelo teste. Typecheck do agent-engine/worker/broker passou, a suíte real
+broker+Docker+tmux passou `2/2`, e as imagens de worker e broker foram reconstruídas com audit zero.
+Não houve autenticação nem chamada a provedor nesta validação; o smoke test autenticado continua
+pendente no host Linux e mantém a Fase 5 `EM ANDAMENTO`.
 
 ---
 
@@ -767,7 +800,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Claude | Fase 1 (Etapa 4) | `CONCLUÍDA` | `apps/web/lib/apiClient.ts` novo (HTTP/WS/SSE centralizados, redirect automático em `401` exceto rotas de auth); `apps/web/next.config.js` novo (rewrite dev-only para a API); 14 páginas migradas, `NEXT_PUBLIC_API_URL` removido do bundle/Dockerfile/compose/env examples. Validação com Postgres/Redis/Docker reais nesta sessão via `next dev` (porta 3001) proxiando para a API real (porta 4000): HTTP GET/POST/JSON/cookie confirmado; pilha completa Fase 1→Fase 4→Docker real criando organização/projeto/workspace reais; WebSocket de terminal confirmado com I/O bidirecional real (comando `echo` executado no tmux do container e ecoado de volta) através do proxy; SSE de `setup jobs` confirmado com múltiplos eventos reais em stream através do proxy. `typecheck`/`lint`/`build web` limpos; zero `localhost:4000` no build de produção. P1-13 do roadmap fechado. Achado durante a validação (fora do escopo desta fase, não corrigido): bug pré-existente no handler WS de terminal do backend (`apps/api/src/routes/terminals.ts:102-117`) — `Buffer.isBuffer(raw)` é sempre verdadeiro para mensagens da lib `ws` (texto ou binário), então o protocolo JSON `{type:'input'\|'resize'}` nunca é interpretado e cada tecla digitada escreve o envelope JSON literal no pty; registrado como `P1-18` no roadmap; commit `4de57d6` | Etapa 5: infraestrutura reproduzível em host limpo (Fase 5) |
 | 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário trocou os domínios reais de `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com` para `app.aifunnelpro.com.br`/`runtime.tiremax.shop` (DNS dos três nomes já propagado e confirmado externamente) e revelou que a VPS de destino é compartilhada com outro site (Tiremax) já ocupando 80/443 com nginx próprio — mudança de topologia da Fase 2. Sem acesso SSH à VPS nesta sessão (tentativa de conexão deu timeout na porta 22, nenhuma chave privada disponível localmente), então nenhuma mudança foi aplicada no servidor; todo o trabalho foi preparação de config/documentação. Revisão do usuário corrigiu 4 achados antes do commit: (1) ciclo de bootstrap TLS — a config final referenciava certificados inexistentes, o que quebraria `nginx -t` antes mesmo do desafio HTTP-01 do painel conseguir rodar; resolvido com um arquivo bootstrap novo, só HTTP, sem nenhuma referência a certificado (`nginx-devcloud.host.bootstrap.conf.example`), aplicado primeiro, trocado pela config final só depois dos dois certificados emitidos, nunca os dois ativos ao mesmo tempo; (2) a hipótese de bloqueio por firewall (Hostinger/hPanel) estava errada e foi removida do plano/roadmap/runbook — Drop é política implícita padrão da Hostinger (não uma regra extra causando conflito), a porta 22 fechada é intencional, e uma requisição para `app.aifunnelpro.com.br` abriu o Tiremax, o que prova que HTTP já chega ao nginx do host; o bloqueio real sempre foi só a ausência dos server blocks/certificados/deploy; (3) `infra/production/nginx.prod.conf` deixou de ser config morta — o serviço `nginx` do compose voltou, agora atrás de um profile (`docker compose --profile standalone-nginx`, off por padrão), preservando um caminho executável para uma eventual VPS exclusiva; (4) `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` adicionado aos blocos de API e runtime em ambos os arquivos de nginx, com nota ligando à restrição de `trustProxy` já planejada para a Fase 6/Etapa 6 (P1-1). Resultado: `infra/production/docker-compose.prod.yml` não roda nginx próprio nem publica 80/443 por padrão (`web`/`api` só em `127.0.0.1:${DEVCLOUD_WEB_HOST_PORT:-18080}`/`127.0.0.1:${DEVCLOUD_API_HOST_PORT:-18081}`); `docs/RUNTIME-GATEWAY-DEPLOY.md` reescrito (sem a seção de firewall, com o bootstrap em duas fases); `.env.production(.example)`, `docs/ARCHITECTURE.md` e `docs/HARDENING-ROADMAP.md` atualizados. `git diff --check`, `docker compose config` e `nginx -t` (bootstrap sem certificados e config final com certificados descartáveis) todos limpos. Nenhum arquivo commitado ainda nesta entrada | Usuário aplica o bootstrap, emite os dois certificados, troca para a config final no nginx do host (`docs/RUNTIME-GATEWAY-DEPLOY.md` §2-4) e roda a checklist de validação (§7); Claude não aplica nada no servidor sem acesso SSH |
 | 2026-08-10 | Codex | Reatribuição das Etapas 2 e 5 | `EM ANDAMENTO` | Usuário autorizou explicitamente o Codex a assumir as partes pendentes das Etapas 2 e 5 após o encerramento dos créditos do Claude, preservando o diff não commitado e todas as entregas anteriores | Revisar e validar o diff da Etapa 2; obter acesso SSH restrito e executar o deploy real sem afetar o Tiremax |
-| 2026-08-10 | Codex | Fase 2 (Etapa 2) — revisão local | `PARCIAL` | Diff do Claude preservado e revisado; reatribuição registrada; `.env.production` ignorado; `git diff --check` limpo; compose padrão sem nginx e profile `standalone-nginx` funcional; web/API somente em `127.0.0.1:18080/18081`; `nginx -t` limpo para bootstrap e config final; typecheck e lint limpos | Liberar SSH somente para `186.219.142.107/32`, autenticar por chave e executar o runbook no VPS com backup/`nginx -t` antes de cada reload |
+| 2026-08-10 | Codex | Fase 2 (Etapa 2) — revisão local | `PARCIAL` | Diff do Claude preservado e revisado; reatribuição registrada; `.env.production` ignorado; `git diff --check` limpo; compose padrão sem nginx e profile `standalone-nginx` funcional; web/API somente em `127.0.0.1:18080/18081`; `nginx -t` limpo para bootstrap e config final; typecheck e lint limpos; preparação commitada em `875fa15` | Liberar SSH somente para `186.219.142.107/32`, autenticar por chave e executar o runbook no VPS com backup/`nginx -t` antes de cada reload |
+| 2026-08-10 | Codex | Fase 5 (Etapa 5) — imagens, agentes e documentação | `EM ANDAMENTO` | Quatro imagens de serviço multi-stage/non-root; readiness real; workspace `1.1.0` com checksum do code-server e toolchain validada; Codex `0.147.0`/Claude `2.1.226` instalados por lockfile, audit zero e versões executadas como UID 10001; flags atuais do Codex corrigidas e cobertas; falha de startup do agente não é mais relançada pelo worker; teste real broker+Docker+tmux `2/2`; worker/broker reconstruídos; README, arquitetura, roadmap e runbook sincronizados. Publicação GHCR, execução autenticada e ensaio completo em VM Linux ainda não executados | Revisar timeouts, limites de corpo e headers nginx/API (P2-1/P2-4) |
 
 ### Modelo para futuras entradas
 

@@ -33,7 +33,7 @@ operações Git e execução de agentes permanecem no backend.
 
 ## Arquitetura
 
-O monorepo é dividido em três aplicações e pacotes de domínio com responsabilidades explícitas.
+O monorepo é dividido em quatro aplicações e pacotes de domínio com responsabilidades explícitas.
 PostgreSQL mantém o estado durável; Redis coordena filas e estado efêmero; Docker hospeda os runtimes
 de desenvolvimento.
 
@@ -48,6 +48,7 @@ flowchart TB
     api
     gateway
     worker["Worker · BullMQ"]
+    broker["Runtime Broker"]
   end
 
   subgraph intelligence["Code intelligence"]
@@ -60,6 +61,7 @@ flowchart TB
     workspace["Workspace Engine"]
     terminal["Terminal / IDE"]
     agents["Agent / Git / Review"]
+    docker[("Docker Engine")]
     containers[("Docker workspaces")]
   end
 
@@ -73,9 +75,13 @@ flowchart TB
   api --> redis[("Redis")]
   worker --> redis
   worker --> agents
-  workspace --> containers
-  terminal --> containers
-  agents --> containers
+  api --> broker
+  worker --> broker
+  workspace --> broker
+  terminal --> broker
+  agents --> broker
+  broker --> docker
+  docker --> containers
 ```
 
 ### Decisões de projeto
@@ -124,10 +130,12 @@ conflitos para que a aprovação seja rastreável.
 .
 ├── apps/
 │   ├── api/                    # API, autenticação, WebSocket e proxies de runtime
+│   ├── runtime-broker/         # Contrato restrito e único acesso ao Docker socket
 │   ├── web/                    # Dashboard Next.js
 │   └── worker/                 # Jobs assíncronos e orquestrações
 ├── packages/
 │   ├── database/               # Schema Prisma e acesso ao PostgreSQL
+│   ├── runtime-broker-client/  # Cliente HTTP/WS compartilhado do Runtime Broker
 │   ├── workspace-engine/       # Lifecycle e isolamento de containers
 │   ├── terminal-engine/        # Sessões persistentes de terminal
 │   ├── git-engine/             # Worktrees, snapshots, diffs e merge
@@ -178,8 +186,12 @@ conflitos para que a aprovação seja rastreável.
 4. Construa a imagem usada pelos workspaces:
 
    ```bash
-   docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node
+   docker build -t oliveira-devcloud/workspace-node:1.1.0 infra/workspace-images/node
    ```
+
+   Essa imagem inclui code-server `4.121.0`, pnpm `11.21.0`, Codex CLI `0.147.0` e Claude Code
+   `2.1.226`, todos fixados no lockfile. Credenciais não são incorporadas à imagem: autentique cada
+   CLI pelo terminal do workspace antes da primeira execução de agente.
 
 5. Gere o Prisma Client, aplique as migrations e inicie as aplicações:
 
@@ -205,7 +217,7 @@ As variáveis disponíveis e seus valores de desenvolvimento estão documentados
 
 | Comando | Finalidade |
 | --- | --- |
-| `npm run dev` | Inicia web, API e worker em modo de desenvolvimento |
+| `npm run dev` | Inicia web, API, worker e Runtime Broker em modo de desenvolvimento |
 | `npm run build` | Compila todos os workspaces que expõem script de build |
 | `npm run typecheck` | Executa o TypeScript em todos os workspaces |
 | `npm run lint` | Executa os linters configurados |
@@ -252,8 +264,9 @@ A segurança é tratada como fronteira arquitetural, não apenas como validaçã
 | Merge | Aprovação `ADMIN`/`OWNER` e verificação otimista do `HEAD` |
 
 > [!IMPORTANT]
-> O Docker socket concede alto privilégio ao processo que o utiliza. Em produção, API e worker devem
-> operar em hosts dedicados, com acesso restrito, hardening do daemon e controles de rede externos.
+> O Docker socket concede alto privilégio ao processo que o utiliza. Em produção, somente o Runtime
+> Broker o monta; API e worker usam o contrato interno restrito do broker. O host ainda precisa de
+> acesso administrativo limitado, hardening do daemon e controles de rede externos.
 >
 > `RUNTIME_BASE_DOMAIN` deve pertencer a um domínio registrável diferente de `DEV_CLOUD_HOST`. Usar
 > apenas outro subdomínio preserva riscos de cookie tossing entre conteúdo de runtime e control plane.
@@ -274,7 +287,10 @@ flowchart LR
 ```
 
 O pipeline provisiona PostgreSQL e constrói a imagem real de workspace antes dos testes. Assim, o gate
-de integração valida o mesmo tipo de runtime usado pela plataforma.
+de integração valida o mesmo tipo de runtime usado pela plataforma. O workflow separado
+[`workspace-image.yml`](.github/workflows/workspace-image.yml) prepara a publicação versionada da
+imagem em GHCR com proveniência e SBOM; até a primeira publicação, a versão `1.1.0` deve ser
+construída localmente conforme o runbook de produção.
 
 ## Interface
 
@@ -292,9 +308,12 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
   autoscaling e isolamento multi-host não fazem parte desta versão.
 - O Runtime Gateway exige domínio registrável próprio, DNS wildcard, certificado wildcard e server
   block nginx correspondente antes da exposição pública.
-- Workspaces dependem de um Docker Engine acessível pela API e pelo worker.
+- Workspaces dependem de um Docker Engine acessível somente pelo Runtime Broker; API e worker não
+  montam o socket.
 - Planejamento por IA exige credenciais válidas do provedor selecionado; o restante do control plane
   pode operar sem elas.
+- Codex e Claude são instalados na imagem, mas a autenticação pertence ao usuário/workspace e nunca
+  deve ser gravada no Dockerfile, no Git ou em logs da aplicação.
 - Testes de integração exigem PostgreSQL e Docker disponíveis localmente ou no runner de CI.
 
 ## Documentação
@@ -305,6 +324,7 @@ de integração valida o mesmo tipo de runtime usado pela plataforma.
 - [Auditoria v2.5](docs/V2.5-AUDIT.md) — achados de baseline e correções de confiabilidade.
 - [Roadmap de hardening](docs/HARDENING-ROADMAP.md) — riscos, decisões e critérios de produção.
 - [Deploy do Runtime Gateway](docs/RUNTIME-GATEWAY-DEPLOY.md) — DNS, TLS wildcard e nginx em domínio real.
+- [Operação de produção](docs/PRODUCTION-OPERATIONS.md) — instalação limpa, upgrade, rollback, backup e recuperação.
 - [Relatório de implementação v2.5](docs/V2.5-IMPLEMENTATION-REPORT.md) — escopo e validações da versão.
 - [`docs/V0.2.md`](docs/V0.2.md) a [`docs/V2.4.md`](docs/V2.4.md) — evolução incremental das capacidades.
 
@@ -320,6 +340,8 @@ Decisões que alterem fronteiras de segurança, persistência, contratos públic
 devem ser acompanhadas de documentação técnica no mesmo pull request.
 
 ## Autoria e direitos
+
+**Autoria: Engenheiro de Software Roberson de Oliveira (RobersonCodes).**
 
 O projeto declara autoria e titularidade em [AUTHORS.md](AUTHORS.md), [COPYRIGHT.md](COPYRIGHT.md) e
 [NOTICE.md](NOTICE.md). Declarações, guia de registro e evidências de proveniência estão organizados

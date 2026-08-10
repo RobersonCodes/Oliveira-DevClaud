@@ -2,19 +2,20 @@
   "name": "@oliveira/database",
   "version": "0.7.0",
   "private": true,
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "types": "src/index.ts",
   "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --outDir dist --declaration",
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@prisma/client": "^6.3.1"
+    "@prisma/client": "^6.3.1",
+    "prisma": "^6.3.1"
   },
   "devDependencies": {
-    "prisma": "^6.3.1",
     "typescript": "^5.7.3"
   }
 }

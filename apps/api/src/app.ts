@@ -4,6 +4,7 @@ import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
+import { Redis } from 'ioredis';
 import { ZodError } from 'zod';
 import { prisma } from '@oliveira/database';
 import { authRoutes } from './routes/auth.js';
@@ -58,8 +59,36 @@ export async function buildApp(opts: { logger?: boolean; disableRateLimit?: bool
 
   app.get('/health', async () => ({ status: 'ok', service: 'oliveira-devcloud-api', version: '2.5.0' }));
   app.get('/ready', async (_request, reply) => {
-    try { await prisma.$queryRaw`SELECT 1`; return { status: 'ready', database: 'ok' }; }
-    catch { return reply.code(503).send({ status: 'not-ready', database: 'error' }); }
+    const dependencies = { database: 'error', redis: 'error', runtimeBroker: 'error' };
+
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      dependencies.database = 'ok';
+    } catch { /* reported below */ }
+
+    const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+      lazyConnect: true,
+      connectTimeout: 2_000,
+      maxRetriesPerRequest: 0,
+      enableOfflineQueue: false
+    });
+    try {
+      await redis.connect();
+      await redis.ping();
+      dependencies.redis = 'ok';
+    } catch { /* reported below */ }
+    finally { redis.disconnect(); }
+
+    try {
+      const brokerBaseUrl = (process.env.RUNTIME_BROKER_URL ?? 'http://runtime-broker:5001').replace(/\/$/, '');
+      const brokerResponse = await fetch(`${brokerBaseUrl}/ready`, { signal: AbortSignal.timeout(2_000) });
+      if (brokerResponse.ok) dependencies.runtimeBroker = 'ok';
+    } catch { /* reported below */ }
+
+    if (Object.values(dependencies).every(status => status === 'ok')) {
+      return { status: 'ready', ...dependencies };
+    }
+    return reply.code(503).send({ status: 'not-ready', ...dependencies });
   });
   app.get('/api/v1/system', async (request) => {
     await requireHostAdmin(request);

@@ -39,7 +39,7 @@ export async function buildBrokerApp(opts: BuildBrokerAppOptions = {}) {
   const app = Fastify({ logger: opts.logger ?? true });
   const docker = opts.docker ?? new Docker({ socketPath: process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
   const config: BrokerConfig = {
-    image: opts.config?.image ?? process.env.WORKSPACE_IMAGE ?? 'oliveira-devcloud/workspace-node:1.0',
+    image: opts.config?.image ?? process.env.WORKSPACE_IMAGE ?? 'oliveira-devcloud/workspace-node:1.1.0',
     workspaceRoot: opts.config?.workspaceRoot ?? process.env.WORKSPACE_ROOT ?? '/var/lib/oliveira-devcloud/workspaces',
     relayContainerId: opts.config?.relayContainerId ?? process.env.RELAY_CONTAINER_NAME ?? undefined
   };
@@ -55,11 +55,19 @@ export async function buildBrokerApp(opts: BuildBrokerAppOptions = {}) {
   });
 
   app.get('/health', async () => ({ status: 'ok', service: 'oliveira-devcloud-runtime-broker' }));
+  app.get('/ready', async (_request, reply) => {
+    try {
+      await docker.ping();
+      return { status: 'ready', docker: 'ok' };
+    } catch {
+      return reply.code(503).send({ status: 'not-ready', docker: 'error' });
+    }
+  });
 
   // Every route below is internal-only (never published on a host port) but still requires the
   // shared bearer token — defense in depth if the compose network topology is ever misconfigured.
   app.addHook('onRequest', async request => {
-    if (request.url === '/health') return;
+    if (request.url === '/health' || request.url === '/ready') return;
     requireBrokerAuth(request);
   });
 

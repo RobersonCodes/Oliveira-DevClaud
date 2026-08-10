@@ -3,9 +3,10 @@
   "version": "2.4.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "types": "src/index.ts",
   "scripts": {
+    "build": "tsc -p tsconfig.json --noEmit false --outDir dist --declaration",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -14,7 +15,7 @@
   "devDependencies": {
     "@oliveira/runtime-broker": "*",
     "@types/dockerode": "^3.3.35",
-    "dockerode": "^4.0.2",
+    "dockerode": "^5.0.1",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.3"
   }

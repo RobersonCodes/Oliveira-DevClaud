@@ -3,9 +3,9 @@
   "version": "0.9.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "types": "src/index.ts",
-  "scripts": {"typecheck":"tsc --noEmit"},
+  "scripts": {"build":"tsc -p tsconfig.json --noEmit false --outDir dist --declaration","typecheck":"tsc --noEmit"},
   "dependencies": {"@oliveira/runtime-broker-client":"*"},
-  "devDependencies": {"@oliveira/runtime-broker":"*","@types/dockerode":"^3.3.34","dockerode":"^4.0.4","@types/node":"^22.10.0","typescript":"^5.7.3"}
+  "devDependencies": {"@oliveira/runtime-broker":"*","@types/dockerode":"^3.3.34","dockerode":"^5.0.1","@types/node":"^22.10.0","typescript":"^5.7.3"}
 }

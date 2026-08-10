@@ -65,11 +65,14 @@ async function withBroker<T>(fn: (client: RuntimeBrokerClient, broker: Awaited<R
 }
 
 describe('Runtime Broker — auth', () => {
-  it('health check requires no auth', async () => {
+  it('liveness and Docker readiness checks require no auth', async () => {
     const broker = await startTestBroker({ docker, config: { image: IMAGE, workspaceRoot } });
     try {
       const res = await fetch(`${broker.url}/health`);
       expect(res.status).toBe(200);
+      const ready = await fetch(`${broker.url}/ready`);
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ status: 'ready', docker: 'ok' });
     } finally {
       await broker.close();
     }

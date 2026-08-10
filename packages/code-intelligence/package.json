@@ -1,6 +1,6 @@
 {
-  "name":"@oliveira/code-intelligence","version":"2.5.0","private":true,"type":"module","main":"src/index.ts","types":"src/index.ts",
-  "scripts":{"typecheck":"tsc --noEmit"},
+  "name":"@oliveira/code-intelligence","version":"2.5.0","private":true,"type":"module","main":"dist/index.js","types":"src/index.ts",
+  "scripts":{"build":"tsc -p tsconfig.json --noEmit false --outDir dist --declaration","typecheck":"tsc --noEmit"},
   "dependencies":{"@oliveira/runtime-broker-client":"*"},
-  "devDependencies":{"@oliveira/runtime-broker":"*","@types/dockerode":"^3.3.34","dockerode":"^4.0.2","@types/node":"^22.10.0","typescript":"^5.7.3"}
+  "devDependencies":{"@oliveira/runtime-broker":"*","@types/dockerode":"^3.3.34","dockerode":"^5.0.1","@types/node":"^22.10.0","typescript":"^5.7.3"}
 }

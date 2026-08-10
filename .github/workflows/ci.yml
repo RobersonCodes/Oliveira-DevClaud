@@ -46,7 +46,10 @@ jobs:
       # not a lightweight stand-in — to exercise the actual login -> project -> workspace ->
       # terminal -> run a command -> stop journey end to end.
       - name: Build workspace image
-        run: docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node
+        run: docker build -t oliveira-devcloud/workspace-node:1.1.0 infra/workspace-images/node
+      - name: Verify workspace image tools and non-root user
+        run: |
+          docker run --rm oliveira-devcloud/workspace-node:1.1.0 sh -lc 'test "$(id -u)" = 10001 && code-server --version | head -n1 | grep -E "^4\\.121\\.0( |$)" && pnpm --version | grep -Fx 11.21.0 && codex --version | grep -Fx "codex-cli 0.147.0" && claude --version | grep -Fx "2.1.226 (Claude Code)"'
       - name: Lint
         run: npm run lint
       # `npm run typecheck --workspaces` executes each workspace independently and does not

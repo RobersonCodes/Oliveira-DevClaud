@@ -37,7 +37,7 @@ beforeAll(async () => {
   // Fake `codex`/`claude`: echo the prompt they were given and exit 0 (claude just sleeps a bit
   // first so cancel() has something real to kill mid-flight) — real enough to exercise the whole
   // tmux + status-file + log-file flow that DockerAgentEngine actually implements.
-  await seedExec(['sh', '-c', 'printf \'#!/bin/sh\\necho "codex saw: $ODC_AGENT_PROMPT"\\n\' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex']);
+  await seedExec(['sh', '-c', 'printf \'#!/bin/sh\\necho "codex saw: $ODC_AGENT_PROMPT"\\necho "codex args: $*"\\n\' > /usr/local/bin/codex && chmod +x /usr/local/bin/codex']);
   await seedExec(['sh', '-c', 'printf \'#!/bin/sh\\nsleep 30\\necho "claude saw: $ODC_AGENT_PROMPT"\\n\' > /usr/local/bin/claude && chmod +x /usr/local/bin/claude']);
 
   broker = await startTestBroker({ docker });
@@ -66,6 +66,7 @@ describe('DockerAgentEngine — real broker, real tmux, fake CLI', () => {
 
     const logs = await engine.logs(containerId, taskId);
     expect(logs).toContain('codex saw: hello-agent');
+    expect(logs).toContain('codex args: exec --sandbox workspace-write --ask-for-approval never --skip-git-repo-check hello-agent');
   }, 30_000);
 
   it('cancel() kills a real running tmux session', async () => {

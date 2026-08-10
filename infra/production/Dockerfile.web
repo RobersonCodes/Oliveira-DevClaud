@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY package*.json tsconfig.base.json ./
 COPY apps ./apps
@@ -6,5 +6,19 @@ COPY packages ./packages
 # Fase 1 hardening: the client bundle no longer references any API host at all — every request is
 # same-origin and relative (see apps/web/lib/apiClient.ts and apps/web/next.config.js), routed by
 # nginx in production. There is nothing left to inline as a build ARG here.
-RUN npm install && npm run build -w @oliveira/web
-CMD ["npm","run","start","-w","@oliveira/web"]
+RUN npm ci \
+ && npm run build -w @oliveira/web \
+ && npm prune --omit=dev
+
+FROM node:22-bookworm-slim AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin devcloud
+COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
+COPY --from=build --chown=10001:10001 /app/apps/web ./apps/web
+USER 10001:10001
+EXPOSE 3000
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+CMD ["node","node_modules/next/dist/bin/next","start","apps/web"]

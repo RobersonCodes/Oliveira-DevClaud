@@ -39,7 +39,7 @@ export class DockerAgentEngine {
     const logFile = `/tmp/odc-agent-${id}.log`;
     const binary = input.agent === 'CODEX' ? 'codex' : 'claude';
     const args = input.agent === 'CODEX'
-      ? ['exec', '--full-auto', '--skip-git-repo-check', '"$ODC_AGENT_PROMPT"']
+      ? ['exec', '--sandbox', 'workspace-write', '--ask-for-approval', 'never', '--skip-git-repo-check', '"$ODC_AGENT_PROMPT"']
       : ['-p', '"$ODC_AGENT_PROMPT"', '--permission-mode', 'acceptEdits'];
 
     const available = await this.exec(input.containerId, ['sh', '-lc', `command -v ${binary} >/dev/null 2>&1`]);

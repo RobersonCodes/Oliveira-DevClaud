@@ -1,7 +1,8 @@
 # Oliveira DevCloud — Notice
 
 Oliveira DevCloud é uma obra de software original de Roberson Andre do Amarante de Oliveira,
-publicamente identificado como RobersonCodes.
+publicamente identificado como RobersonCodes e profissionalmente creditado como **Engenheiro de
+Software Roberson de Oliveira**.
 
 Copyright © 2026 Roberson Andre do Amarante de Oliveira. Todos os direitos reservados.
 
