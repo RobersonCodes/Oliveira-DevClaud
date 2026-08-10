@@ -217,6 +217,19 @@ same-origin e uma única política para HTTP e WebSocket.
     e `resize` nunca é aplicado. Confirmado isoladamente com um servidor `ws` mínimo e reproduzido fim a
     fim contra um terminal real. Fora do escopo da Fase 1 (o mecanismo de proxy/roteamento em si
     funciona corretamente); fica pendente para correção em fase própria.
+- **CI Linux (GitHub Actions)**, commit `6c4cbfe` (inclui todo o trabalho da Fase 1 + `AGENTS.md`/
+  `CLAUDE.md`), run
+  [31407321460](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31407321460):
+  **job `quality` inteiro verde** — `Lint`, `Typecheck`, `Test`, `Build` e `Security audit` todos ✓.
+  A primeira tentativa desse run e a primeira tentativa do run anterior (commit `e96c5ec`,
+  [31407205519](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31407205519)) haviam
+  falhado no `Test`, mas em **conjuntos de arquivos diferentes e não relacionados** a cada tentativa
+  (`code-intelligence`/`contract-intelligence` na primeira; `git-engine`/`repository-bootstrap`/
+  `workspace-engine` na segunda), sempre com a mesma causa raiz —
+  `Error: (HTTP code 500) server error` dentro de `docker-modem` — um erro transitório do daemon
+  Docker do runner hospedado, não uma regressão de código: nenhum desses pacotes foi tocado pela
+  Fase 1. `gh run rerun --failed` no commit `6c4cbfe` resolveu de primeira, confirmando a hipótese de
+  flake de infraestrutura.
 
 ---
 
