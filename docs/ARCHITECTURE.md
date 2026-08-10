@@ -140,6 +140,24 @@ PostgreSQL e Redis saudáveis, executa migrations como job one-shot, aguarda bro
 então inicia API/worker; o web aguarda a API saudável. Essa cadeia evita anunciar o painel como
 operacional quando banco, filas ou o daemon que hospeda os workspaces estão indisponíveis.
 
+### Fronteira HTTP do painel
+
+Os dois caminhos nginx de produção aplicam a mesma política ao control plane: corpo máximo de
+`1 MiB`, recebimento dos headers em até 10 segundos, recebimento do corpo em até 30 segundos e
+conexão ao upstream em até 5 segundos. O Fastify repete a fronteira relevante no processo com
+`bodyLimit=1 MiB`, `requestTimeout=30s` e `keepAliveTimeout=72s`, de modo que contornar o nginx não
+remove o limite de payload nem o prazo de recebimento. `connectionTimeout` permanece desabilitado
+por desenho, pois um timeout de inatividade do socket derrubaria terminais e IDEs WebSocket válidos.
+
+O nginx é a fonte autoritativa dos headers do painel: remove valores equivalentes recebidos de
+Next.js/Fastify e aplica HSTS, CSP, `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
+`Referrer-Policy: no-referrer`, `Permissions-Policy`, `nosniff`, COOP e CORP. A CSP permite somente o
+próprio painel para scripts/conexões e os hosts `*.runtime.tiremax.shop` como frames. O Runtime
+Gateway mantém uma política diferente e deliberada: o nginx aplica um teto externo de `25 MiB` ao
+tráfego de IDE/preview, preserva conexões HTTP/WS por até uma hora e continua recebendo
+CSP/Referrer/Permissions/nosniff autoritativos da própria API, pois o conteúdo proxied é arbitrário
+e não pode usar a CSP restrita do control plane.
+
 ### Imagem de workspace e cadeia de fornecimento
 
 A imagem de workspace possui versão operacional `1.1.0`. O code-server `4.121.0` é obtido do release

@@ -72,9 +72,30 @@ server {
   ssl_certificate     /etc/letsencrypt/live/app.aifunnelpro.com.br/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/app.aifunnelpro.com.br/privkey.pem;
 
+  # O nginx é a fonte autoritativa dos headers do control plane. Esconder os equivalentes do
+  # upstream evita valores duplicados/divergentes entre Next.js, Fastify/Helmet e o proxy.
+  proxy_hide_header Strict-Transport-Security;
+  proxy_hide_header Content-Security-Policy;
+  proxy_hide_header Referrer-Policy;
+  proxy_hide_header Permissions-Policy;
+  proxy_hide_header X-Content-Type-Options;
+  proxy_hide_header X-Frame-Options;
+  proxy_hide_header Cross-Origin-Opener-Policy;
+  proxy_hide_header Cross-Origin-Resource-Policy;
   add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
   add_header X-Content-Type-Options nosniff always;
-  client_max_body_size 25m;
+  add_header X-Frame-Options DENY always;
+  add_header Referrer-Policy no-referrer always;
+  add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=()" always;
+  add_header Cross-Origin-Opener-Policy same-origin always;
+  add_header Cross-Origin-Resource-Policy same-origin always;
+  add_header Content-Security-Policy "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' wss://app.aifunnelpro.com.br; frame-src https://*.runtime.tiremax.shop; worker-src 'self' blob:; manifest-src 'self'; upgrade-insecure-requests" always;
+
+  # API do control plane: JSON pequeno. Este limite corresponde a API_BODY_LIMIT_BYTES no Fastify.
+  client_max_body_size 1m;
+  client_header_timeout 10s;
+  client_body_timeout 30s;
+  send_timeout 60s;
 
   location /api/ {
     proxy_pass http://127.0.0.1:18081;
@@ -85,6 +106,10 @@ server {
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade_devcloud;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 60s;
+    # /api também transporta WebSocket de terminal e SSE de provisionamento. Um timeout curto de
+    # resposta quebraria conexões ociosas legítimas; recebimento de headers/body já é limitado acima.
     proxy_read_timeout 3600s;
   }
 
@@ -93,6 +118,9 @@ server {
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-Proto https;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 60s;
+    proxy_read_timeout 60s;
   }
 }
 
@@ -113,8 +141,14 @@ server {
   ssl_certificate     /etc/letsencrypt/live/runtime.tiremax.shop/fullchain.pem;
   ssl_certificate_key /etc/letsencrypt/live/runtime.tiremax.shop/privkey.pem;
 
+  proxy_hide_header Strict-Transport-Security;
   add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  # IDE/preview podem transportar uploads de arquivos; este é deliberadamente separado do limite
+  # JSON de 1 MiB do control plane.
   client_max_body_size 25m;
+  client_header_timeout 10s;
+  client_body_timeout 60s;
+  send_timeout 60s;
 
   location / {
     proxy_pass http://127.0.0.1:18081;
@@ -126,6 +160,8 @@ server {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade_devcloud;
     proxy_buffering off;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 60s;
     proxy_read_timeout 3600s;
   }
 }

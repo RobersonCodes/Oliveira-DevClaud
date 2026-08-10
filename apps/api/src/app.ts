@@ -30,13 +30,31 @@ import { registerRuntimeProxy } from './lib/runtimeProxy.js';
 import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtimeGateway.js';
 import { requireHostAdmin } from './lib/auth.js';
 
+export const API_BODY_LIMIT_BYTES = 1024 * 1024;
+export const API_REQUEST_TIMEOUT_MS = 30_000;
+export const API_KEEP_ALIVE_TIMEOUT_MS = 72_000;
+
 /**
  * Builds a fully-registered Fastify instance without binding it to a port, so integration tests
  * can exercise real routes/plugins/hooks against a real database via `app.inject()` instead of
  * spinning up an actual network listener (and index.ts stays a thin bootstrap around this).
  */
 export async function buildApp(opts: { logger?: boolean; disableRateLimit?: boolean } = {}) {
-  const app = Fastify({ logger: opts.logger ?? true, trustProxy: true });
+  const app = Fastify({
+    logger: opts.logger ?? true,
+    trustProxy: true,
+    // The public API is JSON-only and its largest accepted fields are measured in KiB, not MiB.
+    // Keep this aligned with `client_max_body_size 1m` in both production nginx paths. Runtime
+    // content keeps its separate 25 MiB nginx limit because IDE/preview traffic is a proxy boundary,
+    // not a control-plane API payload.
+    bodyLimit: API_BODY_LIMIT_BYTES,
+    // Bounds the time allowed to receive the complete request (slow-upload/slowloris protection).
+    // It does not cap handler execution or long-lived responses such as SSE/WebSocket. Deliberately
+    // leave connectionTimeout at zero: a socket inactivity timeout would tear down valid idle
+    // terminal/IDE WebSockets.
+    requestTimeout: API_REQUEST_TIMEOUT_MS,
+    keepAliveTimeout: API_KEEP_ALIVE_TIMEOUT_MS
+  });
   // This is a JSON-only API, never a source of HTML, so contentSecurityPolicy is off; the web app
   // legitimately fetches this API cross-origin with credentials, so CORP is relaxed to allow that
   // (COEP/COOP, which govern window/worker embedding rather than fetch, stay at Helmet's defaults).

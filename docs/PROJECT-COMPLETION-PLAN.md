@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `f4db862` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server e CLIs Codex/Claude reproduzíveis com falha isolada no worker estão concluídos (P1-6/P1-7/P1-8/P1-10/P2-3 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos e headers consolidados estão concluídos (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
 | Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo; deploy real da Etapa 2 aguarda acesso SSH restrito |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Revisar e testar timeouts, limites de corpo e headers do nginx/API da Fase 5 (P2-1/P2-4), sem antecipar a revisão ampla de identidade da Fase 6 |
+| Próxima ação única | Executar o ensaio de persistência após reinício dos serviços da stack de produção e registrar os dados preservados; não usar `down -v` |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Nenhum bloqueio externo conhecido para a validação local nem para a Etapa 5. |
 
 ### Baseline de validação conhecido
@@ -577,7 +577,7 @@ rede/porta.
 - [x] Verificar checksum/assinatura de artefatos como code-server.
 - [x] Instalar/versionar CLIs Codex e Claude e isolar falhas de inicialização no worker.
 - [x] Incluir Postgres, Redis, broker e dependências reais em readiness.
-- [ ] Revisar timeouts, limites e headers do nginx/API.
+- [x] Revisar timeouts, limites e headers do nginx/API.
 - [x] Documentar instalação limpa, upgrade, rollback e disaster recovery.
 - [x] Automatizar migrations antes da API.
 - [ ] Provar persistência após reinício dos serviços.
@@ -621,6 +621,16 @@ presente na CLI e coberta pelo teste. Typecheck do agent-engine/worker/broker pa
 broker+Docker+tmux passou `2/2`, e as imagens de worker e broker foram reconstruídas com audit zero.
 Não houve autenticação nem chamada a provedor nesta validação; o smoke test autenticado continua
 pendente no host Linux e mantém a Fase 5 `EM ANDAMENTO`.
+
+P2-1 e P2-4 foram fechados nesta sessão. A API agora declara `bodyLimit=1 MiB`,
+`requestTimeout=30s` e `keepAliveTimeout=72s`; uma regressão confirma as opções efetivas e resposta
+413 acima do limite. Os dois nginx de produção alinham o painel em `client_max_body_size 1m`, limitam
+recebimento de headers/body, conexão e envio ao upstream, preservam 3600s somente porque `/api/`
+transporta WS/SSE, e aplicam uma política autoritativa de CSP/HSTS/Referrer/Permissions/nosniff/
+frame/COOP/CORP. O runtime mantém limite nginx de 25 MiB e headers autoritativos da API. Validação:
+`apps/api/src/http-boundary.test.ts` 4/4; typecheck completo, build da API, lint e `git diff --check`
+limpos; `nginx -t` real passou tanto para a config do host quanto para o template standalone em
+`nginx:1.27-alpine`, com envsubst e certificados descartáveis.
 
 ---
 
@@ -802,6 +812,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Reatribuição das Etapas 2 e 5 | `EM ANDAMENTO` | Usuário autorizou explicitamente o Codex a assumir as partes pendentes das Etapas 2 e 5 após o encerramento dos créditos do Claude, preservando o diff não commitado e todas as entregas anteriores | Revisar e validar o diff da Etapa 2; obter acesso SSH restrito e executar o deploy real sem afetar o Tiremax |
 | 2026-08-10 | Codex | Fase 2 (Etapa 2) — revisão local | `PARCIAL` | Diff do Claude preservado e revisado; reatribuição registrada; `.env.production` ignorado; `git diff --check` limpo; compose padrão sem nginx e profile `standalone-nginx` funcional; web/API somente em `127.0.0.1:18080/18081`; `nginx -t` limpo para bootstrap e config final; typecheck e lint limpos; preparação commitada em `875fa15` | Liberar SSH somente para `186.219.142.107/32`, autenticar por chave e executar o runbook no VPS com backup/`nginx -t` antes de cada reload |
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — imagens, agentes e documentação | `EM ANDAMENTO` | Quatro imagens de serviço multi-stage/non-root; readiness real; workspace `1.1.0` com checksum do code-server e toolchain validada; Codex `0.147.0`/Claude `2.1.226` instalados por lockfile, audit zero e versões executadas como UID 10001; flags atuais do Codex corrigidas e cobertas; falha de startup do agente não é mais relançada pelo worker; teste real broker+Docker+tmux `2/2`; worker/broker reconstruídos; README, arquitetura, roadmap e runbook sincronizados; implementação registrada no commit `f4db862`. Publicação GHCR, execução autenticada e ensaio completo em VM Linux ainda não executados | Revisar timeouts, limites de corpo e headers nginx/API (P2-1/P2-4) |
+| 2026-08-10 | Codex | Fase 5 (Etapa 5) — fronteira HTTP | `EM ANDAMENTO` | P2-1/P2-4 corrigidos: Fastify com limite explícito de 1 MiB e timeouts de recebimento/keep-alive; nginx do painel alinhado, timeouts cliente/upstream explícitos e headers autoritativos consolidados; Runtime Gateway preserva política separada. Regressão 4/4, typecheck completo, build API, lint, `git diff --check` e `nginx -t` real nos dois caminhos aprovados | Executar ensaio de persistência após reinício da stack, sem remover volumes |
 
 ### Modelo para futuras entradas
 
