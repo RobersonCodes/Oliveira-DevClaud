@@ -254,8 +254,7 @@ A segurança é tratada como fronteira arquitetural, não apenas como validaçã
 > [!IMPORTANT]
 > O Docker socket concede alto privilégio ao processo que o utiliza. Em produção, API e worker devem
 > operar em hosts dedicados, com acesso restrito, hardening do daemon e controles de rede externos.
-
-> [!IMPORTANT]
+>
 > `RUNTIME_BASE_DOMAIN` deve pertencer a um domínio registrável diferente de `DEV_CLOUD_HOST`. Usar
 > apenas outro subdomínio preserva riscos de cookie tossing entre conteúdo de runtime e control plane.
 
