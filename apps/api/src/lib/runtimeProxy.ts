@@ -2,7 +2,8 @@ import httpProxy from 'http-proxy';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { prisma, Role } from '@oliveira/database';
 import { DockerIdeEngine, IDE_PORT } from '@oliveira/ide-engine';
-import { requireOrgRole, hashToken, SESSION_COOKIE } from './auth.js';
+import { requireOrgRole, hasRole, hashToken, SESSION_COOKIE } from './auth.js';
+import { isAllowedWsOrigin } from './wsOrigin.js';
 
 const proxy = httpProxy.createProxyServer({ ws: true, xfwd: true, changeOrigin: false });
 const ide = new DockerIdeEngine();
@@ -46,12 +47,18 @@ export function registerRuntimeProxy(app: FastifyInstance) {
     proxy.web(request.raw, reply.raw, { target });
   });
 
+  // This fires for *every* WebSocket upgrade on the whole server, not just /api/v1/proxy/* — the
+  // terminal WS route (registered via @fastify/websocket elsewhere) shares the same underlying
+  // http.Server. The path match below MUST run before anything else (including the Origin check),
+  // or this handler ends up rejecting/racing unrelated upgrades like /api/v1/terminals/*/connect.
   app.server.on('upgrade', async (req, socket, head) => {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
       const ideMatch = url.pathname.match(/^\/api\/v1\/proxy\/ide\/([^/]+)\/(.*)$/);
       const previewMatch = url.pathname.match(/^\/api\/v1\/proxy\/preview\/([^/]+)\/(\d+)\/(.*)$/);
       if (!ideMatch && !previewMatch) return;
+      // Checked before any cookie/session lookup — same reasoning as the terminal WS route.
+      if (!isAllowedWsOrigin(req.headers.origin)) throw new Error('ORIGIN_NOT_ALLOWED');
 
       const workspaceId = decodeURIComponent((ideMatch?.[1] ?? previewMatch?.[1])!);
       const port = ideMatch ? IDE_PORT : Number(previewMatch![2]);
@@ -68,14 +75,19 @@ export function registerRuntimeProxy(app: FastifyInstance) {
 
       const { target, workspace } = await targetFor(workspaceId, port);
       const member = session.user.memberships.find(m => m.organizationId === workspace.project.organizationId);
-      if (!member) throw new Error('FORBIDDEN');
+      // Match the HTTP proxy routes above (`requireOrgRole(..., Role.DEVELOPER)`) exactly — this WS
+      // upgrade path used to accept any membership regardless of role, a weaker check than the HTTP
+      // request path for the identical resource.
+      if (!member || !hasRole(member.role, Role.DEVELOPER)) throw new Error('FORBIDDEN');
 
       const prefix = ideMatch ? `/api/v1/proxy/ide/${workspaceId}/` : `/api/v1/proxy/preview/${workspaceId}/${port}/`;
       req.url = stripPrefix(req.url, prefix);
       proxy.ws(req, socket, head, { target });
     } catch {
-      socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-      socket.destroy();
+      // `.end()`, not `.destroy()` — `destroy()` right after `write()` can cut off the write before
+      // the kernel actually sends it, so the client never receives the rejection at all and the
+      // socket just appears to hang/reset instead of cleanly failing the handshake.
+      socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     }
   });
 }

@@ -95,7 +95,10 @@ describe('E2E — login → project → real workspace → real terminal → run
     // 5. Connect over a real WebSocket and run a real command, reading the real output back.
     const marker = `ODC_E2E_${crypto.randomUUID().replace(/-/g, '')}`;
     const output = await new Promise<string>((resolve, reject) => {
-      const socket = new WebSocket(`${wsBaseUrl}/api/v1/terminals/${terminal.id}/connect`, { headers: { cookie: sessionCookie } });
+      // A real browser always sends Origin on a WebSocket handshake; the server now rejects
+      // handshakes without it (see apps/api/src/lib/wsOrigin.ts), so this has to be set explicitly
+      // for a raw `ws` client to represent what an actual browser connection looks like.
+      const socket = new WebSocket(`${wsBaseUrl}/api/v1/terminals/${terminal.id}/connect`, { headers: { cookie: sessionCookie, Origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000' } });
       let buffer = '';
       let sent = false;
       const timeout = setTimeout(() => { socket.close(); reject(new Error('Timed out waiting for command output over the terminal WebSocket')); }, 20_000);

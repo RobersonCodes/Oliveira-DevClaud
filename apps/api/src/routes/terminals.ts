@@ -4,6 +4,7 @@ import { prisma, Role, WorkspaceStatus } from '@oliveira/database';
 import { DockerTmuxTerminalEngine } from '@oliveira/terminal-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { isAllowedWsOrigin } from '../lib/wsOrigin.js';
 
 const terminalEngine = new DockerTmuxTerminalEngine();
 const createSchema = z.object({
@@ -62,6 +63,9 @@ export async function terminalRoutes(app: FastifyInstance) {
   });
 
   app.get('/:terminalId/connect', { websocket: true }, async (socket, request) => {
+    // Checked before any session/DB work — a forged cross-site WebSocket handshake should be
+    // rejected as cheaply as possible, and never gets to see whether the terminal even exists.
+    if (!isAllowedWsOrigin(request.headers.origin)) { socket.close(1008, 'ORIGIN_NOT_ALLOWED'); return; }
     let connection: Awaited<ReturnType<typeof terminalEngine.connect>> | undefined;
     try {
       const { terminalId } = request.params as { terminalId: string };

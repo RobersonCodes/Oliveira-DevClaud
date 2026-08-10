@@ -181,21 +181,31 @@ export async function agentRoutes(app: FastifyInstance) {
     // (the worker's tick() only reconciles COMPLETED/FAILED/UNKNOWN runtimes, and the killed session
     // reports neither — it just stops existing). Cancelling the step, and the orchestration it
     // belongs to, keeps both in sync with the agent actually being stopped.
-    const step = await prisma.orchestrationStep.findUnique({ where: { agentTaskId: task.id } });
+    //
+    // Every write here is a compare-and-swap (`updateMany` guarded by the row's current status),
+    // not a blind `update`. A concurrent worker tick() can legitimately complete or fail this exact
+    // task/step between our read above and this write; without the guard, this transaction would
+    // unconditionally stomp that outcome back to CANCELLED. The task claim gates everything else —
+    // if it loses (task is already terminal), we skip the step/orchestration cascade entirely.
     const latestRun = task.runs[0];
-    await prisma.$transaction([
-      ...(step && step.status === 'RUNNING'
-        ? [
-            prisma.orchestrationStep.update({ where: { id: step.id }, data: { status: 'CANCELLED', finishedAt: now } }),
-            prisma.orchestration.update({ where: { id: step.orchestrationId }, data: { status: 'CANCELLED', finishedAt: now } })
-          ]
-        : []),
-      prisma.agentTask.update({ where: { id: task.id }, data: { status: AgentTaskStatus.CANCELLED, finishedAt: now, reviewStatus: AgentReviewStatus.READY } }),
-      ...(latestRun
-        ? [prisma.agentRun.update({ where: { id: latestRun.id }, data: { cancelledAt: now, finishedAt: now } })]
-        : [])
-    ]);
-    await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CANCELLED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip });
+    const cancelled = await prisma.$transaction(async tx => {
+      const taskClaim = await tx.agentTask.updateMany({
+        where: { id: task.id, status: { in: ['QUEUED', 'RUNNING'] } },
+        data: { status: AgentTaskStatus.CANCELLED, finishedAt: now, reviewStatus: AgentReviewStatus.READY }
+      });
+      if (taskClaim.count === 0) return false;
+
+      const step = await tx.orchestrationStep.findUnique({ where: { agentTaskId: task.id } });
+      if (step) {
+        const stepClaim = await tx.orchestrationStep.updateMany({ where: { id: step.id, status: 'RUNNING' }, data: { status: 'CANCELLED', finishedAt: now } });
+        if (stepClaim.count > 0) {
+          await tx.orchestration.updateMany({ where: { id: step.orchestrationId, status: { not: 'CANCELLED' } }, data: { status: 'CANCELLED', finishedAt: now } });
+        }
+      }
+      if (latestRun) await tx.agentRun.update({ where: { id: latestRun.id }, data: { cancelledAt: now, finishedAt: now } });
+      return true;
+    });
+    await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CANCELLED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { alreadyTerminal: !cancelled } });
     return { ok: true };
   });
 }

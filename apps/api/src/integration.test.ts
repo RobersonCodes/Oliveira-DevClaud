@@ -278,6 +278,36 @@ describe('agent cancellation — keeps AgentTask, OrchestrationStep and Orchestr
     expect(cancel.statusCode).toBe(200);
     expect((await prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } })).status).toBe('CANCELLED');
   });
+
+  it('never overwrites a task/step/orchestration that a concurrent worker tick already completed', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie: sessionCookie }, payload: { organizationId, name: 'Race Cancel Project' } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.json().id, containerId: 'test-container-not-real', status: 'RUNNING' } });
+    const orchestration = await prisma.orchestration.create({ data: { workspaceId: workspace.id, title: 'Test orchestration', objective: 'Prove cancel never clobbers a real completion', status: 'RUNNING', startedAt: new Date() } });
+    const task = await prisma.agentTask.create({ data: { workspaceId: workspace.id, agent: 'CLAUDE', title: 'Finishes first', prompt: 'Finishes first', status: 'RUNNING', startedAt: new Date() } });
+    const step = await prisma.orchestrationStep.create({ data: { orchestrationId: orchestration.id, key: 'finishes-first', title: 'Finishes first', type: 'AGENT', agent: 'CLAUDE', prompt: 'Finishes first', status: 'RUNNING', agentTaskId: task.id, startedAt: new Date() } });
+
+    // Simulate the worker's tick() winning the race and completing the step/task/orchestration
+    // *between* the API reading the task and writing its cancellation — the exact window the CAS
+    // guard in the /cancel route has to defend.
+    await prisma.$transaction([
+      prisma.agentTask.update({ where: { id: task.id }, data: { status: 'COMPLETED', exitCode: 0, finishedAt: new Date(), reviewStatus: 'READY' } }),
+      prisma.orchestrationStep.update({ where: { id: step.id }, data: { status: 'COMPLETED', exitCode: 0, finishedAt: new Date() } }),
+      prisma.orchestration.update({ where: { id: orchestration.id }, data: { status: 'WAITING_REVIEW' } })
+    ]);
+
+    const cancel = await app.inject({ method: 'POST', url: `/api/v1/agents/${task.id}/cancel`, headers: { cookie: sessionCookie } });
+    expect(cancel.statusCode).toBe(200);
+
+    const [taskAfter, stepAfter, orchestrationAfter] = await Promise.all([
+      prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } }),
+      prisma.orchestrationStep.findUniqueOrThrow({ where: { id: step.id } }),
+      prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })
+    ]);
+    expect(taskAfter.status).toBe('COMPLETED');
+    expect(stepAfter.status).toBe('COMPLETED');
+    expect(orchestrationAfter.status).toBe('WAITING_REVIEW');
+  });
 });
 
 describe('rate limiting — the /register route\'s stricter per-route limit actually engages', () => {
