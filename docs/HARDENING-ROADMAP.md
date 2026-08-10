@@ -1,10 +1,10 @@
 # Hardening Roadmap — Oliveira DevCloud
 
-**Status:** Fase 0 concluída. Dos 15 P0 registrados, 14 foram corrigidos e validados com evidência
-real (build, integração, relay WebSocket, Chromium e — a partir desta sessão — containers/redes Docker
-reais). O Runtime Gateway está implementado para um site registrável separado do painel; DNS/
-certificado wildcard/nginx ficam para o deploy real. As Fases 1, 5(resto), 6-9 continuam pendentes —
-ver Seção 7.
+**Status:** Fase 0 concluída. Dos 15 P0 registrados, todos os 15 foram corrigidos e validados com
+evidência real (build, integração, relay WebSocket, Chromium e — a partir desta sessão —
+containers/redes Docker reais, localmente e confirmado em CI Linux via push). O Runtime Gateway está
+implementado para um site registrável separado do painel; DNS/certificado wildcard/nginx ficam para o
+deploy real. As Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
 **Data:** 2026-08-10
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -201,7 +201,8 @@ intocados.
 ## 7. Status e próxima etapa recomendada
 
 **Concluído nesta e em sessões anteriores:** dos 15 P0 registrados (12 originais + 3 descobertos
-durante o hardening), 14 foram corrigidos, testados e validados com evidência real de execução:
+durante o hardening), todos os 15 foram corrigidos, testados e validados com evidência real de
+execução — não resta nenhum P0 aberto:
 
 | Correção | Como foi validado |
 |---|---|
@@ -217,7 +218,7 @@ durante o hardening), 14 foram corrigidos, testados e validados com evidência r
 | P0-11 — env var do build web | build real da imagem, grep confirma zero `localhost:4000` no bundle client-side |
 | P0-12 — divergência de nome de env var | typecheck limpo após unificação |
 | P0-13 — conflito de listeners `upgrade` | 18 testes: `listenerCount('upgrade')===1`, nenhum byte pós-101, relay real de IDE **e** preview ponta a ponta, 10 testes de `wsBridge` (echo real, close code, timeout, backpressure) |
-| P0-3 — rede Docker dedicada por workspace | 6 testes com Docker real (Docker Desktop, host Windows deste agente — primeira vez que este repositório valida contra um daemon Docker real fora do CI Linux): duas redes distintas por dois workspaces reais; bloqueio de conexão TCP cross-workspace contra uma porta com listener real; reaproveitamento idempotente da rede em `create()` repetido; `destroy()` remove container+rede sem afetar a rede de outro workspace e é idempotente (bug real encontrado e corrigido: a 2ª chamada a `destroy()` lançava 404 porque `container.remove()` não tratava "already gone"); relay conectado/desconectado corretamente na rede certa; `pruneOrphanedNetworks()` remove só rede órfã rotulada. Suíte existente de `workspace-engine` (8 testes) e `git-engine` (3 testes) também rodaram contra esse mesmo daemon real e passaram sem regressão. |
+| P0-3 — rede Docker dedicada por workspace | 6 testes com Docker real (Docker Desktop, host Windows deste agente — primeira vez que este repositório valida contra um daemon Docker real fora do CI Linux): duas redes distintas por dois workspaces reais; bloqueio de conexão TCP cross-workspace contra uma porta com listener real; reaproveitamento idempotente da rede em `create()` repetido; `destroy()` remove container+rede sem afetar a rede de outro workspace e é idempotente (bug real encontrado e corrigido: a 2ª chamada a `destroy()` lançava 404 porque `container.remove()` não tratava "already gone"); relay conectado/desconectado corretamente na rede certa; `pruneOrphanedNetworks()` remove só rede órfã rotulada. Suíte existente de `workspace-engine` (8 testes) e `git-engine` (3 testes) também rodaram contra esse mesmo daemon real e passaram sem regressão. Confirmado depois em CI Linux real (GitHub Actions, run [31383975282](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31383975282)): os mesmos 6 testes de `network.test.ts` e a suíte de `index.test.ts` passaram em `ubuntu-latest`. |
 
 Typecheck (`npm run typecheck`, monorepo inteiro), lint, build de produção da API (`tsc -p
 apps/api/tsconfig.json`), build de produção do web (`next build`) e build dos demais pacotes rodam
@@ -238,6 +239,14 @@ formato do erro num ambiente sem Docker algum, não uma regressão de rede/isola
 como um defeito de teste conhecido para quem revisitar P0-4/P0-13 ou a Fase 9; não bloqueia a Fase 3.
 Nenhuma outra regressão foi introduzida; a contagem exata de cada execução fica registrada no
 relatório do commit/CI para não congelar números que mudam a cada novo teste.
+
+Confirmado depois em CI Linux real via push (`gh run` [31383975282](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31383975282),
+`ubuntu-latest`, Postgres/Redis como service containers, Docker real do runner): `typecheck` e `lint`
+verdes; `Test` — 163 aprovados, 2 falhas, 1 ignorado (166 no total) — exatamente o mesmo par de
+falhas pré-existentes descrito acima e nenhuma outra. Como consequência dessas 2 falhas, o job
+`quality` terminou vermelho e `Build`/`Security audit` não chegaram a rodar nessa run — problema
+separado da Fase 3, registrado aqui para acompanhamento futuro (P0-4/P0-13 ou Fase 9), não uma
+regressão desta mudança.
 
 **Runtime Gateway (P0-2) — o que foi implementado:**
 - `apps/api/src/lib/runtimeTicket.ts` — ticket assinado (HMAC-SHA256), stateless, TTL de 60s.
