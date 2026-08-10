@@ -4,9 +4,12 @@
 evidência real (build, integração, relay WebSocket, Chromium e — a partir desta sessão —
 containers/redes Docker reais, localmente e confirmado em CI Linux via push). O Runtime Gateway está
 implementado para um site registrável separado do painel, com domínios reais definidos
-(`app.oliveiradevcloud.com` / `runtime.oliveiradevcloud-content.com`) e o server block nginx real já
-escrito e validado sintaticamente; DNS wildcard e certificado TLS wildcard seguem pendentes de
-execução no servidor real do usuário (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker (Fase 4,
+(`app.aifunnelpro.com.br` / `runtime.tiremax.shop`, DNS já propagado); a VPS de destino é
+compartilhada com outro site (Tiremax), então o nginx que termina TLS/roteia é o do próprio host, não
+mais um container deste compose — `infra/production/nginx-devcloud.host.conf.example` traz os
+server blocks do DevCloud a adicionar ao lado da config existente do Tiremax. HTTP já chega ao nginx
+do host; a aplicação real dos server blocks, os certificados TLS e a validação HTTPS/WSS seguem
+pendentes no servidor real (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker (Fase 4,
 P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema — api e worker não têm
 mais acesso direto ao daemon. As Fases 1, 5(resto), 6-9 continuam pendentes — ver Seção 7.
 **Data:** 2026-08-10
@@ -152,7 +155,7 @@ Pontos-chave já confirmados no código:
 
 | # | Risco |
 |---|---|
-| P2-1 | `nginx.prod.conf` sem CSP, `Referrer-Policy`, `Permissions-Policy`, `frame-ancestors`/`X-Frame-Options`; sem `X-Forwarded-For`; sem `proxy_read_timeout` explícito para WS. |
+| P2-1 | **Parcialmente mitigado na Etapa 2:** os caminhos nginx dockerizado e de host compartilhado agora enviam `X-Forwarded-For` e têm `proxy_read_timeout` explícito para WS. O painel ainda depende da política de headers da aplicação/nginx e não possui uma política consolidada de CSP, `Referrer-Policy`, `Permissions-Policy` e `frame-ancestors`/`X-Frame-Options`; revisar na Etapa 5/6. |
 | P2-2 | `infra/nginx/devcloud.conf` (não referenciado pelo compose) é config morta/confusa — sem TLS, presente no repo sem indicação de status. |
 | P2-3 | Instalação do code-server via `curl \| sh` (versão fixada, mas sem verificação de checksum). |
 | P2-4 | Sem `bodyLimit`/timeout de servidor HTTP customizados na API (usa defaults do Fastify). |
@@ -323,24 +326,66 @@ implantação — painel `app.oliveiradevcloud.com`, runtime `runtime.oliveirade
   para o painel, DNS-01 obrigatório para o wildcard do runtime), layout de cópia dos certificados,
   renovação/deploy-hook, checklist de validação no domínio real e tabela de recuperação de falha.
 
-**Segue pendente — depende exclusivamente do servidor/DNS reais do usuário, fora do alcance desta
-sessão:** criar os registros DNS (incluindo o wildcard `*.runtime.oliveiradevcloud-content.com`),
-emitir os dois certificados TLS via `certbot` (`docs/RUNTIME-GATEWAY-DEPLOY.md` §§1-2), copiá-los para
-`infra/production/certs/{panel,runtime}/`, subir a stack real e percorrer a checklist de validação do
-runbook (§5) — inclusive a captura de rede confirmando que o cookie do painel nunca é enviado ao
-domínio de runtime e vice-versa.
+**Atualização — domínios trocados e VPS confirmada compartilhada (2026-08-10):** os domínios reais
+mudaram de `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com` para
+`app.aifunnelpro.com.br`/`runtime.tiremax.shop` (continuam sendo dois sites registráveis distintos,
+requisito do P0-2 preservado). DNS dos três nomes (painel, base do runtime e wildcard) já propagou e
+foi confirmado externamente. Também ficou confirmado que a VPS de destino já hospeda outro site
+(Tiremax) atrás de um nginx do sistema ocupando 80/443 — isso muda uma decisão arquitetural da Fase 2
+que antes assumia uma VPS exclusiva:
+
+- `infra/production/docker-compose.prod.yml` não publica 80/443 nem roda nginx próprio por padrão;
+  `web`/`api` publicam só em `127.0.0.1` (`DEVCLOUD_WEB_HOST_PORT`/`DEVCLOUD_API_HOST_PORT`).
+- Dois novos arquivos para o nginx **já existente no host**, ao lado da config do Tiremax, sem
+  sobrescrevê-la: `nginx-devcloud.host.bootstrap.conf.example` (config temporária, só HTTP, sem
+  nenhuma referência a certificado — resolve o ciclo em que a config final não sobe porque referencia
+  certificados que só existem depois do desafio HTTP-01, mas o desafio HTTP-01 precisa que algo já
+  esteja servindo `/.well-known/acme-challenge/`) e `nginx-devcloud.host.conf.example` (config final,
+  aplicada só depois dos dois certificados emitidos, nunca junto com o bootstrap — os dois ativos ao
+  mesmo tempo criariam server blocks HTTP conflitantes para o mesmo host).
+  `infra/production/nginx.prod.conf` (nginx dockerizado) continua **executável**, não é config morta:
+  virou o serviço `nginx` do compose atrás de um profile (`docker compose --profile standalone-nginx
+  up -d`, off por padrão) para uma eventual VPS exclusiva futura — não é o caminho usado nesta
+  implantação compartilhada.
+- Certificado do painel passa a usar desafio HTTP-01 via **webroot** (não `--standalone`, que exigia
+  porta 80 livre — não é mais o caso). O wildcard do runtime continua via DNS-01, inalterado.
+- Ambos os arquivos de nginx do host (e o dockerizado) ganharam
+  `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` nos blocos de API e runtime, com nota
+  ligando à restrição de `trustProxy: true` já planejada para a Fase 6/Etapa 6 (Codex) — ver P1-1
+  logo abaixo; o header por si só não corrige P1-1, só passa a existir para a app poder ler.
+- **Correção de rumo (revisão do usuário):** uma hipótese anterior de bloqueio por firewall
+  (Hostinger/hPanel) foi descartada e removida do plano/roadmap/runbook — Drop é a política implícita
+  padrão da Hostinger (não uma regra extra em conflito de ordem), a porta 22 fechada externamente é
+  intencional neste servidor, e uma requisição para `app.aifunnelpro.com.br` abriu o Tiremax, o que só
+  é possível com a porta 80 alcançável e o nginx do host processando a requisição normalmente (caiu no
+  `default_server` do Tiremax só por faltar um `server_name` dedicado ao DevCloud). O bloqueio real
+  sempre foi só a ausência dos server blocks/certificados/deploy, nunca conectividade de rede.
+- `.env.production(.example)`, `docs/ARCHITECTURE.md` e este roadmap atualizados com os domínios e a
+  nova topologia. Nenhuma mudança foi aplicada na VPS em si por esta sessão — sem acesso SSH ao
+  servidor, todo esse trabalho é preparação de config/documentação para o usuário (ou uma sessão com
+  acesso real ao terminal do servidor) aplicar e validar. Validado nesta sessão: `git diff --check`
+  limpo, `docker compose config` resolve sem erro (nginx off por padrão, `web`/`api` só em
+  `127.0.0.1`), `nginx -t` do bootstrap (sem certificados) e da config final (com certificados
+  autoassinados descartáveis) ambos limpos.
+
+**Segue pendente — depende exclusivamente do servidor real do usuário, fora do alcance desta
+sessão:** aplicar o bootstrap e depois a config final nos server blocks do host (§2 e §4 do runbook);
+emitir os dois certificados TLS via `certbot` (§3, webroot para o painel); subir a stack real e
+percorrer a checklist de validação do runbook (§7) — inclusive a captura de rede confirmando que o
+cookie do painel nunca é enviado ao domínio de runtime e vice-versa, e que o Tiremax continua
+funcionando normalmente durante e depois da mudança.
 
 **Pendente no roadmap geral:** nenhum P0 aberto (todos os 15 corrigidos) e nenhum P1 crítico aberto
 (P1-5, o último de risco de segurança direto, foi corrigido na Fase 4 desta sessão). Continuam
-pendentes as Fases 1, 5 (o restante), 6-9 por completo, e dentro da Fase 3 em si o agendamento
+pendentes a Fase 5 (o restante) e as Fases 6-9, e dentro da Fase 3 em si o agendamento
 periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para a Fase 7
 (item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua entrega
 na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também foi deliberadamente
 adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
-A sequência sugerida agora é: usuário executa o runbook de DNS/TLS reais
-(`docs/RUNTIME-GATEWAY-DEPLOY.md`) para fechar a Fase 2 → cliente HTTP/WS centralizado do
-frontend/Fase 1 → infraestrutura reproduzível/Fase 5 → handoff para Codex (Fases 6-9).
+A sequência sugerida agora é: Codex conclui o runbook de TLS/nginx real
+(`docs/RUNTIME-GATEWAY-DEPLOY.md`) para fechar a Fase 2 → conclui a infraestrutura
+reproduzível/Fase 5 reatribuída → faz o handoff interno e segue para as Fases 6-9.
 
 **Marco de CI (Fase 4, 2026-08-10):** run
 [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do

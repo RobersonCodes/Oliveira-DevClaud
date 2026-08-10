@@ -103,10 +103,24 @@ porta no host — só alcançável por outros containers da mesma rede do compos
 
 ## Hardening Fase 2 — Runtime Gateway em domínio real (P0-2)
 
-O painel (`app.oliveiradevcloud.com`) e o Runtime Gateway (`*.runtime.oliveiradevcloud-content.com`)
-são dois sites registráveis distintos por trás do mesmo `nginx`, cada um com seu próprio certificado
-TLS (`infra/production/nginx.prod.conf`). Os dois `server_name` apontam para o mesmo backend
-`api:4000`; a app despacha por Host header via `constraints` do Fastify
-(`runtimeHostPattern()`/`parseRuntimeHost()` em `apps/api/src/lib/runtimeGateway.ts`) — nginx nunca
-reescreve esse header, só termina TLS. Passo a passo operacional (DNS, certbot, renovação):
-`docs/RUNTIME-GATEWAY-DEPLOY.md`.
+O painel (`app.aifunnelpro.com.br`) e o Runtime Gateway (`*.runtime.tiremax.shop`) são dois sites
+registráveis distintos por trás do mesmo nginx, cada um com seu próprio certificado TLS. Os dois
+`server_name` apontam para o mesmo backend `api:4000`; a app despacha por Host header via
+`constraints` do Fastify (`runtimeHostPattern()`/`parseRuntimeHost()` em
+`apps/api/src/lib/runtimeGateway.ts`) — nginx nunca reescreve esse header, só termina TLS. Passo a
+passo operacional (DNS, certbot, renovação): `docs/RUNTIME-GATEWAY-DEPLOY.md`.
+
+**Topologia de VPS compartilhada:** nesta implantação, a VPS já hospeda outro site (Tiremax) atrás
+de um nginx do sistema ocupando 80/443. Por isso `infra/production/docker-compose.prod.yml` não
+publica 80/443 nem roda nginx próprio por padrão — `web`/`api` publicam só em `127.0.0.1` (portas
+configuráveis via `DEVCLOUD_WEB_HOST_PORT`/`DEVCLOUD_API_HOST_PORT`), e o nginx que termina TLS/roteia
+por Host continua sendo um único processo — mas é o nginx **já existente no host**, com os server
+blocks do DevCloud descritos em `infra/production/nginx-devcloud.host.conf.example` (config final) e
+`nginx-devcloud.host.bootstrap.conf.example` (config HTTP-only temporária, usada só até o certificado
+do painel ser emitido) adicionados ao lado da config existente do Tiremax, nunca a substituindo.
+
+Para uma eventual VPS **exclusiva** (sem outro site), o mesmo compose tem um segundo caminho pronto,
+não uma referência morta: o serviço `nginx` (dockerizado, `infra/production/nginx.prod.conf`,
+publicando 80/443 diretamente) existe no compose atrás de um profile — `docker compose --profile
+standalone-nginx up -d` — e fica desligado por padrão. Não é o que está em uso nesta implantação; ver
+`docs/RUNTIME-GATEWAY-DEPLOY.md` para os dois caminhos completos.

@@ -1,0 +1,131 @@
+# Server blocks FINAIS (pós-bootstrap) do Oliveira DevCloud para o nginx JÁ EXISTENTE no host (VPS
+# compartilhada com o Tiremax). NÃO faz parte de infra/production/docker-compose.prod.yml — este
+# compose não publica nenhuma porta 80/443 e não roda seu próprio serviço nginx por padrão (só sob o
+# profile `standalone-nginx`, para uma eventual VPS exclusiva — ver docker-compose.prod.yml), porque
+# neste host essas portas já pertencem ao nginx do sistema, que também serve o Tiremax.
+#
+# PRÉ-REQUISITO: os dois certificados (painel e runtime) já precisam existir antes de aplicar este
+# arquivo — `nginx -t` falha se as linhas `ssl_certificate*` abaixo apontarem para arquivos
+# inexistentes. Se ainda não emitiu os certificados, comece por
+# infra/production/nginx-devcloud.host.bootstrap.conf.example (config HTTP-only, sem nenhuma
+# referência a certificado, que resolve esse ciclo) e só troque para este arquivo no passo 7 de lá.
+#
+# Como aplicar (faça isso manualmente no servidor, NUNCA a partir deste repositório):
+#
+#   1. Confirme que os certificados já existem:
+#        sudo ls /etc/letsencrypt/live/app.aifunnelpro.com.br/ /etc/letsencrypt/live/runtime.tiremax.shop/
+#   2. Se o bootstrap (nginx-devcloud.host.bootstrap.conf.example) ainda estiver ativo, REMOVA-o
+#      antes de ativar este — nunca deixe os dois ao mesmo tempo, ou o nginx verá dois server blocks
+#      `listen 80; server_name app.aifunnelpro.com.br` conflitantes:
+#        sudo rm -f /etc/nginx/sites-enabled/devcloud.conf
+#   3. Copie este arquivo para o mesmo nome usado pelo bootstrap (ou um novo, se for a primeira vez),
+#      NUNCA sobrescrevendo nada do Tiremax:
+#        sudo cp infra/production/nginx-devcloud.host.conf.example /etc/nginx/sites-available/devcloud.conf
+#        sudo ln -s /etc/nginx/sites-available/devcloud.conf /etc/nginx/sites-enabled/devcloud.conf
+#      (ou /etc/nginx/conf.d/devcloud.conf, dependendo do layout já usado pelo nginx deste host —
+#      confira com `sudo nginx -T` antes, para não duplicar um include ou colidir com um arquivo que
+#      já exista com esse nome).
+#   4. Ajuste as portas 127.0.0.1:18080/18081 abaixo se DEVCLOUD_WEB_HOST_PORT/DEVCLOUD_API_HOST_PORT
+#      em .env.production tiverem sido mudados para evitar colisão com algo já rodando no host.
+#   5. Valide antes de aplicar: `sudo nginx -t`. Só depois: `sudo systemctl reload nginx` (ou
+#      `nginx -s reload`).
+#
+# Pré-requisito de segurança (P0-2): app.aifunnelpro.com.br e *.runtime.tiremax.shop precisam
+# continuar sendo dois SITES REGISTRÁVEIS DISTINTOS (aifunnelpro.com.br vs tiremax.shop — não dois
+# subdomínios do mesmo domínio). Isso já é verdade com os domínios atuais; não troque só um dos dois
+# para um subdomínio do outro.
+#
+# X-Forwarded-For: os blocos de API e runtime abaixo passam
+# `X-Forwarded-For $proxy_add_x_forwarded_for` para a app. A API hoje usa `trustProxy: true`
+# (`apps/api/src/app.ts`) — confia cegamente em qualquer proxy upstream, então este header só passa a
+# ser confiável de verdade quando essa configuração for restrita aos proxies/redes reais, item já
+# planejado para a Fase 6/Etapa 6 (Codex) — ver P1-1 em docs/HARDENING-ROADMAP.md. Adicionar o header
+# aqui é necessário (sem ele a app não vê IP nenhum do cliente), mas não substitui essa restrição.
+
+# --- Redirect HTTP -> HTTPS para os dois hosts do DevCloud (não mexe no comportamento de porta 80
+# já existente do Tiremax para os hosts dele — nginx despacha por server_name, então isto só
+# intercepta requisições cujo Host bate exatamente com um dos nomes abaixo). ---
+server {
+  listen 80;
+  server_name app.aifunnelpro.com.br *.runtime.tiremax.shop;
+
+  # Necessário só para o host do painel (HTTP-01 do certbot). O domínio de runtime usa DNS-01
+  # (wildcard não pode HTTP-01), então esta location nunca é exercitada para *.runtime.tiremax.shop,
+  # mas não faz mal deixá-la aqui também.
+  location /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+  }
+
+  location / {
+    return 301 https://$host$request_uri;
+  }
+}
+
+map $http_upgrade $connection_upgrade_devcloud { default upgrade; '' close; }
+
+# --- Painel (control plane): app.aifunnelpro.com.br ---
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name app.aifunnelpro.com.br;
+
+  ssl_certificate     /etc/letsencrypt/live/app.aifunnelpro.com.br/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/app.aifunnelpro.com.br/privkey.pem;
+
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options nosniff always;
+  client_max_body_size 25m;
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:18081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade_devcloud;
+    proxy_read_timeout 3600s;
+  }
+
+  location / {
+    proxy_pass http://127.0.0.1:18080;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+  }
+}
+
+# --- Runtime Gateway (IDE/preview, origem isolada do painel): *.runtime.tiremax.shop ---
+# Cada workspace recebe seu próprio subdomínio (ide-<id>.runtime.tiremax.shop,
+# preview-<id>-<porta>.runtime.tiremax.shop — ver runtimeHostPattern()/parseRuntimeHost() em
+# apps/api/src/lib/runtimeGateway.ts). Todos roteiam para o MESMO backend api:4000 (aqui,
+# 127.0.0.1:18081); o Fastify despacha pelo Host header via route constraints — este bloco nunca
+# deve reescrever, remover ou "defaultar" o Host, e nunca deve apontar para o serviço web. CSP,
+# Referrer-Policy, Permissions-Policy e X-Content-Type-Options desta origem já são setados
+# autoritativamente pela própria app (runtimeSecurityHeaders() em runtimeGateway.ts); só HSTS (que a
+# app não seta) é adicionado aqui.
+server {
+  listen 443 ssl;
+  http2 on;
+  server_name *.runtime.tiremax.shop;
+
+  ssl_certificate     /etc/letsencrypt/live/runtime.tiremax.shop/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/runtime.tiremax.shop/privkey.pem;
+
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  client_max_body_size 25m;
+
+  location / {
+    proxy_pass http://127.0.0.1:18081;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade_devcloud;
+    proxy_buffering off;
+    proxy_read_timeout 3600s;
+  }
+}

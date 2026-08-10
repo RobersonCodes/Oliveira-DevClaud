@@ -57,6 +57,11 @@ services:
     container_name: odc-api
     restart: unless-stopped
     env_file: ../../.env.production
+    # Loopback-only: the real edge (TLS termination + routing) is the nginx already running on the
+    # HOST, not this compose — see the note on `web` below and
+    # infra/production/nginx-devcloud.host.conf.example. Never bind 0.0.0.0 here; api must not be
+    # directly reachable from outside this host.
+    ports: ["127.0.0.1:${DEVCLOUD_API_HOST_PORT:-18081}:4000"]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
@@ -81,8 +86,24 @@ services:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.web }
     restart: unless-stopped
     env_file: ../../.env.production
+    # Loopback-only, same reasoning as api above. By DEFAULT this compose has no nginx service
+    # running: on a shared host (this VPS also serves another site) 80/443 belong to that host's
+    # existing nginx, which this repo cannot own. That host nginx gets two extra server blocks
+    # (never touching its existing ones) proxying to these 127.0.0.1 ports — template and full
+    # instructions in infra/production/nginx-devcloud.host.conf.example and
+    # docs/RUNTIME-GATEWAY-DEPLOY.md. Confirm both DEVCLOUD_*_HOST_PORT values are actually free on
+    # the host (`sudo ss -lntp`) before the first `docker compose up` — adjust in .env.production if
+    # they collide with something already running. For a VPS *exclusiva* (no other site), see the
+    # `nginx` service below (profile-gated, off by default).
+    ports: ["127.0.0.1:${DEVCLOUD_WEB_HOST_PORT:-18080}:3000"]
     depends_on: [api]
+  # Optional, off by default: full standalone nginx for a VPS EXCLUSIVA (no other site sharing
+  # 80/443). Activate explicitly with `docker compose --profile standalone-nginx up -d` — never on a
+  # host that already runs another nginx/site on 80/443 (that's exactly the shared-host scenario
+  # this compose avoids by default; see nginx-devcloud.host.conf.example / .bootstrap.conf.example
+  # for that path instead, which is what's actually in use for this deployment).
   nginx:
+    profiles: ["standalone-nginx"]
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports: ["80:80","443:443"]

@@ -45,13 +45,13 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `4de57d6` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; Fase 1 (cliente HTTP/WS centralizado) concluída; wiring real de P0-2 (nginx/DNS/cert) segue pendente para a Etapa 2 |
-| Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo (Fase 5) |
-| Responsável | Claude |
+| Commit de referência | `6c4cbfe` |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 (Runtime Broker) concluída; Fase 1 (cliente HTTP/WS centralizado) concluída; Fase 2 `PARCIAL` — domínios trocados (`app.aifunnelpro.com.br`/`runtime.tiremax.shop`), DNS propagado, VPS confirmada compartilhada com o Tiremax, HTTP já comprovadamente chega ao nginx do host (não é bloqueio de firewall); falta aplicar server blocks + certificados + deploy reais |
+| Etapa ativa | Pendências da Etapa 2 — deploy real do Runtime Gateway; Etapa 5 segue ativa em paralelo após a validação local da Etapa 2 |
+| Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Auditar Dockerfiles de produção (`infra/production/Dockerfile.{api,web,worker}`): build multi-stage, usuário não-root, healthcheck e instalação determinística de dependências (P1-6 do roadmap) |
-| Bloqueios externos | Nenhum bloqueio externo conhecido para a Etapa 5. Etapa 2 permanece `PARCIAL`, aguardando o usuário executar `docs/RUNTIME-GATEWAY-DEPLOY.md` no servidor real. |
+| Próxima ação única | Obter acesso SSH restrito à VPS para aplicar o bootstrap HTTP-only, emitir certificados e trocar para a config final (`docs/RUNTIME-GATEWAY-DEPLOY.md` §2-4), preservando o Tiremax |
+| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Nenhum bloqueio externo conhecido para a validação local nem para a Etapa 5. |
 
 ### Baseline de validação conhecido
 
@@ -91,10 +91,10 @@ o significado delas, a execução usa dez **etapas operacionais**:
 | Etapa | Responsável | Fase técnica | Entrega | Dependência |
 |---|---|---|---|---|
 | 1 | Claude | Fase 3 | Isolamento Docker por workspace | Nenhuma |
-| 2 | Claude | Fase 2 (deploy) | DNS, TLS e nginx reais do Runtime Gateway | Acesso ao domínio/deploy |
+| 2 | Claude → Codex (reatribuída) | Fase 2 (deploy) | DNS, TLS e nginx reais do Runtime Gateway | Acesso ao domínio/deploy |
 | 3 | Claude | Fase 4 | Runtime Broker e retirada do Docker socket | Etapa 1 |
 | 4 | Claude | Fase 1 | Cliente HTTP/WebSocket centralizado | Etapa 2 |
-| 5 | Claude | Fase 5 | Infraestrutura reproduzível em host limpo | Etapas 1–4 |
+| 5 | Codex (reatribuída) | Fase 5 | Infraestrutura reproduzível em host limpo | Etapas 1–4 |
 | 6 | Codex | Fase 6 | Identidade, sessão e fronteiras de confiança | Handoff das etapas 1–5 |
 | 7 | Codex | Fase 7 | Resiliência, concorrência e ciclo de vida | Etapas 3 e 6 |
 | 8 | Codex | Fase 8 | Experiência mobile-first e PWA | Etapas 4–7 |
@@ -106,6 +106,10 @@ o significado delas, a execução usa dez **etapas operacionais**:
 - Claude é executor exclusivo das etapas 1–5. Não inicia a etapa 6.
 - Codex é executor exclusivo das etapas 6–10. Antes da etapa 6, revisa o handoff das etapas 1–5,
   mas não as refaz sem registrar um defeito verificável.
+- **Exceção autorizada pelo usuário em 2026-08-10:** após o encerramento dos créditos do Claude,
+  as partes ainda pendentes das Etapas 2 e 5 foram reatribuídas ao Codex. As Etapas 1, 3 e 4
+  concluídas pelo Claude permanecem preservadas; a reatribuição não autoriza refazê-las sem defeito
+  verificável.
 - A execução padrão é sequencial. Se os dois agentes trabalharem ao mesmo tempo, cada um deve usar
   branch e worktree próprios; nunca editar a mesma árvore de trabalho simultaneamente.
 - Cada etapa deve terminar em commit coeso e com o plano atualizado no mesmo commit.
@@ -235,37 +239,68 @@ same-origin e uma única política para HTTP e WebSocket.
 
 ### Fase 2 — Runtime Gateway e deploy de origem isolada
 
-**Status:** `PARCIAL` — código/config prontos; DNS, TLS e validação em domínio real dependem do
+**Status:** `PARCIAL` — código/config prontos, DNS já propagado, HTTP comprovadamente chega ao nginx
+do host; aplicar os server blocks, emitir os certificados e validar em domínio real dependem do
 usuário (ver `docs/RUNTIME-GATEWAY-DEPLOY.md`)
 
-**Execução:** Claude — Etapa 2.
+**Execução:** Claude → Codex — Etapa 2 reatribuída para conclusão das pendências.
 
 **Já validado em código:** ticket HMAC curto, cookie `__Host-`, membership em tempo real, proteção de
 Origin/Fetch Metadata, headers autoritativos, bloqueio do proxy legado em produção e relay HTTP/WS.
 
-**Domínios definidos pelo usuário em 2026-08-10:** painel `app.oliveiradevcloud.com`, runtime
-`runtime.oliveiradevcloud-content.com` — sites registráveis distintos, conforme exigido.
+**Domínios definidos pelo usuário em 2026-08-10:** painel `app.aifunnelpro.com.br`, runtime
+`runtime.tiremax.shop` — sites registráveis distintos, conforme exigido. (Substituem os domínios
+provisórios `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com` definidos mais cedo na
+mesma data — ver histórico abaixo.)
+
+**Mudança de topologia (2026-08-10):** a VPS de destino já hospeda outro site (Tiremax) atrás de um
+nginx do sistema ocupando 80/443 — não é uma VPS exclusiva como o desenho original assumia. Por isso
+`infra/production/docker-compose.prod.yml` não roda nginx próprio nem publica 80/443 por padrão;
+`web`/`api` publicam só em `127.0.0.1`, e quem termina TLS/roteia é o nginx já existente no host, com
+os server blocks em `infra/production/nginx-devcloud.host.conf.example` (config final) e
+`nginx-devcloud.host.bootstrap.conf.example` (config HTTP-only temporária, para quebrar o ciclo de
+bootstrap do certificado do painel — ver `docs/RUNTIME-GATEWAY-DEPLOY.md` §2/§4), adicionados ao lado
+da config do Tiremax, nunca a substituindo. `infra/production/nginx.prod.conf` (nginx dockerizado)
+continua executável para uma eventual VPS exclusiva futura — vive no mesmo compose atrás do profile
+`docker compose --profile standalone-nginx`, off por padrão, não ativado nesta implantação. Detalhe
+completo: `docs/RUNTIME-GATEWAY-DEPLOY.md`.
 
 **Pendente para concluir:**
 
 - [x] Provisionar um domínio registrável separado para conteúdo de runtime — domínios confirmados
       pelo usuário (ver acima).
-- [ ] Configurar DNS wildcard para os hosts de workspace/runtime — **depende do usuário**, passo a
-      passo em `docs/RUNTIME-GATEWAY-DEPLOY.md` §1.
-- [ ] Instalar e testar certificado TLS wildcard — **depende do usuário**, `docs/RUNTIME-GATEWAY-DEPLOY.md` §2.
-- [x] Criar server block nginx do Runtime Gateway — `infra/production/nginx.prod.conf` (redirect
-      HTTP→HTTPS compartilhado, server block HTTPS dedicado a `*.${RUNTIME_BASE_DOMAIN}`, Host
-      preservado sem reescrita, suporte a WebSocket, HSTS); location morta `/runtime/` removida.
-      Sintaxe e resolução de upstream validadas com Docker real nesta sessão (`nginx -t` limpo,
-      envsubst confirmado com os domínios reais renderizados corretamente).
+- [x] Configurar DNS wildcard para os hosts de workspace/runtime — **feito pelo usuário**, propagação
+      confirmada externamente em 2026-08-10 para os três nomes (painel, base do runtime, wildcard).
+- [x] Confirmar que HTTP chega ao nginx do host — uma requisição para `app.aifunnelpro.com.br` abriu
+      o Tiremax (`default_server`), o que só é possível com a porta 80 alcançável e o nginx
+      processando a requisição; não há bloqueio de rede/firewall a resolver, só falta o server block
+      dedicado do DevCloud.
+- [ ] Aplicar o bootstrap HTTP-only e os server blocks finais do DevCloud ao nginx do host, sem tocar
+      na config do Tiremax — arquivos prontos em `infra/production/nginx-devcloud.host.bootstrap.conf.example`
+      e `nginx-devcloud.host.conf.example`; aplicação e `nginx -t` real **dependem do usuário** (acesso
+      SSH à VPS), `docs/RUNTIME-GATEWAY-DEPLOY.md` §2 e §4.
+- [ ] Instalar e testar certificado TLS wildcard — **depende do usuário**, via desafio HTTP-01 webroot
+      para o painel (usa o bootstrap acima) e DNS-01 para o wildcard — `docs/RUNTIME-GATEWAY-DEPLOY.md`
+      §3.
+- [x] Criar server blocks nginx do Runtime Gateway — dois caminhos, ambos executáveis:
+      `infra/production/nginx.prod.conf` (nginx dockerizado, serviço `nginx` do compose atrás do
+      profile `standalone-nginx`, para uma eventual VPS exclusiva) e
+      `infra/production/nginx-devcloud.host.conf.example` +
+      `nginx-devcloud.host.bootstrap.conf.example` (nginx do host, usado nesta implantação
+      compartilhada) — mesma lógica de fundo: redirect HTTP→HTTPS, server block HTTPS dedicado a
+      `*.${RUNTIME_BASE_DOMAIN}`, Host preservado sem reescrita, suporte a WebSocket,
+      `X-Forwarded-For`, HSTS. Sintaxe do caminho dockerizado validada com Docker real numa sessão
+      anterior (`nginx -t` limpo, envsubst confirmado); o novo arquivo do host validado localmente
+      nesta sessão com `nginx -t` contra certificados descartáveis (não contra o `nginx -T` real do
+      Tiremax, sem acesso SSH à VPS) — validação real **depende do usuário**.
 - [ ] Validar redirect, iframe, assets, preview e WebSocket em domínio real — **depende do usuário**
-      (checklist pronta em `docs/RUNTIME-GATEWAY-DEPLOY.md` §5).
+      (checklist pronta em `docs/RUNTIME-GATEWAY-DEPLOY.md` §7).
 - [ ] Confirmar que cookies do control plane nunca são enviados ao site de runtime — desenho já
       garante isso (domínios registráveis distintos + cookies `__Host-`); confirmação por captura de
-      rede real listada em `docs/RUNTIME-GATEWAY-DEPLOY.md` §5, **depende do usuário**.
+      rede real listada em `docs/RUNTIME-GATEWAY-DEPLOY.md` §7, **depende do usuário**.
 - [x] Documentar emissão/renovação de certificado e recuperação de falha — `docs/RUNTIME-GATEWAY-DEPLOY.md`
-      (registros DNS exatos, comandos certbot HTTP-01/DNS-01, cópia para o layout esperado, deploy-hook
-      de renovação, tabela de recuperação de falha).
+      (registros DNS exatos, comandos certbot HTTP-01 webroot/DNS-01, deploy-hook de renovação, tabela
+      de recuperação de falha, agora cobrindo também a topologia de VPS compartilhada).
 
 **Critérios de aceite:**
 
@@ -277,17 +312,34 @@ Origin/Fetch Metadata, headers autoritativos, bloqueio do proxy legado em produ�
 
 **Validação mínima:** integração, Playwright em Chromium e teste manual em domínio real.
 
-**Bloqueio conhecido:** DNS wildcard, certificado TLS wildcard e o teste manual final exigem execução
-no servidor de produção real do usuário — nenhum deles pode ser feito a partir desta sessão (sem
-acesso ao provedor de DNS nem a um host publicamente roteável). Runbook completo com os comandos
-exatos: `docs/RUNTIME-GATEWAY-DEPLOY.md`.
+**Bloqueio conhecido:** DNS já propagou e HTTP já comprovadamente chega ao nginx do host (feito pelo
+usuário) — não há bloqueio de rede/firewall pendente. O que falta é só execução no servidor real:
+aplicar o bootstrap HTTP-only, emitir os dois certificados, trocar para a config final e validar —
+nenhum desses passos pode ser feito a partir desta sessão (sem acesso SSH à VPS). Runbook completo
+com os comandos exatos: `docs/RUNTIME-GATEWAY-DEPLOY.md`.
 
-**Evidências:** ver `docs/HARDENING-ROADMAP.md`. Validação local desta sessão: `docker run` com
+**Evidências:** ver `docs/HARDENING-ROADMAP.md`. Validação local de sessão anterior: `docker run` com
 `nginx:1.27-alpine`, certificados autoassinados descartáveis e `--add-host api/web` simulando a rede
-do compose — `envsubst` renderiza `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com`
-corretamente nos dois `server_name`, `nginx -t` passa sem warnings (corrigida também a diretiva
-`listen ... http2` depreciada). Evidência de DNS/TLS/validação em domínio real fica pendente de
-execução pelo usuário — acrescentar aqui quando `docs/RUNTIME-GATEWAY-DEPLOY.md` §5 for concluído.
+do compose — `envsubst` renderiza os domínios corretamente nos dois `server_name`, `nginx -t` passa
+sem warnings (corrigida também a diretiva `listen ... http2` depreciada); essa validação cobre a
+sintaxe do caminho de VPS exclusiva (`nginx.prod.conf`). Validação local desta sessão para o caminho
+de host compartilhado: `nginx -t` do arquivo final
+(`nginx-devcloud.host.conf.example`) contra certificados autoassinados descartáveis passa limpo
+(inclusive o `map` renomeado para não colidir com um `map` de mesmo nome que o Tiremax possa ter).
+Diagnóstico externo do usuário: DNS dos três nomes propagado e confirmado; uma requisição para
+`app.aifunnelpro.com.br` abriu o Tiremax — confirma que a porta 80 está alcançável e o nginx do host
+está processando a requisição normalmente (ela cai no `default_server` do Tiremax só porque ainda não
+existe um `server_name` dedicado ao DevCloud). Porta 22 fechada externamente é intencional neste
+servidor, não um sintoma de firewall bloqueando 80/443 — não há mais hipótese de firewall em aberto.
+Revalidação independente do Codex após a reatribuição: `.env.production` confirmado ignorado por
+`.gitignore:14`; `git diff --check` limpo; compose padrão lista somente
+`postgres/migrate/redis/runtime-broker/worker/api/web`, enquanto `--profile standalone-nginx`
+acrescenta `nginx`; config renderizada publica exclusivamente
+`127.0.0.1:18080→3000` e `127.0.0.1:18081→4000`; `nginx -t` do bootstrap sem certificados e da
+config final com certificados descartáveis passaram; `npm.cmd run typecheck` e
+`npm.cmd run lint` passaram no monorepo.
+Evidência de TLS/validação em domínio real completa fica pendente de execução pelo usuário —
+acrescentar aqui quando `docs/RUNTIME-GATEWAY-DEPLOY.md` §7 for concluído.
 
 ---
 
@@ -515,7 +567,7 @@ rede/porta.
 
 **Status:** `PARCIAL`
 
-**Execução:** Claude — Etapa 5.
+**Execução:** Codex — Etapa 5 reatribuída pelo usuário após o encerramento dos créditos do Claude.
 
 **Implementação:**
 
@@ -713,6 +765,9 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário confirmou os domínios reais (painel `app.oliveiradevcloud.com`, runtime `runtime.oliveiradevcloud-content.com`). Server block real do Runtime Gateway escrito em `infra/production/nginx.prod.conf` (location morta `/runtime/` removida); `docker-compose.prod.yml` com `RUNTIME_BASE_DOMAIN` no nginx; `.env.production(.example)` e `.gitignore` atualizados; novo runbook `docs/RUNTIME-GATEWAY-DEPLOY.md` (DNS, certbot HTTP-01/DNS-01, renovação, checklist, recuperação de falha). Validado com Docker real nesta sessão (`nginx:1.27-alpine`, certs autoassinados, `--add-host` simulando a rede do compose): `envsubst` renderiza os domínios reais corretamente, `nginx -t` limpo sem warnings. DNS wildcard, certificado TLS wildcard e validação em domínio real seguem pendentes — dependem de execução do usuário no servidor real, fora do alcance desta sessão | Usuário executa `docs/RUNTIME-GATEWAY-DEPLOY.md`; Claude pode adiantar a Etapa 3 (Fase 4) nesse meio-tempo, se autorizado |
 | 2026-08-10 | Claude | Fase 4 (Etapa 3) | `CONCLUÍDA` | Runtime Broker implementado do zero: `apps/runtime-broker` (novo serviço, único detentor de `docker.sock`) + `packages/runtime-broker-client` (cliente compartilhado). Levantamento prévio achou 14 pontos reais de acesso a `dockerode` (roadmap catalogava só 10) — os 12 pontos únicos (2 eram duplicatas, consolidadas em `packages/repository-bootstrap`) migrados: `workspace-engine`, `ide-engine`, `terminal-engine` (WS interativo real), `git-engine`, `setup-engine`, `review-engine`, `repository-intelligence`, `code-intelligence`, `contract-intelligence`, `agent-engine`, `repository-bootstrap`. Contrato do broker deliberadamente estreito (não é passthrough genérico do Docker) — imagem/bind/rede sempre derivados internamente, nunca aceitos do chamador; `Privileged`/`CapAdd` nem existem no schema. `docker-compose.prod.yml`: novo serviço `runtime-broker` com `docker.sock`; `docker.sock` removido de `api`/`worker` (confirmado via `docker compose config`). Validação: 13 testes de contrato do broker + teste próprio (novo, contra broker+Docker reais) para cada um dos 12 pontos migrados + `apps/api/src/e2e.test.ts` passando de ponta a ponta pelo broker real + correção genuína de `ws-security.test.ts` (as 2 falhas "pré-existentes" da Fase 3 eram, na real, um broker inalcançável mascarado de 500 — agora sobe um broker real e espera o 404 correto). Suíte completa: **189/189 testes, 24/24 arquivos, zero falhas**; `typecheck`/`lint`/`build` limpos no monorepo inteiro. Bug real encontrado e corrigido: `RuntimeBrokerClient` mandava `content-type` mesmo sem body, quebrando `DELETE`/`POST` vazios. P1-5 do roadmap fechado | Etapa 4: cliente HTTP/WS centralizado do frontend (Fase 1) |
 | 2026-08-10 | Claude | Fase 1 (Etapa 4) | `CONCLUÍDA` | `apps/web/lib/apiClient.ts` novo (HTTP/WS/SSE centralizados, redirect automático em `401` exceto rotas de auth); `apps/web/next.config.js` novo (rewrite dev-only para a API); 14 páginas migradas, `NEXT_PUBLIC_API_URL` removido do bundle/Dockerfile/compose/env examples. Validação com Postgres/Redis/Docker reais nesta sessão via `next dev` (porta 3001) proxiando para a API real (porta 4000): HTTP GET/POST/JSON/cookie confirmado; pilha completa Fase 1→Fase 4→Docker real criando organização/projeto/workspace reais; WebSocket de terminal confirmado com I/O bidirecional real (comando `echo` executado no tmux do container e ecoado de volta) através do proxy; SSE de `setup jobs` confirmado com múltiplos eventos reais em stream através do proxy. `typecheck`/`lint`/`build web` limpos; zero `localhost:4000` no build de produção. P1-13 do roadmap fechado. Achado durante a validação (fora do escopo desta fase, não corrigido): bug pré-existente no handler WS de terminal do backend (`apps/api/src/routes/terminals.ts:102-117`) — `Buffer.isBuffer(raw)` é sempre verdadeiro para mensagens da lib `ws` (texto ou binário), então o protocolo JSON `{type:'input'\|'resize'}` nunca é interpretado e cada tecla digitada escreve o envelope JSON literal no pty; registrado como `P1-18` no roadmap; commit `4de57d6` | Etapa 5: infraestrutura reproduzível em host limpo (Fase 5) |
+| 2026-08-10 | Claude | Fase 2 (Etapa 2) | `PARCIAL` | Usuário trocou os domínios reais de `app.oliveiradevcloud.com`/`runtime.oliveiradevcloud-content.com` para `app.aifunnelpro.com.br`/`runtime.tiremax.shop` (DNS dos três nomes já propagado e confirmado externamente) e revelou que a VPS de destino é compartilhada com outro site (Tiremax) já ocupando 80/443 com nginx próprio — mudança de topologia da Fase 2. Sem acesso SSH à VPS nesta sessão (tentativa de conexão deu timeout na porta 22, nenhuma chave privada disponível localmente), então nenhuma mudança foi aplicada no servidor; todo o trabalho foi preparação de config/documentação. Revisão do usuário corrigiu 4 achados antes do commit: (1) ciclo de bootstrap TLS — a config final referenciava certificados inexistentes, o que quebraria `nginx -t` antes mesmo do desafio HTTP-01 do painel conseguir rodar; resolvido com um arquivo bootstrap novo, só HTTP, sem nenhuma referência a certificado (`nginx-devcloud.host.bootstrap.conf.example`), aplicado primeiro, trocado pela config final só depois dos dois certificados emitidos, nunca os dois ativos ao mesmo tempo; (2) a hipótese de bloqueio por firewall (Hostinger/hPanel) estava errada e foi removida do plano/roadmap/runbook — Drop é política implícita padrão da Hostinger (não uma regra extra causando conflito), a porta 22 fechada é intencional, e uma requisição para `app.aifunnelpro.com.br` abriu o Tiremax, o que prova que HTTP já chega ao nginx do host; o bloqueio real sempre foi só a ausência dos server blocks/certificados/deploy; (3) `infra/production/nginx.prod.conf` deixou de ser config morta — o serviço `nginx` do compose voltou, agora atrás de um profile (`docker compose --profile standalone-nginx`, off por padrão), preservando um caminho executável para uma eventual VPS exclusiva; (4) `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for` adicionado aos blocos de API e runtime em ambos os arquivos de nginx, com nota ligando à restrição de `trustProxy` já planejada para a Fase 6/Etapa 6 (P1-1). Resultado: `infra/production/docker-compose.prod.yml` não roda nginx próprio nem publica 80/443 por padrão (`web`/`api` só em `127.0.0.1:${DEVCLOUD_WEB_HOST_PORT:-18080}`/`127.0.0.1:${DEVCLOUD_API_HOST_PORT:-18081}`); `docs/RUNTIME-GATEWAY-DEPLOY.md` reescrito (sem a seção de firewall, com o bootstrap em duas fases); `.env.production(.example)`, `docs/ARCHITECTURE.md` e `docs/HARDENING-ROADMAP.md` atualizados. `git diff --check`, `docker compose config` e `nginx -t` (bootstrap sem certificados e config final com certificados descartáveis) todos limpos. Nenhum arquivo commitado ainda nesta entrada | Usuário aplica o bootstrap, emite os dois certificados, troca para a config final no nginx do host (`docs/RUNTIME-GATEWAY-DEPLOY.md` §2-4) e roda a checklist de validação (§7); Claude não aplica nada no servidor sem acesso SSH |
+| 2026-08-10 | Codex | Reatribuição das Etapas 2 e 5 | `EM ANDAMENTO` | Usuário autorizou explicitamente o Codex a assumir as partes pendentes das Etapas 2 e 5 após o encerramento dos créditos do Claude, preservando o diff não commitado e todas as entregas anteriores | Revisar e validar o diff da Etapa 2; obter acesso SSH restrito e executar o deploy real sem afetar o Tiremax |
+| 2026-08-10 | Codex | Fase 2 (Etapa 2) — revisão local | `PARCIAL` | Diff do Claude preservado e revisado; reatribuição registrada; `.env.production` ignorado; `git diff --check` limpo; compose padrão sem nginx e profile `standalone-nginx` funcional; web/API somente em `127.0.0.1:18080/18081`; `nginx -t` limpo para bootstrap e config final; typecheck e lint limpos | Liberar SSH somente para `186.219.142.107/32`, autenticar por chave e executar o runbook no VPS com backup/`nginx -t` antes de cada reload |
 
 ### Modelo para futuras entradas
 
@@ -723,18 +778,17 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 
 ## 10. Prompt de retomada
 
-### Para Claude — etapas 1–5
+### Para Claude — etapas 1, 3 e 4 concluídas
 
 > Leia integralmente `CLAUDE.md`, `docs/PROJECT-COMPLETION-PLAN.md` e
-> `docs/HARDENING-ROADMAP.md`. Você é responsável somente pelas etapas 1–5. Verifique o estado real
-> do repositório e comece pela etapa ativa do checkpoint. Atualize o plano antes e depois de cada
-> etapa, execute as validações, faça um commit coeso por etapa e não marque nada como concluído sem
-> evidência. Ao terminar a etapa 5, faça o handoff obrigatório para Codex e não inicie a etapa 6.
+> `docs/HARDENING-ROADMAP.md`. Preserve as Etapas 1, 3 e 4 já concluídas. As pendências das Etapas 2
+> e 5 foram reatribuídas ao Codex pelo usuário em 2026-08-10; não retome essas pendências sem nova
+> autorização explícita e coordenação de worktree.
 
-### Para Codex — etapas 6–10
+### Para Codex — pendências das etapas 2 e 5, depois etapas 6–10
 
 > Leia integralmente `AGENTS.md`, `docs/PROJECT-COMPLETION-PLAN.md` e
-> `docs/HARDENING-ROADMAP.md`. Confirme que Claude concluiu ou documentou corretamente as etapas
-> 1–5 e revise o handoff sem refazer trabalho válido. Você é responsável pelas etapas 6–10. Execute
-> a etapa ativa, mantenha o plano atualizado, registre todas as validações e não marque uma etapa
-> como concluída sem atender integralmente aos critérios de aceite.
+> `docs/HARDENING-ROADMAP.md`. Preserve o trabalho válido do Claude nas Etapas 1–4. Conclua as
+> pendências reatribuídas das Etapas 2 e 5, faça o handoff interno e depois prossiga com as Etapas
+> 6–10. Mantenha o plano atualizado, registre todas as validações e não marque uma etapa como
+> concluída sem atender integralmente aos critérios de aceite.
