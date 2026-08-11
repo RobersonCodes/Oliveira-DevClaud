@@ -299,6 +299,10 @@ Produção usa o índice OCI imutável
 `sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a`; desenvolvimento pode
 continuar construindo a mesma versão localmente pelo passo acima.
 
+O workflow [`production-smoke.yml`](.github/workflows/production-smoke.yml) valida a instalação em
+um runner Linux limpo: Compose, migrations, readiness, workspace/terminal reais, reinício,
+persistência e restauração isolada de PostgreSQL e arquivos de workspace.
+
 ## Interface
 
 | Terminal persistente | Workspace Engine |

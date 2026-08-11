@@ -46,12 +46,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-11 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `59b7711` (`workspace-node-v1.1.0`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos, headers consolidados e persistência local de PostgreSQL/Redis/bind após restart estão validados (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem workspace `1.1.0` publicada no GHCR com SBOM/proveniência e pull por digest validado neste Docker host; ensaio integral em VM Linux limpa ainda pendente |
-| Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo; deploy real da Etapa 2 aguarda acesso SSH restrito |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. CI Linux novamente verde após corrigir a falsa falha de detecção do code-server |
+| Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Provisionar uma VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, usando a imagem por digest, inclusive smoke, restart, backup/restore e agente autenticado |
-| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Para concluir a Etapa 5 ainda são externos: uma VM Linux limpa para smoke/backup/restore e credenciais do próprio usuário para o teste autenticado das CLIs. |
+| Próxima ação única | Restringir `trustProxy` aos proxies/redes reais e cobrir IP direto versus `X-Forwarded-For` confiável por regressão automatizada (Fase 6/P1-1) |
+| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
 
@@ -80,6 +80,13 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
   ✓ — primeira vez neste projeto em que o CI passa 100%, incluindo as suítes Docker
   (`git-engine`/`workspace-engine`/`e2e`) que antes só rodavam de verdade em CI Linux e nunca tinham
   sido confirmadas verdes ali.
+- **Fase 5 (2026-08-11):** CI Linux no commit `5bdd7d8`, runs
+  [31524472703](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31524472703) e
+  [31524467564](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31524467564):
+  verificação da imagem, lint, typecheck, testes, build e audit todos verdes. O falso negativo que
+  usava a primeira linha informativa de `code-server --version` foi corrigido. No commit `20df932`,
+  o run [31525879533](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31525879533)
+  aprovou o smoke de produção em Linux limpo, inclusive restore isolado.
 
 Os números acima são apenas o baseline. Substitua-os pelos resultados reais de cada nova execução.
 
@@ -565,7 +572,8 @@ rede/porta.
 
 ### Fase 5 — infraestrutura reproduzível e operação em host limpo
 
-**Status:** `EM ANDAMENTO`
+**Status:** `PARCIAL` — host Linux limpo, imagem por digest, restart e restore aprovados; falta somente
+o smoke autenticado de agente com credencial do próprio usuário e a navegação IDE/TLS dependente da Fase 2.
 
 **Execução:** Codex — Etapa 5 reatribuída pelo usuário após o encerramento dos créditos do Claude.
 
@@ -573,16 +581,15 @@ rede/porta.
 
 - [x] Auditar Dockerfiles: build multi-stage, usuário não-root e healthchecks.
 - [x] Usar instalação determinística de dependências.
-- [ ] Publicar e versionar imagens de workspace em registry confiável.
+- [x] Publicar e versionar imagens de workspace em registry confiável.
 - [x] Verificar checksum/assinatura de artefatos como code-server.
 - [x] Instalar/versionar CLIs Codex e Claude e isolar falhas de inicialização no worker.
 - [x] Incluir Postgres, Redis, broker e dependências reais em readiness.
 - [x] Revisar timeouts, limites e headers do nginx/API.
 - [x] Documentar instalação limpa, upgrade, rollback e disaster recovery.
 - [x] Automatizar migrations antes da API.
-- [x] Provar persistência local de PostgreSQL, Redis/AOF e bind mount após reinício dos serviços;
-      o ensaio integral em VM Linux limpa, com workspace real e restore, continua pendente no critério
-      de aceite/validação mínima.
+- [x] Provar persistência de PostgreSQL, Redis/AOF e bind mount após reinício dos serviços, inclusive
+      em runner Linux limpo com workspace real e restore isolado de banco e workspace.
 
 **Critério de aceite:** seguindo somente a documentação, um host limpo consegue configurar, migrar,
 subir, criar usuário/projeto/workspace, abrir IDE/terminal, rodar agente, reiniciar e recuperar o
@@ -596,8 +603,7 @@ foram construídas com zero vulnerabilidades no audit, sem alerta OpenSSL do Pri
 imagens confirmou UID/GID `10001:10001`, comandos e healthchecks. Imports dos quatro runtimes
 passaram depois de `npm prune --omit=dev`. A suíte real do Runtime Broker passou `14/14` contra o
 Docker Desktop (na primeira tentativa o teste não coletou porque usou `/var/run/docker.sock`;
-repetido com `DOCKER_SOCKET=//./pipe/docker_engine`, o caminho correto no Windows). A validação fim a
-fim em VM Linux limpa continua pendente e impede concluir a fase inteira. A imagem de workspace
+repetido com `DOCKER_SOCKET=//./pipe/docker_engine`, o caminho correto no Windows). A imagem de workspace
 `oliveira-devcloud/workspace-node:1.1.0` foi construída de verdade e validada com UID `10001`,
 code-server `4.121.0`, pnpm `11.21.0`, Node `22`, Python `3.11` e Java `17`; após instalar as CLIs,
 o digest local passou a
@@ -607,9 +613,12 @@ code-server agora valida SHA-256 por arquitetura e o build falha em divergência
 e SBOM no run `31445506653`. O índice OCI
 `sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a` foi inspecionado e puxado
 por digest neste Docker host; um container descartável confirmou UID/GID `10001:10001` e todas as
-versões da toolchain. Como este host não é uma VM Linux limpa, P1-9 permanece parcial. Instalação limpa, upgrade,
+versões da toolchain. Depois, o run Linux limpo `31525879533` repetiu o pull por digest e percorreu
+Compose, migrations, readiness, usuário/projeto/workspace/terminal, restart, persistência e restore
+isolado, fechando P1-9. Instalação limpa, upgrade,
 rollback, backup/restore, persistência e desastre foram consolidados em
-`docs/PRODUCTION-OPERATIONS.md`; os ensaios reais do runbook continuam pendentes.
+`docs/PRODUCTION-OPERATIONS.md`; o ensaio automatizável do runbook agora está coberto por
+`.github/workflows/production-smoke.yml`.
 Validação documental desta atualização: todos os links locais dos cinco documentos ativos passaram,
 `git diff --check` ficou limpo e `docker-compose --env-file .env.production.example -f
 infra/production/docker-compose.prod.yml config --quiet` terminou com código zero. O plugin local
@@ -624,8 +633,8 @@ vulnerabilidades. A inspeção do help revelou e evitou um defeito de compatibil
 foi removido do Codex atual e o engine agora usa `workspace-write` + aprovação `never`, combinação
 presente na CLI e coberta pelo teste. Typecheck do agent-engine/worker/broker passou, a suíte real
 broker+Docker+tmux passou `2/2`, e as imagens de worker e broker foram reconstruídas com audit zero.
-Não houve autenticação nem chamada a provedor nesta validação; o smoke test autenticado continua
-pendente no host Linux e mantém a Fase 5 `EM ANDAMENTO`.
+Não houve autenticação nem chamada a provedor nesta validação; o smoke autenticado continua
+pendente por credencial externa e mantém a Fase 5 `PARCIAL`.
 
 P2-1 e P2-4 foram fechados nesta sessão. A API agora declara `bodyLimit=1 MiB`,
 `requestTimeout=30s` e `keepAliveTimeout=72s`; uma regressão confirma as opções efetivas e resposta
@@ -645,14 +654,15 @@ Redis e arquivo do bind mount preservado com SHA-256
 usar o fluxo autenticado por HTTP loopback foi corretamente bloqueada pelo cookie de produção
 `__Host-...; Secure`; a fixture foi então criada/consultada via Prisma dentro da API, sem enfraquecer
 o cookie. Ao final, todos os recursos do projeto descartável foram removidos. Limitação registrada:
-não foi VM Linux limpa, o arquivo não veio de workspace real e backup/restore e agente autenticado
-não foram exercitados; por isso a Fase 5 permanece `EM ANDAMENTO`.
+naquele momento não era VM Linux limpa, o arquivo não vinha de workspace real e backup/restore e
+agente autenticado não haviam sido exercitados. O run Linux `31525879533` supriu as três primeiras
+lacunas; somente a execução autenticada de agente continua externa.
 
 ---
 
 ### Fase 6 — identidade, sessão e fronteiras de confiança
 
-**Status:** `PARCIAL`
+**Status:** `EM ANDAMENTO`
 
 **Execução:** Codex — Etapa 6.
 
@@ -832,6 +842,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — pré-ensaio de persistência | `EM ANDAMENTO` | Evidência registrada no commit `af881c3`: projeto Compose isolado reconstruído e saudável; migrations aprovadas; PostgreSQL preservou usuário/organização/projeto após restart dos seis serviços; Redis/AOF preservou chave após restart; bind mount preservou arquivo e SHA-256 `E05D5726…BFEF`; 7 containers, 2 volumes, 1 rede e diretório temporário removidos ao final. Ensaio integral em VM Linux, restore e agente autenticado não executados | Publicar workspace `1.1.0` no GHCR por push/tag aprovado e validar pull por digest em host limpo |
 | 2026-08-11 | Codex | Fase 5 (Etapa 5) — publicação GHCR | `EM ANDAMENTO` | Tag remota `workspace-node-v1.1.0` confirmada no commit `59b7711`; workflow `Publish workspace image` run `31445506653` aprovado, com SBOM/proveniência; índice OCI `sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a` publicado para `linux/amd64`; pull por digest aprovado neste Docker host e container descartável confirmou UID/GID `10001:10001`, code-server `4.121.0`, pnpm `11.21.0`, Codex `0.147.0`, Claude `2.1.226`, Node `22.23.2`, Python `3.11.2` e Java `17.0.20`; `git diff --check` e `docker-compose ... config --quiet` aprovados. O host atual não é uma VM Linux limpa; restore e agente autenticado não foram executados | Provisionar VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, inclusive smoke, restart, backup/restore e agente autenticado |
 | 2026-08-11 | Codex | Fase 5 (Etapa 5) — sincronização do README | `EM ANDAMENTO` | README atualizado para registrar a publicação GHCR, o digest imutável e a separação entre build local de desenvolvimento e imagem de produção; `.env.example` alinhado à imagem local `1.1.0`, eliminando a divergência que faria o quickstart construir `1.1.0` e tentar executar `1.0`; `git diff --check` aprovado | Provisionar VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, inclusive smoke, restart, backup/restore e agente autenticado |
+| 2026-08-11 | Codex | Fase 5 (Etapa 5) — smoke Linux limpo | `PARCIAL` | CI recuperado no commit `5bdd7d8`: runs `31524472703`/`31524467564` inteiramente verdes após corrigir falso negativo de `code-server --version`. Workflow/script do commit `20df932` aprovados no run `31525879533` em `ubuntu-latest`: pull GHCR por digest, Compose, migrations, readiness, usuário/projeto/workspace/terminal, UID 10001, restart, PostgreSQL, Redis/AOF e bind persistentes, dump/tar com checksums e restore isolado de banco/workspace; cleanup e artefato sanitizado aprovados. P1-9 fechado. Sem secrets de provedor no repositório, o agente autenticado não foi simulado. Decisão: avançar a Fase 6, independente dos bloqueios externos das Fases 2/5, conforme permitido pelo plano | Restringir `trustProxy` e cobrir proxy confiável versus header direto por regressão |
 
 ### Modelo para futuras entradas
 

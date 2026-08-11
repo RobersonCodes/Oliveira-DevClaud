@@ -201,7 +201,7 @@ smoke test. Registre data, checksum, duração, ponto restaurado e resultado.
 
 ## 8. Ensaio obrigatório de persistência
 
-Este ensaio ainda precisa ser executado numa VM Linux limpa antes de concluir a Fase 5:
+Este ensaio precisa permanecer reproduzível numa VM Linux limpa:
 
 1. criar usuário, projeto e workspace;
 2. criar no workspace um arquivo com conteúdo e checksum conhecidos;
@@ -212,7 +212,20 @@ Este ensaio ainda precisa ser executado numa VM Linux limpa antes de concluir a 
 6. realizar backup, restaurar em ambiente isolado e repetir a comparação;
 7. anexar comandos, saídas sanitizadas e resultado ao plano operacional.
 
-Sem esse ensaio e o smoke test completo, a Fase 5 permanece `EM ANDAMENTO`.
+O workflow `.github/workflows/production-smoke.yml` automatiza os itens 1–6 em um runner
+`ubuntu-latest`; o smoke autenticado de agente e a navegação IDE pelo domínio TLS real permanecem
+validações externas, respectivamente por credencial do usuário e pela Fase 2.
+
+### Evidência Linux limpa — 2026-08-11
+
+O run [31525879533](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31525879533)
+executou `scripts/production-clean-host-smoke.sh` com sucesso em `ubuntu-latest`. A imagem foi puxada
+pelo digest OCI fixado; Compose, migrations e readiness passaram; usuário, organização, projeto,
+workspace real non-root e terminal foram criados; PostgreSQL, Redis/AOF, broker, API, worker e web
+foram reiniciados; o arquivo do workspace preservou o SHA-256
+`259bcc9fe6b8c7befcf46858d1dad73b3fdcf9daa575d413012a23e0552278f3`. O dump PostgreSQL e o tar dos
+workspaces foram restaurados em banco e diretório isolados, preservando projeto e checksum. O
+workflow publicou somente evidência sanitizada e removeu stack/volumes descartáveis ao final.
 
 ### Evidência local preliminar — 2026-08-10
 
