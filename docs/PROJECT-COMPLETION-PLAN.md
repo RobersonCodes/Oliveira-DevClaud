@@ -46,12 +46,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-10 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `d0cb2f9` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos e headers consolidados estão concluídos (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos, headers consolidados e persistência local de PostgreSQL/Redis/bind após restart estão validados (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
 | Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo; deploy real da Etapa 2 aguarda acesso SSH restrito |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Executar o ensaio de persistência após reinício dos serviços da stack de produção e registrar os dados preservados; não usar `down -v` |
-| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Nenhum bloqueio externo conhecido para a validação local nem para a Etapa 5. |
+| Próxima ação única | Publicar a imagem workspace `1.1.0` no GHCR por commit/tag aprovado e validar um pull por digest em host limpo; requer autorização explícita para push |
+| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Para concluir a Etapa 5 ainda são externos: autorização de push/tag para publicar no GHCR, uma VM Linux limpa para smoke/backup/restore e credenciais do próprio usuário para o teste autenticado das CLIs. |
 
 ### Baseline de validação conhecido
 
@@ -580,7 +580,9 @@ rede/porta.
 - [x] Revisar timeouts, limites e headers do nginx/API.
 - [x] Documentar instalação limpa, upgrade, rollback e disaster recovery.
 - [x] Automatizar migrations antes da API.
-- [ ] Provar persistência após reinício dos serviços.
+- [x] Provar persistência local de PostgreSQL, Redis/AOF e bind mount após reinício dos serviços;
+      o ensaio integral em VM Linux limpa, com workspace real e restore, continua pendente no critério
+      de aceite/validação mínima.
 
 **Critério de aceite:** seguindo somente a documentação, um host limpo consegue configurar, migrar,
 subir, criar usuário/projeto/workspace, abrir IDE/terminal, rodar agente, reiniciar e recuperar o
@@ -631,6 +633,17 @@ frame/COOP/CORP. O runtime mantém limite nginx de 25 MiB e headers autoritativo
 `apps/api/src/http-boundary.test.ts` 4/4; typecheck completo, build da API, lint e `git diff --check`
 limpos; `nginx -t` real passou tanto para a config do host quanto para o template standalone em
 `nginx:1.27-alpine`, com envsubst e certificados descartáveis.
+
+O pré-ensaio de persistência também passou no Docker Desktop com projeto Compose isolado
+`odc-persistence-test`: builds reais (audit zero), migrations, stack saudável, usuário/organização/
+projeto preservados no PostgreSQL depois de reiniciar os seis serviços, chave preservada pelo AOF do
+Redis e arquivo do bind mount preservado com SHA-256
+`E05D57263E46C692957995484F398C7F05E75C837EA96E129C0D3F6734C2BFEF`. A tentativa inicial de
+usar o fluxo autenticado por HTTP loopback foi corretamente bloqueada pelo cookie de produção
+`__Host-...; Secure`; a fixture foi então criada/consultada via Prisma dentro da API, sem enfraquecer
+o cookie. Ao final, todos os recursos do projeto descartável foram removidos. Limitação registrada:
+não foi VM Linux limpa, o arquivo não veio de workspace real e backup/restore e agente autenticado
+não foram exercitados; por isso a Fase 5 permanece `EM ANDAMENTO`.
 
 ---
 
@@ -813,6 +826,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Fase 2 (Etapa 2) — revisão local | `PARCIAL` | Diff do Claude preservado e revisado; reatribuição registrada; `.env.production` ignorado; `git diff --check` limpo; compose padrão sem nginx e profile `standalone-nginx` funcional; web/API somente em `127.0.0.1:18080/18081`; `nginx -t` limpo para bootstrap e config final; typecheck e lint limpos; preparação commitada em `875fa15` | Liberar SSH somente para `186.219.142.107/32`, autenticar por chave e executar o runbook no VPS com backup/`nginx -t` antes de cada reload |
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — imagens, agentes e documentação | `EM ANDAMENTO` | Quatro imagens de serviço multi-stage/non-root; readiness real; workspace `1.1.0` com checksum do code-server e toolchain validada; Codex `0.147.0`/Claude `2.1.226` instalados por lockfile, audit zero e versões executadas como UID 10001; flags atuais do Codex corrigidas e cobertas; falha de startup do agente não é mais relançada pelo worker; teste real broker+Docker+tmux `2/2`; worker/broker reconstruídos; README, arquitetura, roadmap e runbook sincronizados; implementação registrada no commit `f4db862`. Publicação GHCR, execução autenticada e ensaio completo em VM Linux ainda não executados | Revisar timeouts, limites de corpo e headers nginx/API (P2-1/P2-4) |
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — fronteira HTTP | `EM ANDAMENTO` | P2-1/P2-4 corrigidos no commit `d0cb2f9`: Fastify com limite explícito de 1 MiB e timeouts de recebimento/keep-alive; nginx do painel alinhado, timeouts cliente/upstream explícitos e headers autoritativos consolidados; Runtime Gateway preserva política separada. Regressão 4/4, typecheck completo, build API, lint, `git diff --check` e `nginx -t` real nos dois caminhos aprovados | Executar ensaio de persistência após reinício da stack, sem remover volumes |
+| 2026-08-10 | Codex | Fase 5 (Etapa 5) — pré-ensaio de persistência | `EM ANDAMENTO` | Projeto Compose isolado reconstruído e saudável; migrations aprovadas; PostgreSQL preservou usuário/organização/projeto após restart dos seis serviços; Redis/AOF preservou chave após restart; bind mount preservou arquivo e SHA-256 `E05D5726…BFEF`; 7 containers, 2 volumes, 1 rede e diretório temporário removidos ao final. Ensaio integral em VM Linux, restore e agente autenticado não executados | Publicar workspace `1.1.0` no GHCR por push/tag aprovado e validar pull por digest em host limpo |
 
 ### Modelo para futuras entradas
 

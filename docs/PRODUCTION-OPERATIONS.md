@@ -207,6 +207,27 @@ Este ensaio ainda precisa ser executado numa VM Linux limpa antes de concluir a 
 
 Sem esse ensaio e o smoke test completo, a Fase 5 permanece `EM ANDAMENTO`.
 
+### Evidência local preliminar — 2026-08-10
+
+Antes da VM Linux, o procedimento de reinício foi exercitado no Docker Desktop com projeto Compose
+isolado `odc-persistence-test`, portas `127.0.0.1:28080/28081`, volumes próprios e bind mount dentro
+do diretório temporário do repositório. As imagens de API, web, worker e broker foram reconstruídas;
+migrations terminaram com código zero e `/ready` confirmou PostgreSQL, Redis e Runtime Broker.
+
+Foram criados um usuário/organização e um projeto descartáveis no PostgreSQL, além de um
+arquivo-prova no bind mount com SHA-256
+`E05D57263E46C692957995484F398C7F05E75C837EA96E129C0D3F6734C2BFEF`. Depois de
+`docker-compose restart postgres redis runtime-broker api worker web`, `/ready` voltou a `ready`, os
+três registros continuaram consultáveis e o checksum permaneceu idêntico. Uma chave descartável do
+Redis também sobreviveu a um reinício próprio, confirmando o AOF. Ao final, 7 containers, 2 volumes,
+1 rede e o diretório temporário do projeto de teste foram removidos.
+
+Essa evidência confirma as três fronteiras de persistência após `restart` (volume PostgreSQL, volume
+Redis/AOF e bind mount de workspace), mas **não conclui** o ensaio obrigatório acima: o ambiente era
+Docker Desktop/Windows, o arquivo não foi criado por um workspace real via fluxo público e não houve
+backup/restore isolado nem execução autenticada de agente. Esses passos permanecem obrigatórios na
+VM Linux limpa.
+
 ## 9. Recuperação de desastre
 
 Em perda total do host:
