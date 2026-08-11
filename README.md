@@ -183,7 +183,7 @@ conflitos para que a aprovação seja rastreável.
    docker compose up -d postgres redis
    ```
 
-4. Construa a imagem usada pelos workspaces:
+4. Para desenvolvimento, construa a imagem usada pelos workspaces:
 
    ```bash
    docker build -t oliveira-devcloud/workspace-node:1.1.0 infra/workspace-images/node
@@ -192,6 +192,10 @@ conflitos para que a aprovação seja rastreável.
    Essa imagem inclui code-server `4.121.0`, pnpm `11.21.0`, Codex CLI `0.147.0` e Claude Code
    `2.1.226`, todos fixados no lockfile. Credenciais não são incorporadas à imagem: autentique cada
    CLI pelo terminal do workspace antes da primeira execução de agente.
+
+   Em produção, não use o build local: a imagem `workspace-node-v1.1.0` publicada no GHCR deve ser
+   consumida pelo digest imutável registrado em `.env.production.example` e no
+   [runbook de produção](docs/PRODUCTION-OPERATIONS.md).
 
 5. Gere o Prisma Client, aplique as migrations e inicie as aplicações:
 
@@ -288,9 +292,12 @@ flowchart LR
 
 O pipeline provisiona PostgreSQL e constrói a imagem real de workspace antes dos testes. Assim, o gate
 de integração valida o mesmo tipo de runtime usado pela plataforma. O workflow separado
-[`workspace-image.yml`](.github/workflows/workspace-image.yml) prepara a publicação versionada da
-imagem em GHCR com proveniência e SBOM; até a primeira publicação, a versão `1.1.0` deve ser
-construída localmente conforme o runbook de produção.
+[`workspace-image.yml`](.github/workflows/workspace-image.yml) publicou a versão `1.1.0` no GHCR com
+proveniência e SBOM no
+[run 31445506653](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31445506653).
+Produção usa o índice OCI imutável
+`sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a`; desenvolvimento pode
+continuar construindo a mesma versão localmente pelo passo acima.
 
 ## Interface
 
