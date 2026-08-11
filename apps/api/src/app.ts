@@ -29,6 +29,7 @@ import { contractIntelligenceRoutes } from './routes/contract-intelligence.js';
 import { registerRuntimeProxy } from './lib/runtimeProxy.js';
 import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtimeGateway.js';
 import { requireHostAdmin } from './lib/auth.js';
+import { parseTrustedProxyCidrs } from './lib/trustedProxy.js';
 
 export const API_BODY_LIMIT_BYTES = 1024 * 1024;
 export const API_REQUEST_TIMEOUT_MS = 30_000;
@@ -39,10 +40,10 @@ export const API_KEEP_ALIVE_TIMEOUT_MS = 72_000;
  * can exercise real routes/plugins/hooks against a real database via `app.inject()` instead of
  * spinning up an actual network listener (and index.ts stays a thin bootstrap around this).
  */
-export async function buildApp(opts: { logger?: boolean; disableRateLimit?: boolean } = {}) {
+export async function buildApp(opts: { logger?: boolean; disableRateLimit?: boolean; trustedProxies?: false | string[] } = {}) {
   const app = Fastify({
     logger: opts.logger ?? true,
-    trustProxy: true,
+    trustProxy: opts.trustedProxies ?? parseTrustedProxyCidrs(),
     // The public API is JSON-only and its largest accepted fields are measured in KiB, not MiB.
     // Keep this aligned with `client_max_body_size 1m` in both production nginx paths. Runtime
     // content keeps its separate 25 MiB nginx limit because IDE/preview traffic is a proxy boundary,

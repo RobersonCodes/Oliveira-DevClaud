@@ -23,9 +23,10 @@ cp .env.production.example .env.production
 chmod 600 .env.production
 ```
 
-Preencha todos os placeholders. Gere chaves aleatórias fora do histórico do shell sempre que
-possível e nunca envie `.env.production`, certificados ou backups ao Git. Descubra o grupo numérico
-do socket e prepare o diretório persistente:
+Preencha os placeholders, deixando somente `TRUSTED_PROXY_CIDRS` para o passo de descoberta abaixo.
+Gere chaves aleatórias fora do histórico do shell sempre que possível e nunca envie
+`.env.production`, certificados ou backups ao Git. Descubra o grupo numérico do socket e prepare o
+diretório persistente:
 
 ```bash
 stat -c '%g' /var/run/docker.sock
@@ -40,6 +41,27 @@ Produção deve usar o digest imutável já configurado em `.env.production.exam
 docker pull \
   ghcr.io/robersoncodes/oliveira-devcloud-workspace-node@sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a
 ```
+
+Antes do primeiro `up`, materialize somente a rede privada e descubra o endereço exato pelo qual o
+nginx do host chegará à API. Substitua `replace-with-compose-network-gateway/32` em
+`TRUSTED_PROXY_CIDRS` pelo resultado final abaixo; não use uma faixa privada ampla:
+
+```bash
+docker compose --env-file .env.production \
+  -f infra/production/docker-compose.prod.yml create postgres redis
+postgres_id="$(docker compose --env-file .env.production \
+  -f infra/production/docker-compose.prod.yml ps -q postgres)"
+compose_project="$(docker inspect "$postgres_id" \
+  --format '{{ index .Config.Labels "com.docker.compose.project" }}')"
+network_id="$(docker network ls \
+  --filter "label=com.docker.compose.project=$compose_project" \
+  --filter 'label=com.docker.compose.network=default' -q)"
+docker network inspect "$network_id" \
+  --format '{{(index .IPAM.Config 0).Gateway}}/32'
+```
+
+Com essa allowlist, `X-Forwarded-For`, host e protocolo encaminhados só são aceitos do gateway real.
+Conexões diretas de outros containers ignoram esses headers, mesmo que tentem falsificá-los.
 
 O Dockerfile baixa o artefato oficial do code-server `4.121.0` e rejeita o build se o SHA-256 não
 corresponder ao valor fixado. O mesmo build instala, pelo lockfile, pnpm `11.21.0`, Codex CLI

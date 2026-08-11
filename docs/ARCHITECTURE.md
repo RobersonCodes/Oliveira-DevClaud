@@ -149,6 +149,12 @@ conexão ao upstream em até 5 segundos. O Fastify repete a fronteira relevante 
 remove o limite de payload nem o prazo de recebimento. `connectionTimeout` permanece desabilitado
 por desenho, pois um timeout de inatividade do socket derrubaria terminais e IDEs WebSocket válidos.
 
+O endereço de cliente também cruza uma fronteira explícita: Fastify ignora `X-Forwarded-For`,
+`X-Forwarded-Host` e `X-Forwarded-Proto` por padrão e só os aceita quando o peer direto pertence à
+allowlist `TRUSTED_PROXY_CIDRS`. Na topologia de host compartilhado, essa allowlist contém apenas o
+/32 do gateway da rede Compose pelo qual o nginx do host alcança a API. Outros containers da rede
+não podem falsificar o IP usado em rate limit e auditoria.
+
 O nginx é a fonte autoritativa dos headers do painel: remove valores equivalentes recebidos de
 Next.js/Fastify e aplica HSTS, CSP, `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
 `Referrer-Policy: no-referrer`, `Permissions-Policy`, `nosniff`, COOP e CORP. A CSP permite somente o

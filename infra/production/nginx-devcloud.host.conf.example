@@ -36,11 +36,9 @@
 # para um subdomínio do outro.
 #
 # X-Forwarded-For: os blocos de API e runtime abaixo passam
-# `X-Forwarded-For $proxy_add_x_forwarded_for` para a app. A API hoje usa `trustProxy: true`
-# (`apps/api/src/app.ts`) — confia cegamente em qualquer proxy upstream, então este header só passa a
-# ser confiável de verdade quando essa configuração for restrita aos proxies/redes reais, item já
-# planejado para a Fase 6/Etapa 6 (Codex) — ver P1-1 em docs/HARDENING-ROADMAP.md. Adicionar o header
-# aqui é necessário (sem ele a app não vê IP nenhum do cliente), mas não substitui essa restrição.
+# `X-Forwarded-For $proxy_add_x_forwarded_for` para a app. A API só aceita esses headers quando o
+# peer direto pertence a `TRUSTED_PROXY_CIDRS`; produção deve fixar exatamente o /32 do gateway da
+# rede Compose, descoberto pelo runbook, nunca uma faixa privada ampla ou `0.0.0.0/0`.
 
 # --- Redirect HTTP -> HTTPS para os dois hosts do DevCloud (não mexe no comportamento de porta 80
 # já existente do Tiremax para os hosts dele — nginx despacha por server_name, então isto só

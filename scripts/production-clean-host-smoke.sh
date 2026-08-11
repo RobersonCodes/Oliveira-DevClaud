@@ -62,6 +62,18 @@ set_env SECRETS_MASTER_KEY_BASE64 MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
 set_env RUNTIME_BROKER_TOKEN abcdef0123456789abcdef0123456789
 set_env DOCKER_GID "$(stat -c '%g' /var/run/docker.sock)"
 
+# Create only the data-service containers first so Compose materializes its private network. The
+# host nginx reaches the published API through this network's gateway; trust exactly that /32,
+# never every private address or an arbitrary hop count.
+"${compose[@]}" create postgres redis
+network_id="$(docker network ls \
+  --filter "label=com.docker.compose.project=$project_name" \
+  --filter 'label=com.docker.compose.network=default' \
+  --format '{{.ID}}' | head -n 1)"
+test -n "$network_id"
+trusted_proxy="$(docker network inspect "$network_id" --format '{{(index .IPAM.Config 0).Gateway}}')/32"
+set_env TRUSTED_PROXY_CIDRS "$trusted_proxy"
+
 workspace_image="$(grep '^WORKSPACE_IMAGE=' .env.production | cut -d= -f2-)"
 echo "Pulling immutable workspace image: $workspace_image"
 docker pull "$workspace_image"
@@ -81,12 +93,17 @@ curl --fail --silent "$api_url/ready" >/dev/null
 headers_file="$(mktemp)"
 register_body="$(jq -nc --arg email "clean-host-${GITHUB_RUN_ID:-manual}@example.test" \
   '{email:$email,password:"Correct-Horse-Battery-9",name:"Clean Host User"}')"
-curl --fail-with-body --silent --show-error -D "$headers_file" -o /dev/null \
-  -H 'content-type: application/json' -X POST -d "$register_body" \
-  "$api_url/api/v1/auth/register"
+register_response="$(curl --fail-with-body --silent --show-error -D "$headers_file" \
+  -H 'content-type: application/json' -H 'X-Forwarded-For: 198.51.100.20' \
+  -X POST -d "$register_body" "$api_url/api/v1/auth/register")"
+user_id="$(jq -er '.id' <<<"$register_response")"
 cookie="$(awk -F': ' 'tolower($1) == "set-cookie" { split($2, parts, ";"); gsub("\r", "", parts[1]); print parts[1]; exit }' "$headers_file")"
 rm -f "$headers_file"
 test -n "$cookie"
+
+audit_ip="$("${compose[@]}" exec -T postgres psql -U oliveira -d devcloud -tAc \
+  "SELECT \"ipAddress\" FROM \"AuditLog\" WHERE \"userId\" = '$user_id' AND action = 'USER_REGISTERED' ORDER BY \"createdAt\" DESC LIMIT 1")"
+test "$(tr -d '[:space:]' <<<"$audit_ip")" = "198.51.100.20"
 
 organizations="$(curl --fail-with-body --silent --show-error -H "Cookie: $cookie" \
   "$api_url/api/v1/organizations")"
@@ -170,6 +187,8 @@ cat > "$evidence_root/summary.txt" <<EOF
 clean_host=ubuntu-latest
 workspace_image=$workspace_image
 workspace_user=10001
+trusted_proxy=$trusted_proxy
+forwarded_client_ip=198.51.100.20
 migrations=passed
 readiness=passed
 user_project_workspace_terminal=passed
