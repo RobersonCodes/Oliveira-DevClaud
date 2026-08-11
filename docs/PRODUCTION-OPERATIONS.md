@@ -32,20 +32,27 @@ stat -c '%g' /var/run/docker.sock
 sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/oliveira-devcloud/workspaces
 ```
 
-Copie o GID retornado para `DOCKER_GID`. Até a imagem versionada existir no GHCR, construa exatamente
-a versão configurada no arquivo de ambiente:
+Copie o GID retornado para `DOCKER_GID`. A imagem `workspace-node-v1.1.0` foi publicada no GHCR pelo
+workflow [31445506653](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31445506653).
+Produção deve usar o digest imutável já configurado em `.env.production.example`:
+
+```bash
+docker pull \
+  ghcr.io/robersoncodes/oliveira-devcloud-workspace-node@sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a
+```
+
+O Dockerfile baixa o artefato oficial do code-server `4.121.0` e rejeita o build se o SHA-256 não
+corresponder ao valor fixado. O mesmo build instala, pelo lockfile, pnpm `11.21.0`, Codex CLI
+`0.147.0` e Claude Code `2.1.226`. A tag legível
+`ghcr.io/robersoncodes/oliveira-devcloud-workspace-node:1.1.0` aponta para esse mesmo índice OCI,
+mas não deve substituir o digest no ambiente de produção. O build local abaixo fica reservado para
+desenvolvimento ou recuperação quando o registry estiver indisponível:
 
 ```bash
 docker build --pull \
   -t oliveira-devcloud/workspace-node:1.1.0 \
   infra/workspace-images/node
 ```
-
-O Dockerfile baixa o artefato oficial do code-server `4.121.0` e rejeita o build se o SHA-256 não
-corresponder ao valor fixado. O mesmo build instala, pelo lockfile, pnpm `11.21.0`, Codex CLI
-`0.147.0` e Claude Code `2.1.226`. Depois da primeira publicação aprovada no GHCR, troque
-`WORKSPACE_IMAGE` por `ghcr.io/robersoncodes/oliveira-devcloud-workspace-node:1.1.0` e use
-`docker pull` em vez do build local.
 
 Valide a configuração antes de iniciar:
 

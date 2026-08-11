@@ -43,15 +43,15 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 
 | Campo | Valor |
 |---|---|
-| Atualizado em | 2026-08-10 |
+| Atualizado em | 2026-08-11 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `af881c3` |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos, headers consolidados e persistência local de PostgreSQL/Redis/bind após restart estão validados (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem de workspace `1.1.0` validada localmente e workflow GHCR preparado, mas ainda não publicado |
+| Commit de referência | `59b7711` (`workspace-node-v1.1.0`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fase 4 concluída; Fase 1 concluída; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; na Fase 5, Dockerfiles determinísticos/multi-stage/non-root, build dos pacotes internos, readiness PostgreSQL/Redis/Docker, checksum do code-server, CLIs Codex/Claude reproduzíveis, limites/timeouts HTTP explícitos, headers consolidados e persistência local de PostgreSQL/Redis/bind após restart estão validados (P1-6/P1-7/P1-8/P1-10/P2-1/P2-3/P2-4 fechados); imagem workspace `1.1.0` publicada no GHCR com SBOM/proveniência e pull por digest validado neste Docker host; ensaio integral em VM Linux limpa ainda pendente |
 | Etapa ativa | Etapa 5 — infraestrutura reproduzível e operação em host limpo; deploy real da Etapa 2 aguarda acesso SSH restrito |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Publicar a imagem workspace `1.1.0` no GHCR por commit/tag aprovado e validar um pull por digest em host limpo; requer autorização explícita para push |
-| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Para concluir a Etapa 5 ainda são externos: autorização de push/tag para publicar no GHCR, uma VM Linux limpa para smoke/backup/restore e credenciais do próprio usuário para o teste autenticado das CLIs. |
+| Próxima ação única | Provisionar uma VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, usando a imagem por digest, inclusive smoke, restart, backup/restore e agente autenticado |
+| Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. Para concluir a Etapa 5 ainda são externos: uma VM Linux limpa para smoke/backup/restore e credenciais do próprio usuário para o teste autenticado das CLIs. |
 
 ### Baseline de validação conhecido
 
@@ -603,8 +603,11 @@ code-server `4.121.0`, pnpm `11.21.0`, Node `22`, Python `3.11` e Java `17`; ap�
 o digest local passou a
 `sha256:35468c9c4f2de8536ab1b33a609935a24f0c357e7a004fa9aca88e797a85d53c`. O download do
 code-server agora valida SHA-256 por arquitetura e o build falha em divergência. O workflow
-`.github/workflows/workspace-image.yml` prepara publicação versionada em GHCR com provenance e SBOM,
-mas nenhuma imagem foi publicada nesta sessão; P1-9 permanece parcial. Instalação limpa, upgrade,
+`.github/workflows/workspace-image.yml` publicou a tag `workspace-node-v1.1.0` no GHCR com provenance
+e SBOM no run `31445506653`. O índice OCI
+`sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a` foi inspecionado e puxado
+por digest neste Docker host; um container descartável confirmou UID/GID `10001:10001` e todas as
+versões da toolchain. Como este host não é uma VM Linux limpa, P1-9 permanece parcial. Instalação limpa, upgrade,
 rollback, backup/restore, persistência e desastre foram consolidados em
 `docs/PRODUCTION-OPERATIONS.md`; os ensaios reais do runbook continuam pendentes.
 Validação documental desta atualização: todos os links locais dos cinco documentos ativos passaram,
@@ -827,6 +830,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — imagens, agentes e documentação | `EM ANDAMENTO` | Quatro imagens de serviço multi-stage/non-root; readiness real; workspace `1.1.0` com checksum do code-server e toolchain validada; Codex `0.147.0`/Claude `2.1.226` instalados por lockfile, audit zero e versões executadas como UID 10001; flags atuais do Codex corrigidas e cobertas; falha de startup do agente não é mais relançada pelo worker; teste real broker+Docker+tmux `2/2`; worker/broker reconstruídos; README, arquitetura, roadmap e runbook sincronizados; implementação registrada no commit `f4db862`. Publicação GHCR, execução autenticada e ensaio completo em VM Linux ainda não executados | Revisar timeouts, limites de corpo e headers nginx/API (P2-1/P2-4) |
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — fronteira HTTP | `EM ANDAMENTO` | P2-1/P2-4 corrigidos no commit `d0cb2f9`: Fastify com limite explícito de 1 MiB e timeouts de recebimento/keep-alive; nginx do painel alinhado, timeouts cliente/upstream explícitos e headers autoritativos consolidados; Runtime Gateway preserva política separada. Regressão 4/4, typecheck completo, build API, lint, `git diff --check` e `nginx -t` real nos dois caminhos aprovados | Executar ensaio de persistência após reinício da stack, sem remover volumes |
 | 2026-08-10 | Codex | Fase 5 (Etapa 5) — pré-ensaio de persistência | `EM ANDAMENTO` | Evidência registrada no commit `af881c3`: projeto Compose isolado reconstruído e saudável; migrations aprovadas; PostgreSQL preservou usuário/organização/projeto após restart dos seis serviços; Redis/AOF preservou chave após restart; bind mount preservou arquivo e SHA-256 `E05D5726…BFEF`; 7 containers, 2 volumes, 1 rede e diretório temporário removidos ao final. Ensaio integral em VM Linux, restore e agente autenticado não executados | Publicar workspace `1.1.0` no GHCR por push/tag aprovado e validar pull por digest em host limpo |
+| 2026-08-11 | Codex | Fase 5 (Etapa 5) — publicação GHCR | `EM ANDAMENTO` | Tag remota `workspace-node-v1.1.0` confirmada no commit `59b7711`; workflow `Publish workspace image` run `31445506653` aprovado, com SBOM/proveniência; índice OCI `sha256:90bacb592d8278bd7ee91f023220428663fa7087497807806e871004b2377a4a` publicado para `linux/amd64`; pull por digest aprovado neste Docker host e container descartável confirmou UID/GID `10001:10001`, code-server `4.121.0`, pnpm `11.21.0`, Codex `0.147.0`, Claude `2.1.226`, Node `22.23.2`, Python `3.11.2` e Java `17.0.20`; `git diff --check` e `docker-compose ... config --quiet` aprovados. O host atual não é uma VM Linux limpa; restore e agente autenticado não foram executados | Provisionar VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, inclusive smoke, restart, backup/restore e agente autenticado |
 
 ### Modelo para futuras entradas
 
