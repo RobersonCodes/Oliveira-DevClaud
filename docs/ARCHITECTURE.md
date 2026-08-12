@@ -161,7 +161,15 @@ mais estritos. Depois de uma sessão válida, `requireUser` consome também `120
 `requireOrgRole` consome `600/min` agregados por organização; múltiplas verificações de autorização
 na mesma requisição contam apenas uma vez. Em produção, todos os contadores vivem no Redis e são
 compartilhados entre réplicas/restarts. `/health` e `/ready` não consomem orçamento para que o
-próprio mecanismo de proteção não derrube observabilidade e orquestração.
+próprio mecanismo de proteção não derrube observabilidade e orquestração. O Runtime Gateway aplica
+as camadas de usuário e organização depois de revalidar o ticket/cookie e a membership, inclusive
+no handshake WebSocket.
+
+A autorização de tenant segue a hierarquia `DEVELOPER < ADMIN < OWNER`; administração do host é
+uma capacidade ortogonal configurada por `HOST_ADMIN_EMAILS` e nunca eleva o papel em organizações.
+Operações de revisão que integram ou descartam mudanças de agentes exigem `ADMIN`, tanto em tarefas
+diretas quanto em orquestrações. O inventário completo de rotas e suas políticas está em
+`docs/RBAC-MATRIX.md`.
 
 Antes de registrar rotas ou abrir a porta, a API valida a fronteira de configuração de produção.
 `SECURE_CONFIG_REQUIRED=true` vem fixado na imagem e impede que um override acidental de

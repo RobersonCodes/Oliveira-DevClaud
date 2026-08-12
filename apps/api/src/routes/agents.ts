@@ -9,13 +9,13 @@ import { audit } from '../lib/audit.js';
 const engine = new DockerAgentEngine();
 const git = new DockerGitIsolationEngine();
 
-async function loadTask(request: FastifyRequest, taskId: string) {
+async function loadTask(request: FastifyRequest, taskId: string, required: Role = Role.DEVELOPER) {
   const task = await prisma.agentTask.findUnique({
     where: { id: taskId },
     include: { workspace: { include: { project: true } }, runs: { orderBy: { startedAt: 'desc' }, take: 1 } }
   });
   if (!task) throw Object.assign(new Error('AGENT_TASK_NOT_FOUND'), { statusCode: 404 });
-  const auth = await requireOrgRole(request, task.workspace.project.organizationId, Role.DEVELOPER);
+  const auth = await requireOrgRole(request, task.workspace.project.organizationId, required);
   return { task, ...auth };
 }
 
@@ -141,7 +141,7 @@ export async function agentRoutes(app: FastifyInstance) {
 
   app.post('/:taskId/merge', async request => {
     const { taskId } = request.params as { taskId: string };
-    const { task, user } = await loadTask(request, taskId);
+    const { task, user } = await loadTask(request, taskId, Role.ADMIN);
     if (!task.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('STOP_AGENT_BEFORE_MERGE'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED) return { ok: true, mergeCommit: task.mergeCommit, alreadyMerged: true };
@@ -158,7 +158,7 @@ export async function agentRoutes(app: FastifyInstance) {
 
   app.post('/:taskId/reject', async request => {
     const { taskId } = request.params as { taskId: string };
-    const { task, user } = await loadTask(request, taskId);
+    const { task, user } = await loadTask(request, taskId, Role.ADMIN);
     if (!task.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('STOP_AGENT_BEFORE_REJECT'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED) throw Object.assign(new Error('AGENT_TASK_ALREADY_MERGED'), { statusCode: 409 });

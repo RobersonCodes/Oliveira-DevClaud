@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `c593287` (`fix(fase6): fail closed on unsafe production config`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1 foi corrigido no commit `30e5490`; P1-2/P1-3 foram corrigidos no commit `c593287`; rate limit em camadas por IP/usuário/organização está implementado e validado localmente, aguardando CI Linux desta mudança |
+| Commit de referência | `af17d82` (`fix(fase6): layer rate limits by identity`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3 e o rate limit em camadas por IP/usuário/organização estão corrigidos e validados em CI. A revisão RBAC rota por rota e a matriz completa estão implementadas localmente, aguardando CI com PostgreSQL |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Revisar RBAC HTTP e WebSocket rota por rota e criar a matriz automatizada anônimo/membro/developer/admin/owner/host-admin (Fase 6) |
+| Próxima ação única | Validar no CI Linux/PostgreSQL a matriz RBAC e a paridade HTTP/WebSocket implementadas na Fase 6 |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -734,8 +734,18 @@ camadas de identidade, deduplicadas por requisição, inclusive para preHandlers
 usa o Redis já obrigatório à stack; desenvolvimento/testes usam store local. Health/readiness ficam
 fora do limite. `rate-limits.test.ts`: **6/6** (IP, probes, auth estrito, usuário cross-IP/org,
 organização multiusuário, dedupe e resposta `429`/`Retry-After`); conjunto direcionado com proxy,
-boot e cookie: **51/51**. `npm run typecheck`, `npm run lint` e build da API passaram. CI Linux com
-Redis real permanece pendente para esta mudança.
+boot e cookie: **51/51**. `npm run typecheck`, `npm run lint` e build da API passaram. O CI Linux
+`31625939507` tentativa 2 aprovou imagem, lint, typecheck, testes, build e audit; a tentativa 1 havia
+parado antes das validações por resposta HTTP 503 transitória do GitHub Releases.
+
+A revisão RBAC inventariou todas as rotas em `docs/RBAC-MATRIX.md` e centralizou a decisão pura em
+`canAccess`. A matriz de 30 combinações cobre anônimo, membro externo, developer, admin, owner e
+host-admin contra políticas autenticada/developer/admin/owner/host-admin. O Runtime Gateway passou
+a consumir também os orçamentos de usuário/organização depois de revalidar membership, e
+merge/rejeição direta de agentes foi alinhada à revisão de orquestrações em `ADMIN`. Testes locais
+sem infraestrutura: **10/10** (`auth.test.ts` + `rate-limits.test.ts`); typecheck, lint, build API e
+`git diff --check`: exit 0. A matriz HTTP real foi adicionada a `integration.test.ts` e aguarda CI
+com PostgreSQL; as regressões WS reais existentes continuam sendo a prova da paridade de handshake.
 
 ---
 
@@ -897,6 +907,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — fronteira de proxy confiável | `EM ANDAMENTO` | P1-1 fechado pelo commit `30e5490`: `trustProxy:true` removido; allowlist `TRUSTED_PROXY_CIDRS` validada e vazia por padrão; configuração/runbook/nginx/smoke alinhados ao `/32` exato do gateway Compose. Regressão local `npx vitest run apps/api/src/trusted-proxy.test.ts`: 10/10; `npm run typecheck`, `npm run lint` e `npm run build -w @oliveira/api`: exit 0. CI Linux `31528430998` aprovou lint/typecheck/test/build/audit; smoke Linux limpo `31528431019` aprovou e confirmou o IP encaminhado no `AuditLog`. Sem nova mudança arquitetural nesta retomada: `docs/ARCHITECTURE.md` já foi atualizado no próprio commit | Fazer o boot de produção falhar sem origins, secrets e flags seguras obrigatórias (P1-2/P1-3) |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — boot seguro de produção | `EM ANDAMENTO` | P1-2/P1-3 corrigidos no commit `c593287`: validação central fail-closed antes do Fastify; `SECURE_CONFIG_REQUIRED=true` fixado na imagem/API e documentado; origins, hosts, domínio de runtime, secrets, endpoints, proxy e TTL validados sem vazar valores. Testes direcionados `productionConfig` + `trusted-proxy` + `auth`: 45/45; typecheck, lint, build API, `git diff --check` e Compose config: exit 0. Localmente, `runtimeGateway.test.ts` não chegou às asserções por ausência de `DATABASE_URL`/PostgreSQL e Docker Desktop parado; CI Linux `31620694690` supriu a limitação (migrations/lint/typecheck/test/build/audit verdes), e smoke limpo `31620699908` aprovou a stack integral e evidência sanitizada | Aplicar rate limit por usuário/organização e por IP, preservando limites estritos de autenticação |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — rate limit por identidade | `EM ANDAMENTO` | Três camadas implementadas: IP confiável 120/min, usuário 120/min e organização 600/min; cadastro/login preservam 5/min e 8/min; contadores de produção compartilhados no Redis; probes excluídos; verificações repetidas deduplicadas. `rate-limits.test.ts`: 6/6; conjunto direcionado: 51/51; typecheck, lint e build API aprovados. CI Linux/Redis real pendente | Revisar RBAC HTTP/WS rota por rota e automatizar a matriz completa de papéis |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI do rate limit | `EM ANDAMENTO` | Commit `af17d82`; CI Linux `31625939507` tentativa 2 aprovou imagem, lint, typecheck, testes, build e audit. Tentativa 1 classificada como falha externa: quatro respostas HTTP 503 do GitHub Releases ao baixar code-server, antes de lint/testes; rerun sem mudança passou | Concluir a revisão RBAC e validar a matriz real no CI |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — revisão RBAC HTTP/WS | `EM ANDAMENTO` | Inventário completo criado em `docs/RBAC-MATRIX.md`; decisão central cobre 30 combinações de atores/políticas; HTTP/WS de runtime permanece em `DEVELOPER`; Runtime Gateway agora também cobra rate limit de identidade; merge/rejeição direta de agentes alinhada a orquestrações em `ADMIN`. Local: 10/10 testes sem infraestrutura, typecheck, lint, build API e diff-check verdes. Matriz HTTP real adicionada, pendente de CI/PostgreSQL | Validar no CI Linux/PostgreSQL a matriz RBAC e as regressões WS |
 
 ### Modelo para futuras entradas
 

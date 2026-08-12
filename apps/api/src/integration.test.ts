@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { prisma } from '@oliveira/database';
+import { prisma, Role } from '@oliveira/database';
 import { buildApp } from './app.js';
 
 // Real Fastify app + real Postgres via app.inject() — no mocked routes, no mocked Prisma. Exercises
@@ -195,6 +195,78 @@ describe('organizations — membership-scoped listing (real Postgres)', () => {
     const ids = list.json().map((o: { id: string }) => o.id);
     expect(ids).toContain(mine.organizationId);
     expect(ids).not.toContain(other.organizationId);
+  });
+});
+
+describe('complete HTTP authorization matrix (real Postgres, real routes)', () => {
+  it('keeps authenticated, tenant roles and host-admin privileges independent', async () => {
+    const owner = await registerUser();
+    const member = await registerUser();
+    const developer = await registerUser();
+    const admin = await registerUser();
+    const hostAdmin = await registerUser();
+    await prisma.organizationMember.createMany({ data: [
+      { organizationId: owner.organizationId, userId: developer.user.id, role: Role.DEVELOPER },
+      { organizationId: owner.organizationId, userId: admin.user.id, role: Role.ADMIN }
+    ] });
+
+    const actors = [
+      { name: 'anonymous', cookie: undefined },
+      // "member" means an authenticated account with no membership in the target organization.
+      { name: 'member', cookie: member.sessionCookie },
+      { name: 'developer', cookie: developer.sessionCookie },
+      { name: 'admin', cookie: admin.sessionCookie },
+      { name: 'owner', cookie: owner.sessionCookie },
+      // Host administration is orthogonal and never grants implicit access to a tenant.
+      { name: 'host-admin', cookie: hostAdmin.sessionCookie }
+    ] as const;
+    const headers = (cookie: string | undefined) => cookie ? { cookie } : undefined;
+
+    const expectedAuthenticated = [401, 200, 200, 200, 200, 200];
+    const expectedDeveloper = [401, 403, 200, 200, 200, 403];
+    const expectedAdmin = [401, 403, 403, 201, 201, 403];
+    const expectedOwner = [401, 403, 403, 403, 204, 403];
+    const expectedHostAdmin = [401, 403, 403, 403, 403, 200];
+
+    const previousHostAdmins = process.env.HOST_ADMIN_EMAILS;
+    process.env.HOST_ADMIN_EMAILS = hostAdmin.body.email;
+    try {
+      for (const [index, actor] of actors.entries()) {
+        const authOnly = await app.inject({ method: 'GET', url: '/api/v1/organizations', headers: headers(actor.cookie) });
+        expect(authOnly.statusCode, `${actor.name} -> authenticated`).toBe(expectedAuthenticated[index]);
+
+        const developerRoute = await app.inject({
+          method: 'GET',
+          url: `/api/v1/projects?organizationId=${owner.organizationId}`,
+          headers: headers(actor.cookie)
+        });
+        expect(developerRoute.statusCode, `${actor.name} -> DEVELOPER`).toBe(expectedDeveloper[index]);
+
+        const adminRoute = await app.inject({
+          method: 'POST',
+          url: '/api/v1/projects',
+          headers: headers(actor.cookie),
+          payload: { organizationId: owner.organizationId, name: `Matrix ${actor.name}` }
+        });
+        expect(adminRoute.statusCode, `${actor.name} -> ADMIN`).toBe(expectedAdmin[index]);
+
+        const disposableProject = await prisma.project.create({
+          data: { organizationId: owner.organizationId, name: `Delete ${actor.name}`, slug: `delete-${actor.name}-${crypto.randomUUID()}` }
+        });
+        const ownerRoute = await app.inject({
+          method: 'DELETE',
+          url: `/api/v1/projects/${disposableProject.id}`,
+          headers: headers(actor.cookie)
+        });
+        expect(ownerRoute.statusCode, `${actor.name} -> OWNER`).toBe(expectedOwner[index]);
+
+        const hostRoute = await app.inject({ method: 'GET', url: '/api/v1/system', headers: headers(actor.cookie) });
+        expect(hostRoute.statusCode, `${actor.name} -> HOST_ADMIN`).toBe(expectedHostAdmin[index]);
+      }
+    } finally {
+      if (previousHostAdmins === undefined) delete process.env.HOST_ADMIN_EMAILS;
+      else process.env.HOST_ADMIN_EMAILS = previousHostAdmins;
+    }
   });
 });
 

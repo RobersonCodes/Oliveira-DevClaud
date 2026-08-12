@@ -193,6 +193,8 @@ async function requireRuntimeAccess(request: FastifyRequest) {
   if (!workspace?.containerId) throw Object.assign(new Error('WORKSPACE_NOT_FOUND'), { statusCode: 404 });
   const membership = await prisma.organizationMember.findFirst({ where: { userId: uid, organizationId: workspace.project.organizationId } });
   if (!membership || !hasRole(membership.role, Role.DEVELOPER)) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
+  await request.enforceIdentityRateLimit?.('user', uid);
+  await request.enforceIdentityRateLimit?.('organization', workspace.project.organizationId);
 
   if (parsed.purpose === 'preview') {
     const registered = await prisma.workspacePort.findUnique({ where: { workspaceId_port: { workspaceId: parsed.workspaceId, port: parsed.port! } } });
