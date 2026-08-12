@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma, Role } from '@oliveira/database';
 import { DockerIdeEngine, IDE_PORT } from '@oliveira/ide-engine';
 import { requireOrgRole, hasRole } from './auth.js';
+import { audit } from './audit.js';
 import { bridgeWebSocket } from './wsBridge.js';
 import { issueRuntimeTicket, verifyRuntimeTicket, type RuntimeTicketPurpose } from './runtimeTicket.js';
 
@@ -337,6 +338,15 @@ export async function registerRuntimeTicketRoute(app: FastifyInstance) {
       if (!registered) throw Object.assign(new Error('PREVIEW_PORT_NOT_REGISTERED'), { statusCode: 404 });
     }
     const ticket = issueRuntimeTicket({ uid: user.id, sid: session.id, workspaceId: body.workspaceId, purpose: body.purpose, port: body.port }, RUNTIME_TICKET_TTL_MS);
+    await audit({
+      userId: user.id,
+      organizationId: workspace.project.organizationId,
+      action: 'RUNTIME_TICKET_ISSUED',
+      resource: 'Workspace',
+      resourceId: workspace.id,
+      ipAddress: request.ip,
+      metadata: { purpose: body.purpose, ...(body.port ? { port: body.port } : {}) }
+    });
     const base = runtimeBaseDomain();
     const host = body.purpose === 'ide' ? `ide-${body.workspaceId}.${base}` : `preview-${body.workspaceId}-${body.port}.${base}`;
     const scheme = process.env.NODE_ENV === 'production' ? 'https' : 'http';

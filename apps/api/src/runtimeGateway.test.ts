@@ -106,6 +106,7 @@ describe('runtime ticket issuance (POST /api/v1/runtime-tickets, on the panel or
     expect(body.ticket).toEqual(expect.any(String));
     expect(body.url).toContain(`ide-${workspace.id}.${RUNTIME_BASE_DOMAIN}`);
     expect(body.url).toContain(`t=${body.ticket}`);
+    await expect(prisma.auditLog.findFirst({ where: { action: 'RUNTIME_TICKET_ISSUED', resourceId: workspace.id } })).resolves.not.toBeNull();
   });
 });
 

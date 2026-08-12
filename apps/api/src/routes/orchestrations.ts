@@ -51,8 +51,10 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     const {id}=request.params as {id:string};
     const o=await prisma.orchestration.findUnique({where:{id},include:{workspace:{include:{project:true}}}});
     if(!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'),{statusCode:404});
-    await requireOrgRole(request,o.workspace.project.organizationId,Role.DEVELOPER);
-    await prisma.orchestration.update({where:{id},data:{status:'QUEUED'}}); await queue.tick(id); return {ok:true};
+    const {user}=await requireOrgRole(request,o.workspace.project.organizationId,Role.DEVELOPER);
+    await prisma.orchestration.update({where:{id},data:{status:'QUEUED'}});
+    await audit({userId:user.id,organizationId:o.workspace.project.organizationId,action:'ORCHESTRATION_STARTED',resource:'Orchestration',resourceId:id,ipAddress:request.ip});
+    await queue.tick(id); return {ok:true};
   });
 
   app.post('/:id/cancel', async request => {

@@ -80,7 +80,9 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
   });
 
   it('logout clears the session so /me stops working with the old cookie', async () => {
-    const { sessionCookie } = await registerUser();
+    const { sessionCookie, user } = await registerUser();
+    const token = decodeURIComponent(sessionCookie.split('=')[1]!);
+    const session = await prisma.session.findUniqueOrThrow({ where: { tokenHash: crypto.createHash('sha256').update(token).digest('hex') } });
     const before = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: sessionCookie } });
     expect(before.statusCode).toBe(200);
 
@@ -89,6 +91,7 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
 
     const after = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: sessionCookie } });
     expect(after.statusCode).toBe(401);
+    await expect(prisma.auditLog.findFirst({ where: { userId: user.id, action: 'USER_LOGOUT', resourceId: session.id } })).resolves.not.toBeNull();
   });
 
   it('/me without a session cookie is unauthorized', async () => {
@@ -123,6 +126,7 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     const otherSession = sessions.find(session => !session.current)!;
     const revokeOther = await app.inject({ method: 'DELETE', url: `/api/v1/auth/sessions/${otherSession.id}`, headers: { cookie: currentCookie } });
     expect(revokeOther.statusCode).toBe(204);
+    await expect(prisma.auditLog.findFirst({ where: { userId: registered.user.id, action: 'SESSION_REVOKED', resourceId: otherSession.id } })).resolves.not.toBeNull();
     expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: registered.sessionCookie } })).statusCode).toBe(401);
     expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: currentCookie } })).statusCode).toBe(200);
 
@@ -135,6 +139,7 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     const revokeOthers = await app.inject({ method: 'DELETE', url: '/api/v1/auth/sessions/others', headers: { cookie: currentCookie } });
     expect(revokeOthers.statusCode).toBe(200);
     expect(revokeOthers.json()).toEqual({ revoked: 1 });
+    await expect(prisma.auditLog.findFirst({ where: { userId: registered.user.id, action: 'SESSIONS_OTHERS_REVOKED' } })).resolves.not.toBeNull();
     expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: thirdCookie } })).statusCode).toBe(401);
 
     const current = sessions.find(session => session.current)!;

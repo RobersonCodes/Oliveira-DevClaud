@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `d1c07a9` (`feat(fase6): manage and revoke sessions`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas, revisão RBAC HTTP/WebSocket e gestão/revogação de sessões estão corrigidos e validados em CI e smoke limpo |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas, revisão RBAC HTTP/WebSocket e gestão/revogação de sessões estão corrigidos e validados em CI e smoke limpo. Revisão de auditoria está implementada e validada localmente, aguardando CI |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Revisar cobertura de auditoria para ações administrativas, sessões e agentes e corrigir lacunas verificáveis (Fase 6) |
+| Próxima ação única | Validar no CI a cobertura de auditoria de logout, runtime, setup, orquestração e agentes; depois executar a revisão cross-tenant final (Fase 6) |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -690,7 +690,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 - [x] Revisar RBAC HTTP e WebSocket rota por rota.
 - [x] Adicionar gerenciamento e revogação de sessões/dispositivos.
 - [x] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
-- [ ] Revisar logs de auditoria para ações administrativas e de agentes.
+- [x] Revisar logs de auditoria para ações administrativas e de agentes.
 - [ ] Executar nova revisão cross-tenant após as mudanças.
 
 **Critérios de aceite:** cabeçalhos de proxy não são confiados de fontes arbitrárias; configuração
@@ -765,6 +765,15 @@ passkeys/WebAuthn com challenges efêmeros no Redis, TOTP apenas como compatibil
 codes somente em hash. Também define endpoints, rollout sem bloquear contas existentes e a matriz
 de validação futura, preservando os testes físicos móveis como dependência da Fase 8. Nenhuma
 fronteira de runtime atual foi alterada por este item documental.
+
+A revisão rota por rota de mutações confirmou a cobertura existente de projetos, workspaces,
+secrets, agentes, reviews, terminais, IDE, repositório, command center e sessões. Cinco lacunas foram
+corrigidas: logout com `Session.id`, início manual de orquestração, cancelamento de setup ainda em
+fila, emissão de runtime ticket e reconciliação terminal de agent task. Os eventos carregam somente
+IDs, estados, propósito/porta e exit code; credenciais, prompts e logs são excluídos. Regressão
+textual cobre 11 ações e ausência de material de credencial; integração real confirma eventos de
+logout, revogações de sessão e emissão de ticket. Local: **29/29**, typecheck, lint, build API e
+diff-check verdes; PostgreSQL/Runtime Gateway aguardam CI.
 
 ---
 
@@ -932,6 +941,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — sessões e dispositivos | `EM ANDAMENTO` | API e tela de sessões implementadas; listagem omite token/hash, identifica sessão atual e permite revogar uma/todas as outras/a atual com auditoria e isolamento entre usuários. Runtime tickets/cookies agora carregam `sid` e revalidam a sessão de origem em toda requisição/WS. Local: 17/17, typecheck, lint, builds API/web e diff-check verdes; integração PostgreSQL/Runtime Gateway pendente de CI | Validar sessões e revogação de runtime no CI Linux |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI de sessões | `EM ANDAMENTO` | Commit `d1c07a9`; CIs `31642920258`/`31642923785` aprovaram migrations, revogação cross-device/cross-user, sessão expirada/atual, invalidação de runtime cookie, regressões WS, lint, typecheck, testes, build e audit. Smoke limpo `31642923772` aprovado | Planejar recuperação de conta, verificação de e-mail e MFA/passkeys |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — plano de segurança de conta | `EM ANDAMENTO` | `docs/ACCOUNT-SECURITY-PLAN.md` define entrega incremental de verificação, recuperação, passkeys/WebAuthn, TOTP/recovery codes, invariantes anti-enumeração/reuso, revogação integral de sessões, rollout e matriz de testes. Item de planejamento concluído; implementação futura permanece risco P2-5 | Revisar logs de auditoria para ações administrativas, sessões e agentes |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — auditoria administrativa/agentes | `EM ANDAMENTO` | Inventário de mutações confirmou cobertura ampla e corrigiu 5 lacunas: logout, orquestração iniciada, setup em fila cancelado, runtime ticket emitido e status terminal de agente reconciliado. Metadata exclui credenciais/prompts/logs. Local: regressão de cobertura + auth/ticket/rate limit 29/29, typecheck, lint, build API e diff-check verdes; integração de AuditLog pendente de CI | Validar auditoria no CI e executar revisão cross-tenant final |
 
 ### Modelo para futuras entradas
 

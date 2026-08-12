@@ -112,7 +112,7 @@ export async function agentRoutes(app: FastifyInstance) {
 
   app.get('/:taskId/status', async request => {
     const { taskId } = request.params as { taskId: string };
-    const { task } = await loadTask(request, taskId);
+    const { task, user } = await loadTask(request, taskId);
     if (!task.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     if (task.status !== AgentTaskStatus.RUNNING) return task;
     const runtime = await engine.status(task.workspace.containerId, task.id);
@@ -121,6 +121,15 @@ export async function agentRoutes(app: FastifyInstance) {
     const updated = await prisma.agentTask.update({ where: { id: task.id }, data: { status, exitCode: runtime.exitCode, finishedAt: new Date(), reviewStatus: AgentReviewStatus.READY } });
     const latestRun = task.runs[0];
     if (latestRun) await prisma.agentRun.update({ where: { id: latestRun.id }, data: { exitCode: runtime.exitCode, finishedAt: new Date() } });
+    await audit({
+      userId: user.id,
+      organizationId: task.workspace.project.organizationId,
+      action: 'AGENT_STATUS_RECONCILED',
+      resource: 'AgentTask',
+      resourceId: task.id,
+      ipAddress: request.ip,
+      metadata: { previousStatus: task.status, status, exitCode: runtime.exitCode }
+    });
     return { ...updated, runtime };
   });
 

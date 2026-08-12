@@ -69,7 +69,13 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post('/logout', async (request, reply) => {
     const token = request.cookies?.[SESSION_COOKIE];
-    if (token) await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
+    if (token) {
+      const session = await prisma.session.findUnique({ where: { tokenHash: hashToken(token) }, select: { id: true, userId: true } });
+      if (session) {
+        await prisma.session.delete({ where: { id: session.id } });
+        await audit({ userId: session.userId, action: 'USER_LOGOUT', resource: 'Session', resourceId: session.id, ipAddress: request.ip });
+      }
+    }
     // __Host- cookies are only accepted (including deletion cookies) with Secure + Path=/ and no
     // Domain, so logout must use the exact same security attributes as login/register.
     reply.clearCookie(SESSION_COOKIE, sessionCookieOptions());
