@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `d1c07a9` (`feat(fase6): manage and revoke sessions`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas, revisão RBAC HTTP/WebSocket e gestão/revogação de sessões estão corrigidos e validados em CI e smoke limpo. Revisão de auditoria está implementada e validada localmente, aguardando CI |
+| Commit de referência | `75bdc6c` (`fix(fase6): close security audit gaps`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas, revisão RBAC HTTP/WebSocket e gestão/revogação de sessões estão corrigidos e validados em CI e smoke limpo. Auditoria e correção cross-tenant de secrets estão implementadas e validadas localmente, aguardando CI/PostgreSQL |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar no CI a cobertura de auditoria de logout, runtime, setup, orquestração e agentes; depois executar a revisão cross-tenant final (Fase 6) |
+| Próxima ação única | Validar no CI/PostgreSQL a auditoria e o isolamento cross-tenant de secrets; se verde, concluir formalmente a Fase 6 |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -775,6 +775,15 @@ textual cobre 11 ações e ausência de material de credencial; integração rea
 logout, revogações de sessão e emissão de ticket. Local: **29/29**, typecheck, lint, build API e
 diff-check verdes; PostgreSQL/Runtime Gateway aguardam CI.
 
+A revisão cross-tenant final encontrou um defeito verificável em `POST /secrets`: a rota autorizava a
+`organizationId`, mas aceitava `projectId` ou `workspaceId` pertencente a outra organização. A
+correção exige uma única combinação de recurso para cada escopo e valida a cadeia
+workspace → project → organization antes de persistir; recurso ausente ou de outro tenant retorna o
+mesmo `404`, sem enumeração. Regressão unitária de formatos: **9/9**. Conjunto direcionado de
+segurança: **38/38**; typecheck do monorepo, lint, build da API e `git diff --check`: aprovados. Os
+casos reais de PostgreSQL para projeto/workspace cross-org foram adicionados a `integration.test.ts`
+e aguardam o CI porque este terminal não possui `DATABASE_URL`.
+
 ---
 
 ### Fase 7 — resiliência, concorrência e ciclo de vida
@@ -942,6 +951,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI de sessões | `EM ANDAMENTO` | Commit `d1c07a9`; CIs `31642920258`/`31642923785` aprovaram migrations, revogação cross-device/cross-user, sessão expirada/atual, invalidação de runtime cookie, regressões WS, lint, typecheck, testes, build e audit. Smoke limpo `31642923772` aprovado | Planejar recuperação de conta, verificação de e-mail e MFA/passkeys |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — plano de segurança de conta | `EM ANDAMENTO` | `docs/ACCOUNT-SECURITY-PLAN.md` define entrega incremental de verificação, recuperação, passkeys/WebAuthn, TOTP/recovery codes, invariantes anti-enumeração/reuso, revogação integral de sessões, rollout e matriz de testes. Item de planejamento concluído; implementação futura permanece risco P2-5 | Revisar logs de auditoria para ações administrativas, sessões e agentes |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — auditoria administrativa/agentes | `EM ANDAMENTO` | Inventário de mutações confirmou cobertura ampla e corrigiu 5 lacunas: logout, orquestração iniciada, setup em fila cancelado, runtime ticket emitido e status terminal de agente reconciliado. Metadata exclui credenciais/prompts/logs. Local: regressão de cobertura + auth/ticket/rate limit 29/29, typecheck, lint, build API e diff-check verdes; integração de AuditLog pendente de CI | Validar auditoria no CI e executar revisão cross-tenant final |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — revisão cross-tenant | `EM ANDAMENTO` | Defeito encontrado em secrets: projeto/workspace de outro tenant podia ser associado à organização autorizada. Validação de formato e ownership implementada com resposta indistinguível `404`; 9/9 casos de escopo e conjunto direcionado 38/38 verdes; typecheck, lint, build API e diff-check aprovados. Integração real cross-org adicionada, pendente de CI/PostgreSQL | Validar auditoria e isolamento de secrets no CI; concluir a Fase 6 se verde |
 
 ### Modelo para futuras entradas
 

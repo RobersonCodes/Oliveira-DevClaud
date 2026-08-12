@@ -261,6 +261,64 @@ describe('organizations — membership-scoped listing (real Postgres)', () => {
   });
 });
 
+describe('secret scopes — cross-tenant resource ownership (real Postgres)', () => {
+  it('rejects project/workspace IDs from another organization and accepts the caller tenant', async () => {
+    const mine = await registerUser();
+    const other = await registerUser();
+    const mineProject = await prisma.project.create({ data: { organizationId: mine.organizationId, name: 'Mine', slug: `mine-${crypto.randomUUID()}` } });
+    const otherProject = await prisma.project.create({ data: { organizationId: other.organizationId, name: 'Other', slug: `other-${crypto.randomUUID()}` } });
+    const otherWorkspace = await prisma.workspace.create({ data: { projectId: otherProject.id } });
+    const previousKey = process.env.SECRETS_MASTER_KEY_BASE64;
+    process.env.SECRETS_MASTER_KEY_BASE64 = Buffer.alloc(32, 7).toString('base64');
+    try {
+      const crossProject = await app.inject({
+        method: 'POST', url: '/api/v1/secrets', headers: { cookie: mine.sessionCookie },
+        payload: { organizationId: mine.organizationId, scope: 'PROJECT', projectId: otherProject.id, kind: 'GENERIC', name: 'CROSS_PROJECT', value: 'never-store-this' }
+      });
+      expect(crossProject.statusCode).toBe(404);
+
+      const crossWorkspace = await app.inject({
+        method: 'POST', url: '/api/v1/secrets', headers: { cookie: mine.sessionCookie },
+        payload: { organizationId: mine.organizationId, scope: 'WORKSPACE', workspaceId: otherWorkspace.id, kind: 'GENERIC', name: 'CROSS_WORKSPACE', value: 'never-store-this' }
+      });
+      expect(crossWorkspace.statusCode).toBe(404);
+      expect(await prisma.secret.count({ where: { organizationId: mine.organizationId } })).toBe(0);
+
+      const ownProject = await app.inject({
+        method: 'POST', url: '/api/v1/secrets', headers: { cookie: mine.sessionCookie },
+        payload: { organizationId: mine.organizationId, scope: 'PROJECT', projectId: mineProject.id, kind: 'GENERIC', name: 'OWN_PROJECT', value: 'stored-only-encrypted' }
+      });
+      expect(ownProject.statusCode).toBe(201);
+      expect(ownProject.json()).not.toHaveProperty('value');
+      expect(await prisma.secret.count({ where: { organizationId: mine.organizationId, projectId: mineProject.id } })).toBe(1);
+    } finally {
+      if (previousKey === undefined) delete process.env.SECRETS_MASTER_KEY_BASE64;
+      else process.env.SECRETS_MASTER_KEY_BASE64 = previousKey;
+    }
+  });
+
+  it('rejects ambiguous resource IDs for every secret scope', async () => {
+    const mine = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: mine.organizationId, name: 'Shape', slug: `shape-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const invalidPayloads = [
+      { scope: 'ORGANIZATION', projectId: project.id },
+      { scope: 'PROJECT' },
+      { scope: 'PROJECT', projectId: project.id, workspaceId: workspace.id },
+      { scope: 'WORKSPACE' },
+      { scope: 'WORKSPACE', projectId: project.id, workspaceId: workspace.id }
+    ];
+    for (const [index, invalid] of invalidPayloads.entries()) {
+      const response = await app.inject({
+        method: 'POST', url: '/api/v1/secrets', headers: { cookie: mine.sessionCookie },
+        payload: { organizationId: mine.organizationId, kind: 'GENERIC', name: `INVALID_${index}`, value: 'not-stored', ...invalid }
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(await prisma.secret.count({ where: { organizationId: mine.organizationId } })).toBe(0);
+  });
+});
+
 describe('complete HTTP authorization matrix (real Postgres, real routes)', () => {
   it('keeps authenticated, tenant roles and host-admin privileges independent', async () => {
     const owner = await registerUser();

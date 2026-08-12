@@ -171,6 +171,11 @@ Operações de revisão que integram ou descartam mudanças de agentes exigem `A
 diretas quanto em orquestrações. O inventário completo de rotas e suas políticas está em
 `docs/RBAC-MATRIX.md`.
 
+Secrets preservam também a fronteira relacional do tenant: escopo de organização não aceita recurso,
+escopo de projeto aceita somente um projeto da mesma organização e escopo de workspace aceita
+somente um workspace cujo projeto pertence à mesma organização. Essa cadeia é validada antes da
+persistência; IDs inexistentes e IDs de outro tenant retornam a mesma resposta para evitar enumeração.
+
 Cada login cria uma sessão independente armazenada somente como hash do bearer token. O usuário
 pode listar sessões ativas, identificar a atual e revogar uma, todas as outras ou a própria sessão;
 sessões expiradas são eliminadas da listagem. Tickets/cookies do Runtime Gateway carregam o ID da
