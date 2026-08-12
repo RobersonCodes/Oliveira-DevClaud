@@ -41,6 +41,17 @@ Codex/Claude terminal adapters, task model, logs, stop/restart, worktrees.
 ### M5 — Orchestrator
 Dependencies between tasks, tests/build gates, merge review and notifications.
 
+## Filas e política de retry
+
+Redis/BullMQ transporta dois tipos de job com custos distintos. `tick` de orquestração é uma
+reconciliação curta e idempotente: tenta até cinco vezes, com backoff exponencial iniciado em um
+segundo. `provision` executa clone/instalação e tenta até três vezes, com base de cinco segundos.
+Ambos aplicam jitter de 25% para evitar que várias réplicas retomem simultaneamente após uma falha
+compartilhada. Erros de infraestrutura como timeout e reset de conexão consomem essa política;
+invariantes permanentes conhecidas são convertidas em `UnrecoverableError` pelo worker e falham sem
+novas tentativas. Dedupe de ticks e `jobId` estável de setup continuam sendo as fronteiras contra
+efeitos concorrentes duplicados.
+
 
 ## Terminal Plane (v0.4)
 

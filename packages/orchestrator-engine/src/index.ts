@@ -1,4 +1,4 @@
-import { Queue } from 'bullmq';
+import { Queue, type JobsOptions } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
 
 export type PlanStep = {
@@ -40,6 +40,13 @@ export function readyStepKeys(steps: Array<{key:string; status:string; dependsOn
   return steps.filter(s => s.status === 'BLOCKED' && s.dependsOn.every(d => completed.has(d))).map(s => s.key);
 }
 
+export const ORCHESTRATION_TICK_JOB_OPTIONS = {
+  attempts: 5,
+  backoff: { type: 'exponential', delay: 1_000, jitter: 0.25 },
+  removeOnComplete: true,
+  removeOnFail: 500
+} satisfies JobsOptions;
+
 export class OrchestrationQueue {
   readonly queue: Queue;
   constructor(
@@ -53,10 +60,9 @@ export class OrchestrationQueue {
     // Coalesce concurrent callers while preserving one trailing tick when the active tick requests
     // its continuation. A stable jobId alone discards that continuation because the active job owns
     // the id until it completes; keepLastIfActive explicitly retains the latest pending request.
-    await this.queue.add('tick', { orchestrationId }, {
+    return this.queue.add('tick', { orchestrationId }, {
+      ...ORCHESTRATION_TICK_JOB_OPTIONS,
       deduplication: { id: `tick-${orchestrationId}`, keepLastIfActive: true },
-      removeOnComplete: true,
-      removeOnFail: 500
     });
   }
 }

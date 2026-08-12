@@ -1,8 +1,19 @@
 import crypto from 'node:crypto';
-import { Worker } from 'bullmq';
+import { QueueEvents, UnrecoverableError, Worker } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
-import { OrchestrationQueue, readyStepKeys, validateDag } from './index.js';
+import { ORCHESTRATION_TICK_JOB_OPTIONS, OrchestrationQueue, readyStepKeys, validateDag } from './index.js';
+
+describe('orchestration tick retry policy', () => {
+  it('uses a short exponential backoff with jitter and a bounded attempt count', () => {
+    expect(ORCHESTRATION_TICK_JOB_OPTIONS).toMatchObject({
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 1_000, jitter: 0.25 },
+      removeOnComplete: true,
+      removeOnFail: 500
+    });
+  });
+});
 
 describe('validateDag', () => {
   it('rejects an empty plan', () => {
@@ -112,4 +123,56 @@ describe('OrchestrationQueue.tick — safe deduplication (isolated real Redis qu
       }
     });
   });
+
+  it('retries transient processor failures with the configured policy', async () => {
+    await withIsolatedQueue(async (queue, queueName) => {
+      const workerConnection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const eventsConnection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const events = new QueueEvents(queueName, { connection: eventsConnection });
+      let executions = 0;
+      const worker = new Worker(queueName, async () => {
+        executions += 1;
+        if (executions < 3) throw new Error('ECONNRESET');
+        return 'recovered';
+      }, { connection: workerConnection, concurrency: 1 });
+
+      try {
+        await Promise.all([worker.waitUntilReady(), events.waitUntilReady()]);
+        const job = await queue.tick(`retry-${crypto.randomUUID()}`);
+        await expect(job.waitUntilFinished(events, 10_000)).resolves.toBe('recovered');
+        expect(executions).toBe(3);
+        expect(job.opts.attempts).toBe(ORCHESTRATION_TICK_JOB_OPTIONS.attempts);
+      } finally {
+        await worker.close();
+        await events.close();
+        if (workerConnection.status !== 'end') await workerConnection.quit().catch(() => undefined);
+        if (eventsConnection.status !== 'end') await eventsConnection.quit().catch(() => undefined);
+      }
+    });
+  }, 15_000);
+
+  it('does not retry an unrecoverable processor failure', async () => {
+    await withIsolatedQueue(async (queue, queueName) => {
+      const workerConnection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const eventsConnection = new IORedis(redisUrl, { maxRetriesPerRequest: null });
+      const events = new QueueEvents(queueName, { connection: eventsConnection });
+      let executions = 0;
+      const worker = new Worker(queueName, async () => {
+        executions += 1;
+        throw new UnrecoverableError('WORKSPACE_HAS_NO_CONTAINER');
+      }, { connection: workerConnection, concurrency: 1 });
+
+      try {
+        await Promise.all([worker.waitUntilReady(), events.waitUntilReady()]);
+        const job = await queue.tick(`permanent-${crypto.randomUUID()}`);
+        await expect(job.waitUntilFinished(events, 5_000)).rejects.toThrow('WORKSPACE_HAS_NO_CONTAINER');
+        expect(executions).toBe(1);
+      } finally {
+        await worker.close();
+        await events.close();
+        if (workerConnection.status !== 'end') await workerConnection.quit().catch(() => undefined);
+        if (eventsConnection.status !== 'end') await eventsConnection.quit().catch(() => undefined);
+      }
+    });
+  }, 10_000);
 });

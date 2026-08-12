@@ -9,6 +9,7 @@ import { prisma } from '@oliveira/database';
 import { DockerAgentEngine } from '@oliveira/agent-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
 import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine';
+import { asBullMqJobError } from './lib/jobErrors.js';
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
 const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine();
@@ -123,7 +124,10 @@ async function tick(orchestrationId:string){
   else await new Promise(r=>setTimeout(r,1500)).then(()=>queue.tick(o.id));
 }
 
-const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{if(job.name==='tick') await tick(job.data.orchestrationId)}, {connection,concurrency:4});
+const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{
+  try { if(job.name==='tick') await tick(job.data.orchestrationId); }
+  catch(error) { throw asBullMqJobError(error); }
+}, {connection,concurrency:4});
 console.log('Oliveira DevCloud orchestration worker online');
 
 // v1.4 resilient asynchronous workspace provisioning
@@ -159,7 +163,10 @@ async function provision(setupJobId:string){
     await prisma.setupJob.update({where:{id:job.id},data:{status:SetupJobStatus.READY,stage:SetupStage.READY,progress:100,message:'Workspace Ready',result,finishedAt:new Date(),heartbeatAt:new Date()}});await setupLog(job.id,'Workspace Ready',SetupStage.READY);
   }catch(e:any){const current=await prisma.setupJob.findUnique({where:{id:job.id},select:{status:true}});if(current?.status===SetupJobStatus.CANCELLED)return;await prisma.setupJob.update({where:{id:job.id},data:{status:SetupJobStatus.FAILED,stage:SetupStage.FAILED,message:'Provisionamento falhou',errorCode:String(e?.message??'SETUP_FAILED').slice(0,120),errorMessage:String(e?.details??e?.message??e).slice(0,4000),finishedAt:new Date(),heartbeatAt:new Date()}});await setupLog(job.id,String(e?.details??e?.message??e).slice(0,4000),SetupStage.FAILED,'ERROR');throw e}
 }
-const setupWorker = new Worker('oliveira-setup',async job=>{if(job.name==='provision')await provision(job.data.setupJobId)},{connection,concurrency:2});
+const setupWorker = new Worker('oliveira-setup',async job=>{
+  try { if(job.name==='provision')await provision(job.data.setupJobId); }
+  catch(error) { throw asBullMqJobError(error); }
+},{connection,concurrency:2});
 console.log('Oliveira DevCloud setup worker v1.4 online');
 
 // Recover jobs that were RUNNING when a worker/process stopped unexpectedly.
