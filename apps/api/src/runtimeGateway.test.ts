@@ -391,8 +391,23 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
 
 describe('deprecated /api/v1/proxy/* — blocked in production, still usable during the transition otherwise', () => {
   it('is blocked with 410 when NODE_ENV=production', async () => {
-    const previousEnv = process.env.NODE_ENV;
-    process.env.NODE_ENV = 'production';
+    const productionEnv = {
+      NODE_ENV: 'production',
+      SECURE_CONFIG_REQUIRED: 'true',
+      WEB_ORIGIN: 'https://app.aifunnelpro.com.br',
+      DEV_CLOUD_HOST: 'app.aifunnelpro.com.br',
+      RUNTIME_BASE_DOMAIN: 'runtime.tiremax.shop',
+      RUNTIME_TICKET_SECRET: 'test-runtime-ticket-secret-with-32-bytes',
+      RUNTIME_BROKER_TOKEN: 'test-runtime-broker-token-with-32-bytes',
+      SECRETS_MASTER_KEY_BASE64: Buffer.alloc(32, 1).toString('base64'),
+      DATABASE_URL: process.env.DATABASE_URL ?? 'postgresql://oliveira:oliveira@localhost:5432/devcloud',
+      REDIS_URL: process.env.REDIS_URL ?? 'redis://localhost:6379',
+      RUNTIME_BROKER_URL: process.env.RUNTIME_BROKER_URL ?? 'http://runtime-broker:5001',
+      TRUSTED_PROXY_CIDRS: '127.0.0.1/32',
+      SESSION_TTL_DAYS: '14'
+    };
+    const previousEnv = new Map(Object.keys(productionEnv).map(name => [name, process.env[name]]));
+    Object.assign(process.env, productionEnv);
     try {
       const prodApp = await buildApp({ logger: false, disableRateLimit: true });
       await prodApp.ready();
@@ -405,7 +420,9 @@ describe('deprecated /api/v1/proxy/* — blocked in production, still usable dur
         await prodApp.close();
       }
     } finally {
-      if (previousEnv === undefined) delete process.env.NODE_ENV; else process.env.NODE_ENV = previousEnv;
+      for (const [name, value] of previousEnv) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
     }
   });
 });

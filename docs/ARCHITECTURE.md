@@ -155,6 +155,14 @@ allowlist `TRUSTED_PROXY_CIDRS`. Na topologia de host compartilhado, essa allowl
 /32 do gateway da rede Compose pelo qual o nginx do host alcança a API. Outros containers da rede
 não podem falsificar o IP usado em rate limit e auditoria.
 
+Antes de registrar rotas ou abrir a porta, a API valida a fronteira de configuração de produção.
+`SECURE_CONFIG_REQUIRED=true` vem fixado na imagem e impede que um override acidental de
+`NODE_ENV` degrade o cookie `__Host-` para um cookie sem `Secure`. Nesse modo, o boot exige origem
+HTTPS exata e coerente com o host do painel, domínio de runtime público válido, chave mestra AES de
+32 bytes, segredos de ticket/broker com pelo menos 32 bytes, endpoints explícitos, TTL de sessão
+entre 1 e 30 dias e uma allowlist de proxy não universal. Desenvolvimento continua com os
+fallbacks locais porque não ativa essa fronteira.
+
 O nginx é a fonte autoritativa dos headers do painel: remove valores equivalentes recebidos de
 Next.js/Fastify e aplica HSTS, CSP, `frame-ancestors 'none'`, `X-Frame-Options: DENY`,
 `Referrer-Policy: no-referrer`, `Permissions-Policy`, `nosniff`, COOP e CORP. A CSP permite somente o

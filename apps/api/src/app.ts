@@ -30,6 +30,7 @@ import { registerRuntimeProxy } from './lib/runtimeProxy.js';
 import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtimeGateway.js';
 import { requireHostAdmin } from './lib/auth.js';
 import { parseTrustedProxyCidrs } from './lib/trustedProxy.js';
+import { validateProductionConfig } from './lib/productionConfig.js';
 
 export const API_BODY_LIMIT_BYTES = 1024 * 1024;
 export const API_REQUEST_TIMEOUT_MS = 30_000;
@@ -41,6 +42,7 @@ export const API_KEEP_ALIVE_TIMEOUT_MS = 72_000;
  * spinning up an actual network listener (and index.ts stays a thin bootstrap around this).
  */
 export async function buildApp(opts: { logger?: boolean; disableRateLimit?: boolean; trustedProxies?: false | string[] } = {}) {
+  validateProductionConfig();
   const app = Fastify({
     logger: opts.logger ?? true,
     trustProxy: opts.trustedProxies ?? parseTrustedProxyCidrs(),

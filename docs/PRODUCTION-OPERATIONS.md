@@ -28,6 +28,13 @@ Gere chaves aleatórias fora do histórico do shell sempre que possível e nunca
 `.env.production`, certificados ou backups ao Git. Descubra o grupo numérico do socket e prepare o
 diretório persistente:
 
+A imagem da API fixa `SECURE_CONFIG_REQUIRED=true`. Antes de abrir a porta, ela aborta o boot se
+`NODE_ENV` não for `production`, se `WEB_ORIGIN` não for uma origem HTTPS exata coerente com
+`DEV_CLOUD_HOST`, se o domínio de runtime for local/malformado, se as chaves obrigatórias forem
+ausentes/fracas, se endpoints/TTL estiverem inválidos ou se a allowlist de proxy estiver vazia ou
+confiar em toda a internet. Não desative essa flag para contornar um erro: corrija a variável que o
+erro identifica; valores de secrets nunca são impressos.
+
 ```bash
 stat -c '%g' /var/run/docker.sock
 sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/oliveira-devcloud/workspaces

@@ -12,9 +12,10 @@ do host; a aplicação real dos server blocks, os certificados TLS e a validaç�
 pendentes no servidor real (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker (Fase 4,
 P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema — api e worker não têm
 mais acesso direto ao daemon. A Fase 1 está concluída; a Fase 5 passou no smoke Linux limpo e resta
-parcial somente por credencial externa de agente; a Fase 6 está em andamento e as Fases 7-9 seguem
+parcial somente por credencial externa de agente; a Fase 6 está em andamento, com P1-1/P1-2/P1-3
+fechados por allowlist explícita de proxies e boot fail-closed de produção, e as Fases 7-9 seguem
 pendentes — ver Seção 7.
-**Data:** 2026-08-11
+**Data:** 2026-08-12
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
 
@@ -134,9 +135,9 @@ Pontos-chave já confirmados no código:
 
 | # | Risco | Evidência |
 |---|---|---|
-| P1-1 | `trustProxy: true` confia cegamente em qualquer proxy upstream — se a API for exposta sem um proxy confiável na frente, `request.ip` (usado em rate-limit e audit log) é falsificável pelo header `X-Forwarded-For` do próprio atacante. | `apps/api/src/app.ts:36` |
-| P1-2 | Cookie de sessão só recebe `secure: true` se `NODE_ENV==='production'` estiver setado corretamente no deploy — se a env var faltar, o cookie trafega sem flag `Secure`. | `apps/api/src/routes/auth.ts:40,65` |
-| P1-3 | `CORS origin` cai para `http://localhost:3000` se `WEB_ORIGIN` não estiver definida em produção — libera CORS com `credentials:true` para uma origem de desenvolvimento. | `apps/api/src/app.ts:41` |
+| P1-1 | ✅ **Corrigido (Fase 6, 2026-08-11; revalidado em 2026-08-12).** `trustProxy:true` foi substituído por uma allowlist `TRUSTED_PROXY_CIDRS` de endereços/CIDRs IPv4/IPv6 validada no boot. Configuração vazia desabilita confiança em proxy; valores inválidos abortam o boot. Conexões diretas ou peers fora da allowlist não conseguem alterar `request.ip`, protocolo ou host com `X-Forwarded-*`; a resolução também para no primeiro salto não confiável. O runbook e o smoke descobrem e fixam somente o `/32` do gateway da rede Compose. Regressão local: 10/10; CI Linux `31528430998` verde; smoke Linux limpo `31528431019` confirmou no `AuditLog` o IP encaminhado somente através do peer confiável. | `apps/api/src/{app.ts,lib/trustedProxy.ts,trusted-proxy.test.ts}`; `.env.production.example`; `docs/PRODUCTION-OPERATIONS.md`; `scripts/production-clean-host-smoke.sh` |
+| P1-2 | ✅ **Corrigido (Fase 6, 2026-08-12).** A imagem da API fixa `NODE_ENV=production` e `SECURE_CONFIG_REQUIRED=true`; antes de criar o Fastify, a aplicação exige ambos os estados, portanto ausência/override acidental de `NODE_ENV` não degrada silenciosamente o cookie `__Host-odc_session` para um cookie sem `Secure`. O boot também valida TTL e configuração criptográfica. Regressões confirmam a falha de `buildApp()` em configuração insegura e as propriedades `Secure`, `Path=/`, ausência de `Domain` e prefixo `__Host-`. | `infra/production/Dockerfile.api`; `apps/api/src/lib/{productionConfig.ts,productionConfig.test.ts,auth.ts,auth.test.ts}` |
+| P1-3 | ✅ **Corrigido (Fase 6, 2026-08-12).** O fallback `http://localhost:3000` permanece apenas em desenvolvimento. Em modo seguro de produção, o boot exige `WEB_ORIGIN` como origem HTTPS exata, sem path/query/credenciais, e com hostname idêntico a `DEV_CLOUD_HOST`; também rejeita domínio de runtime local/malformado, placeholders e endpoints obrigatórios inválidos. Erros citam somente os nomes das variáveis. | `apps/api/src/lib/{productionConfig.ts,productionConfig.test.ts}`; `.env.production.example`; `docs/PRODUCTION-OPERATIONS.md` |
 | P1-4 | Handshake WS do `runtimeProxy` verifica apenas membership na organização do workspace, não o papel mínimo `DEVELOPER` que as rotas HTTP paralelas exigem — inconsistência de autorização entre HTTP e WS para o mesmo recurso. | `apps/api/src/lib/runtimeProxy.ts:70-71` vs. rotas HTTP com `requireOrgRole(..., Role.DEVELOPER)` |
 | P1-5 | ✅ **Corrigido (Fase 4, 2026-08-10).** ~~`docker.sock` montado em **dois** serviços (api e worker) em vez de um broker único — dobra a superfície de um processo com acesso root-equivalente ao host.~~ Novo serviço `runtime-broker` (`apps/runtime-broker`) é agora o único detentor de `docker.sock`; api e worker falam com ele via `@oliveira/runtime-broker-client` (HTTP/WS autenticado por bearer token, contrato estreito e específico por domínio — nunca um passthrough genérico do Docker). `docker compose config` confirma que `docker.sock` só aparece no `runtime-broker`. 12 pontos de acesso direto a `dockerode` migrados (10 catalogados originalmente + 2 achados durante o levantamento: `apps/api/src/lib/repositoryBootstrap.ts` e sua cópia duplicada em `apps/worker`, consolidadas em `packages/repository-bootstrap`). Validado com 13 testes de contrato do broker + testes reais de cada engine migrado + a suíte E2E completa — tudo contra Docker real. Detalhe completo: `docs/PROJECT-COMPLETION-PLAN.md` Fase 4. | `apps/runtime-broker/`; `packages/runtime-broker-client/`; `infra/production/docker-compose.prod.yml` |
 | P1-6 | ✅ **Corrigido (Fase 5, 2026-08-10).** Os quatro Dockerfiles de serviço usam `npm ci`, build multi-stage, artefatos compilados dos pacotes internos, `npm prune --omit=dev`, runtime como UID/GID `10001:10001` e `HEALTHCHECK`; `.dockerignore` impede que secrets, `.git`, artefatos locais e documentação entrem no contexto. O build revelou e a correção incluiu dois defeitos que impediriam produção: pacotes internos apontavam `main` para TypeScript não executável e Prisma não detectava OpenSSL na imagem slim. As quatro imagens foram reconstruídas; imports de runtime passaram; `docker image inspect` confirmou UID 10001, comandos e healthchecks. `dockerode` foi atualizado de 4.x para 5.0.1 depois que o build expôs `uuid` vulnerável; `npm audit --omit=dev` e os quatro builds terminaram com zero vulnerabilidades. | `.dockerignore`; `infra/production/Dockerfile.{api,web,worker,runtime-broker}`; `package.json`; manifests dos pacotes internos |
@@ -377,17 +378,17 @@ percorrer a checklist de validação do runbook (§7) — inclusive a captura de
 cookie do painel nunca é enviado ao domínio de runtime e vice-versa, e que o Tiremax continua
 funcionando normalmente durante e depois da mudança.
 
-**Pendente no roadmap geral:** nenhum P0 aberto (todos os 15 corrigidos) e nenhum P1 crítico aberto
-(P1-5, o último de risco de segurança direto, foi corrigido na Fase 4 desta sessão). Continuam
-pendentes a Fase 5 (o restante) e as Fases 6-9, e dentro da Fase 3 em si o agendamento
+**Pendente no roadmap geral:** nenhum P0 aberto (todos os 15 corrigidos). A Fase 5 permanece parcial
+somente pelo smoke autenticado de agente com credencial externa; a Fase 6 está em andamento e
+P1-1/P1-2/P1-3 foram fechados. Permanecem P1/P2 de identidade, sessão, resiliência e produto,
+além das Fases 7-9. Dentro da Fase 3, o agendamento
 periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para a Fase 7
 (item já registrado no checklist da Fase 3 como permitido: "criar reaper... ou documentar sua entrega
 na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também foi deliberadamente
 adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
-A sequência sugerida agora é: Codex conclui o runbook de TLS/nginx real
-(`docs/RUNTIME-GATEWAY-DEPLOY.md`) para fechar a Fase 2 → conclui a infraestrutura
-reproduzível/Fase 5 reatribuída → faz o handoff interno e segue para as Fases 6-9.
+A sequência vigente é a do plano operacional: preservar os bloqueios externos das Fases 2/5 e
+avançar a Fase 6 pelo rate limit por identidade e IP, seguida das demais etapas 6-9.
 
 **Marco de CI (Fase 4, 2026-08-10):** run
 [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do
