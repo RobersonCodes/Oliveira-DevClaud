@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `75bdc6c` (`fix(fase6): close security audit gaps`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas, revisão RBAC HTTP/WebSocket e gestão/revogação de sessões estão corrigidos e validados em CI e smoke limpo. Auditoria e correção cross-tenant de secrets estão implementadas e validadas localmente, aguardando CI/PostgreSQL |
-| Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
+| Commit de referência | `64a0d55` (`fix(fase6): enforce secret tenant ownership`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 6 fechou proxy/configuração fail-closed, rate limit em camadas, RBAC HTTP/WebSocket, gestão/revogação de sessões, plano de segurança de conta, auditoria administrativa/agentes e isolamento cross-tenant, todos validados em CI Linux/PostgreSQL e smoke limpo |
+| Etapa ativa | Etapa 7 — resiliência, concorrência e ciclo de vida; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
-| Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar no CI/PostgreSQL a auditoria e o isolamento cross-tenant de secrets; se verde, concluir formalmente a Fase 6 |
+| Status | `PARCIAL` |
+| Próxima ação única | Configurar retries e backoff por tipo de job BullMQ (Fase 7), com regressões para falha transitória e permanente |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -678,7 +678,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 
 ### Fase 6 — identidade, sessão e fronteiras de confiança
 
-**Status:** `EM ANDAMENTO`
+**Status:** `CONCLUÍDA`
 
 **Execução:** Codex — Etapa 6.
 
@@ -691,7 +691,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 - [x] Adicionar gerenciamento e revogação de sessões/dispositivos.
 - [x] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
 - [x] Revisar logs de auditoria para ações administrativas e de agentes.
-- [ ] Executar nova revisão cross-tenant após as mudanças.
+- [x] Executar nova revisão cross-tenant após as mudanças.
 
 **Critérios de aceite:** cabeçalhos de proxy não são confiados de fontes arbitrárias; configuração
 insegura não inicia em produção; revogação de acesso tem efeito imediato; rotas equivalentes usam a
@@ -781,8 +781,13 @@ correção exige uma única combinação de recurso para cada escopo e valida a 
 workspace → project → organization antes de persistir; recurso ausente ou de outro tenant retorna o
 mesmo `404`, sem enumeração. Regressão unitária de formatos: **9/9**. Conjunto direcionado de
 segurança: **38/38**; typecheck do monorepo, lint, build da API e `git diff --check`: aprovados. Os
-casos reais de PostgreSQL para projeto/workspace cross-org foram adicionados a `integration.test.ts`
-e aguardam o CI porque este terminal não possui `DATABASE_URL`.
+casos reais de PostgreSQL para projeto/workspace cross-org foram adicionados a `integration.test.ts`;
+este terminal não possuía `DATABASE_URL`, e a limitação foi suprida pelos CIs Linux
+`31647200113`/`31647203652`, que aprovaram migrations, lint, typecheck, suíte completa (inclusive os
+casos reais), build e audit. O smoke de host limpo `31647200111` também passou. A cobertura de
+auditoria do commit anterior foi aprovada ainda nos CIs `31646764048`/`31646760826` e smoke
+`31646764020`. Com a matriz de papéis, revogação imediata e cross-org aprovados, todos os critérios
+da Fase 6 estão atendidos.
 
 ---
 
@@ -952,6 +957,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — plano de segurança de conta | `EM ANDAMENTO` | `docs/ACCOUNT-SECURITY-PLAN.md` define entrega incremental de verificação, recuperação, passkeys/WebAuthn, TOTP/recovery codes, invariantes anti-enumeração/reuso, revogação integral de sessões, rollout e matriz de testes. Item de planejamento concluído; implementação futura permanece risco P2-5 | Revisar logs de auditoria para ações administrativas, sessões e agentes |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — auditoria administrativa/agentes | `EM ANDAMENTO` | Inventário de mutações confirmou cobertura ampla e corrigiu 5 lacunas: logout, orquestração iniciada, setup em fila cancelado, runtime ticket emitido e status terminal de agente reconciliado. Metadata exclui credenciais/prompts/logs. Local: regressão de cobertura + auth/ticket/rate limit 29/29, typecheck, lint, build API e diff-check verdes; integração de AuditLog pendente de CI | Validar auditoria no CI e executar revisão cross-tenant final |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — revisão cross-tenant | `EM ANDAMENTO` | Defeito encontrado em secrets: projeto/workspace de outro tenant podia ser associado à organização autorizada. Validação de formato e ownership implementada com resposta indistinguível `404`; 9/9 casos de escopo e conjunto direcionado 38/38 verdes; typecheck, lint, build API e diff-check aprovados. Integração real cross-org adicionada, pendente de CI/PostgreSQL | Validar auditoria e isolamento de secrets no CI; concluir a Fase 6 se verde |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — encerramento | `CONCLUÍDA` | Commit `64a0d55`; CIs Linux/PostgreSQL `31647200113`/`31647203652` aprovaram migrations, lint, typecheck, suíte completa com casos cross-tenant, build e audit; smoke limpo `31647200111` aprovado. Auditoria também confirmada por `31646764048`/`31646760826` e smoke `31646764020`. Checklist e critérios integralmente atendidos | Configurar retries e backoff por tipo de job BullMQ (Fase 7) |
 
 ### Modelo para futuras entradas
 
