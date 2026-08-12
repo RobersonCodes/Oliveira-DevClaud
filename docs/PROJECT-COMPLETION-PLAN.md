@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `af17d82` (`fix(fase6): layer rate limits by identity`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3 e o rate limit em camadas por IP/usuário/organização estão corrigidos e validados em CI. A revisão RBAC rota por rota e a matriz completa estão implementadas localmente, aguardando CI com PostgreSQL |
+| Commit de referência | `e365017` (`fix(fase6): align HTTP and websocket RBAC`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas e revisão RBAC HTTP/WebSocket estão corrigidos e validados em CI e smoke limpo |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar no CI Linux/PostgreSQL a matriz RBAC e a paridade HTTP/WebSocket implementadas na Fase 6 |
+| Próxima ação única | Adicionar listagem e revogação de sessões/dispositivos, com regressões de sessão atual, expirada e revogada (Fase 6) |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -687,7 +687,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 - [x] Restringir `trustProxy` aos proxies/redes reais.
 - [x] Falhar o boot de produção se origins, secrets ou flags seguras estiverem ausentes.
 - [x] Aplicar rate limit por usuário/organização e por IP onde fizer sentido.
-- [ ] Revisar RBAC HTTP e WebSocket rota por rota.
+- [x] Revisar RBAC HTTP e WebSocket rota por rota.
 - [ ] Adicionar gerenciamento e revogação de sessões/dispositivos.
 - [ ] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
 - [ ] Revisar logs de auditoria para ações administrativas e de agentes.
@@ -744,8 +744,9 @@ host-admin contra políticas autenticada/developer/admin/owner/host-admin. O Run
 a consumir também os orçamentos de usuário/organização depois de revalidar membership, e
 merge/rejeição direta de agentes foi alinhada à revisão de orquestrações em `ADMIN`. Testes locais
 sem infraestrutura: **10/10** (`auth.test.ts` + `rate-limits.test.ts`); typecheck, lint, build API e
-`git diff --check`: exit 0. A matriz HTTP real foi adicionada a `integration.test.ts` e aguarda CI
-com PostgreSQL; as regressões WS reais existentes continuam sendo a prova da paridade de handshake.
+`git diff --check`: exit 0. No commit `e365017`, os CIs Linux `31628756365` e `31628759439`
+aprovaram migrations, matriz HTTP real em PostgreSQL, regressões WS, lint, typecheck, testes, build e
+audit; o smoke de host limpo `31628759486` também passou.
 
 ---
 
@@ -909,6 +910,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — rate limit por identidade | `EM ANDAMENTO` | Três camadas implementadas: IP confiável 120/min, usuário 120/min e organização 600/min; cadastro/login preservam 5/min e 8/min; contadores de produção compartilhados no Redis; probes excluídos; verificações repetidas deduplicadas. `rate-limits.test.ts`: 6/6; conjunto direcionado: 51/51; typecheck, lint e build API aprovados. CI Linux/Redis real pendente | Revisar RBAC HTTP/WS rota por rota e automatizar a matriz completa de papéis |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI do rate limit | `EM ANDAMENTO` | Commit `af17d82`; CI Linux `31625939507` tentativa 2 aprovou imagem, lint, typecheck, testes, build e audit. Tentativa 1 classificada como falha externa: quatro respostas HTTP 503 do GitHub Releases ao baixar code-server, antes de lint/testes; rerun sem mudança passou | Concluir a revisão RBAC e validar a matriz real no CI |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — revisão RBAC HTTP/WS | `EM ANDAMENTO` | Inventário completo criado em `docs/RBAC-MATRIX.md`; decisão central cobre 30 combinações de atores/políticas; HTTP/WS de runtime permanece em `DEVELOPER`; Runtime Gateway agora também cobra rate limit de identidade; merge/rejeição direta de agentes alinhada a orquestrações em `ADMIN`. Local: 10/10 testes sem infraestrutura, typecheck, lint, build API e diff-check verdes. Matriz HTTP real adicionada, pendente de CI/PostgreSQL | Validar no CI Linux/PostgreSQL a matriz RBAC e as regressões WS |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI da revisão RBAC | `EM ANDAMENTO` | Commit `e365017`; CIs Linux `31628756365`/`31628759439` aprovaram migrations, matriz HTTP real em PostgreSQL, regressões WS, lint, typecheck, testes, build e audit. Smoke de host limpo `31628759486` aprovado. P1-4 fechado e checklist RBAC concluído | Adicionar listagem e revogação de sessões/dispositivos com regressões de expiração/revogação |
 
 ### Modelo para futuras entradas
 
