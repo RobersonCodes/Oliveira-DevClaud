@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `e365017` (`fix(fase6): align HTTP and websocket RBAC`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas e revisão RBAC HTTP/WebSocket estão corrigidos e validados em CI e smoke limpo |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1/P1-2/P1-3, rate limit em camadas e revisão RBAC HTTP/WebSocket estão corrigidos e validados em CI e smoke limpo. Gestão/revogação de sessões está implementada e validada localmente, aguardando CI com PostgreSQL/Runtime Gateway |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Adicionar listagem e revogação de sessões/dispositivos, com regressões de sessão atual, expirada e revogada (Fase 6) |
+| Próxima ação única | Validar no CI Linux a gestão/revogação de sessões e o vínculo do Runtime Gateway à sessão de origem (Fase 6) |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -688,7 +688,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 - [x] Falhar o boot de produção se origins, secrets ou flags seguras estiverem ausentes.
 - [x] Aplicar rate limit por usuário/organização e por IP onde fizer sentido.
 - [x] Revisar RBAC HTTP e WebSocket rota por rota.
-- [ ] Adicionar gerenciamento e revogação de sessões/dispositivos.
+- [x] Adicionar gerenciamento e revogação de sessões/dispositivos.
 - [ ] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
 - [ ] Revisar logs de auditoria para ações administrativas e de agentes.
 - [ ] Executar nova revisão cross-tenant após as mudanças.
@@ -747,6 +747,16 @@ sem infraestrutura: **10/10** (`auth.test.ts` + `rate-limits.test.ts`); typechec
 `git diff --check`: exit 0. No commit `e365017`, os CIs Linux `31628756365` e `31628759439`
 aprovaram migrations, matriz HTTP real em PostgreSQL, regressões WS, lint, typecheck, testes, build e
 audit; o smoke de host limpo `31628759486` também passou.
+
+Gestão de sessões foi adicionada em `routes/auth.ts` e `/settings/sessions`: listagem sem token/hash,
+marcação da sessão atual, IP/User-Agent/tempos, revogação individual, da sessão atual e de todas as
+outras, com isolamento por usuário e auditoria. Sessões expiradas são removidas da listagem. O
+Runtime Gateway agora vincula cada ticket/cookie ao `Session.id` de origem e revalida sessão,
+expiração e membership em toda requisição/handshake; uma revogação invalida também um cookie de
+runtime já emitido. Localmente: **17/17** testes sem infraestrutura, typecheck do monorepo, lint,
+builds API/web (incluindo geração estática de `/settings/sessions`) e `git diff --check` passaram.
+Regressões reais de PostgreSQL/Runtime Gateway estão implementadas em `integration.test.ts` e
+`runtimeGateway.test.ts`, pendentes de CI Linux.
 
 ---
 
@@ -911,6 +921,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI do rate limit | `EM ANDAMENTO` | Commit `af17d82`; CI Linux `31625939507` tentativa 2 aprovou imagem, lint, typecheck, testes, build e audit. Tentativa 1 classificada como falha externa: quatro respostas HTTP 503 do GitHub Releases ao baixar code-server, antes de lint/testes; rerun sem mudança passou | Concluir a revisão RBAC e validar a matriz real no CI |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — revisão RBAC HTTP/WS | `EM ANDAMENTO` | Inventário completo criado em `docs/RBAC-MATRIX.md`; decisão central cobre 30 combinações de atores/políticas; HTTP/WS de runtime permanece em `DEVELOPER`; Runtime Gateway agora também cobra rate limit de identidade; merge/rejeição direta de agentes alinhada a orquestrações em `ADMIN`. Local: 10/10 testes sem infraestrutura, typecheck, lint, build API e diff-check verdes. Matriz HTTP real adicionada, pendente de CI/PostgreSQL | Validar no CI Linux/PostgreSQL a matriz RBAC e as regressões WS |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI da revisão RBAC | `EM ANDAMENTO` | Commit `e365017`; CIs Linux `31628756365`/`31628759439` aprovaram migrations, matriz HTTP real em PostgreSQL, regressões WS, lint, typecheck, testes, build e audit. Smoke de host limpo `31628759486` aprovado. P1-4 fechado e checklist RBAC concluído | Adicionar listagem e revogação de sessões/dispositivos com regressões de expiração/revogação |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — sessões e dispositivos | `EM ANDAMENTO` | API e tela de sessões implementadas; listagem omite token/hash, identifica sessão atual e permite revogar uma/todas as outras/a atual com auditoria e isolamento entre usuários. Runtime tickets/cookies agora carregam `sid` e revalidam a sessão de origem em toda requisição/WS. Local: 17/17, typecheck, lint, builds API/web e diff-check verdes; integração PostgreSQL/Runtime Gateway pendente de CI | Validar sessões e revogação de runtime no CI Linux |
 
 ### Modelo para futuras entradas
 

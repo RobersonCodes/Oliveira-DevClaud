@@ -95,6 +95,64 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     const response = await app.inject({ method: 'GET', url: '/api/v1/auth/me' });
     expect(response.statusCode).toBe(401);
   });
+
+  it('lists devices and revokes another, all other, expired and current sessions immediately', async () => {
+    const registered = await registerUser();
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { 'user-agent': 'Oliveira Mobile Test/1.0' },
+      payload: { email: registered.body.email, password: registered.body.password }
+    });
+    expect(login.statusCode).toBe(200);
+    const loginCookie = login.cookies.find(cookie => cookie.name === 'odc_session');
+    if (!loginCookie) throw new Error('Login did not set a session cookie');
+    const currentCookie = `${loginCookie.name}=${loginCookie.value}`;
+
+    const expired = await prisma.session.create({
+      data: { userId: registered.user.id, tokenHash: crypto.randomUUID(), expiresAt: new Date(Date.now() - 1_000) }
+    });
+    const listed = await app.inject({ method: 'GET', url: '/api/v1/auth/sessions', headers: { cookie: currentCookie } });
+    expect(listed.statusCode).toBe(200);
+    const sessions = listed.json() as Array<{ id: string; current: boolean; userAgent: string | null; tokenHash?: string }>;
+    expect(sessions).toHaveLength(2);
+    expect(sessions.find(session => session.current)?.userAgent).toBe('Oliveira Mobile Test/1.0');
+    expect(sessions.every(session => session.tokenHash === undefined)).toBe(true);
+    await expect(prisma.session.findUnique({ where: { id: expired.id } })).resolves.toBeNull();
+
+    const otherSession = sessions.find(session => !session.current)!;
+    const revokeOther = await app.inject({ method: 'DELETE', url: `/api/v1/auth/sessions/${otherSession.id}`, headers: { cookie: currentCookie } });
+    expect(revokeOther.statusCode).toBe(204);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: registered.sessionCookie } })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: currentCookie } })).statusCode).toBe(200);
+
+    const thirdLogin = await app.inject({
+      method: 'POST', url: '/api/v1/auth/login',
+      payload: { email: registered.body.email, password: registered.body.password }
+    });
+    const third = thirdLogin.cookies.find(cookie => cookie.name === 'odc_session')!;
+    const thirdCookie = `${third.name}=${third.value}`;
+    const revokeOthers = await app.inject({ method: 'DELETE', url: '/api/v1/auth/sessions/others', headers: { cookie: currentCookie } });
+    expect(revokeOthers.statusCode).toBe(200);
+    expect(revokeOthers.json()).toEqual({ revoked: 1 });
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: thirdCookie } })).statusCode).toBe(401);
+
+    const current = sessions.find(session => session.current)!;
+    const revokeCurrent = await app.inject({ method: 'DELETE', url: `/api/v1/auth/sessions/${current.id}`, headers: { cookie: currentCookie } });
+    expect(revokeCurrent.statusCode).toBe(204);
+    expect(revokeCurrent.cookies.some(cookie => cookie.name === 'odc_session')).toBe(true);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: currentCookie } })).statusCode).toBe(401);
+  });
+
+  it('does not let one user enumerate or revoke another user session', async () => {
+    const owner = await registerUser();
+    const outsider = await registerUser();
+    const ownerSessions = await app.inject({ method: 'GET', url: '/api/v1/auth/sessions', headers: { cookie: owner.sessionCookie } });
+    const ownerSessionId = ownerSessions.json()[0].id as string;
+    const denied = await app.inject({ method: 'DELETE', url: `/api/v1/auth/sessions/${ownerSessionId}`, headers: { cookie: outsider.sessionCookie } });
+    expect(denied.statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie: owner.sessionCookie } })).statusCode).toBe(200);
+  });
 });
 
 describe('projects — RBAC-gated routes (real Postgres)', () => {

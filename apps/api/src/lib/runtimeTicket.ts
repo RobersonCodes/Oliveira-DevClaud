@@ -12,10 +12,9 @@ import crypto from 'node:crypto';
 // single-use one — nothing tracks which tickets have already been redeemed (no jti/consumption
 // store), so the same ticket string stays valid for anyone who has it until the 60s TTL elapses,
 // same as a short-lived access token. What actually limits the blast radius of a leaked ticket is
-// the TTL itself plus scope (bound to one workspace/purpose/port) — early revocation isn't a gap
-// this needs to close, because the gateway re-checks live organization membership on *every*
-// request regardless of ticket or cookie (see runtimeGateway.ts), so removing a user from the org
-// invalidates their access immediately even though a ticket's signature stays valid until expiry.
+// the TTL itself plus scope (bound to one workspace/purpose/port). Early revocation is enforced by
+// binding every credential to the originating control-plane session (`sid`) and re-checking both
+// that session and live organization membership on *every* request (see runtimeGateway.ts).
 // If a genuinely single-use guarantee is ever needed, it requires a consumed-jti store (Redis with
 // a TTL matching the ticket's own would do) — deliberately not built here to keep this stateless.
 
@@ -24,6 +23,8 @@ export type RuntimeTicketPurpose = 'ide' | 'preview';
 export interface RuntimeTicketPayload {
   /** The user this ticket was issued to. */
   uid: string;
+  /** The control-plane session that authorized this credential; revalidated by the gateway. */
+  sid: string;
   workspaceId: string;
   purpose: RuntimeTicketPurpose;
   /** Required and validated when purpose === 'preview'; absent for 'ide' (which always targets IDE_PORT). */
@@ -70,7 +71,7 @@ export function verifyRuntimeTicket(ticket: string): RuntimeTicketPayload | null
     return null;
   }
   if (typeof payload.exp !== 'number' || payload.exp < Date.now()) return null;
-  if (typeof payload.uid !== 'string' || typeof payload.workspaceId !== 'string') return null;
+  if (typeof payload.uid !== 'string' || typeof payload.sid !== 'string' || typeof payload.workspaceId !== 'string') return null;
   if (payload.purpose !== 'ide' && payload.purpose !== 'preview') return null;
   return payload;
 }

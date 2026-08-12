@@ -25,7 +25,7 @@ PostgreSQL. Os handshakes reais e a paridade HTTP/WS ficam em `apps/api/src/ws-s
 | Política | Rotas |
 | --- | --- |
 | Pública | `GET /health`; `GET /ready`; `POST /api/v1/auth/register`; `POST /api/v1/auth/login`; `POST /api/v1/auth/logout` (idempotente e sem divulgação de estado) |
-| Autenticada | `GET /api/v1/auth/me`; `GET /api/v1/organizations` |
+| Autenticada | `GET /api/v1/auth/me`; `GET /api/v1/auth/sessions`; `DELETE /api/v1/auth/sessions/others`; `DELETE /api/v1/auth/sessions/:sessionId`; `GET /api/v1/organizations` |
 | `DEVELOPER` | `GET /api/v1/organizations/:organizationId`; `GET /api/v1/projects`; `GET /api/v1/projects/:projectId`; `GET /api/v1/workspaces`; `GET /api/v1/workspaces/:workspaceId`; `POST /api/v1/workspaces/:workspaceId/start`; `POST /api/v1/workspaces/:workspaceId/stop` |
 | `DEVELOPER` | `POST /api/v1/workspaces/:workspaceId/ide/start`; `GET /api/v1/workspaces/:workspaceId/ide/status`; `POST /api/v1/workspaces/:workspaceId/ide/stop`; `GET/POST /api/v1/workspaces/:workspaceId/ports`; `DELETE /api/v1/workspaces/:workspaceId/ports/:port` |
 | `DEVELOPER` | `GET/POST /api/v1/terminals`; `DELETE /api/v1/terminals/:terminalId`; `GET+WS /api/v1/terminals/:terminalId/connect` |

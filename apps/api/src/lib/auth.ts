@@ -84,13 +84,13 @@ export async function requireUser(request: FastifyRequest) {
 }
 
 export async function requireOrgRole(request: FastifyRequest, organizationId: string, required: Role = Role.DEVELOPER) {
-  const { user } = await requireUser(request);
+  const { user, session } = await requireUser(request);
   const membership = user.memberships.find(m => m.organizationId === organizationId);
   if (!canAccess({ authenticated: true, organizationRole: membership?.role }, required)) {
     throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
   }
   await request.enforceIdentityRateLimit?.('organization', organizationId);
-  return { user, membership: membership! };
+  return { user, session, membership: membership! };
 }
 
 // Organization roles are tenant-scoped and cannot authorize host-wide data. Keep the operator

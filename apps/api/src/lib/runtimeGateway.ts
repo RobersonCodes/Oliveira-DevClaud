@@ -172,9 +172,9 @@ async function requireRuntimeAccess(request: FastifyRequest) {
   const cookiePayload = cookieValue ? verifyRuntimeTicket(cookieValue) : null;
   const usingExistingCookie = cookiePayload !== null && matchesTarget(cookiePayload, parsed);
 
-  let uid: string;
+  let credential: { uid: string; sid: string };
   if (usingExistingCookie) {
-    uid = cookiePayload!.uid;
+    credential = cookiePayload!;
   } else {
     const ticket = (request.query as Record<string, unknown> | undefined)?.t;
     if (typeof ticket !== 'string') throw Object.assign(new Error('RUNTIME_TICKET_REQUIRED'), { statusCode: 401 });
@@ -183,17 +183,21 @@ async function requireRuntimeAccess(request: FastifyRequest) {
     // workspace/purpose/port" — a ticket for workspace A must not distinguish "wrong workspace" from
     // "garbage token" when probed against workspace B's host.
     if (!ticketPayload || !matchesTarget(ticketPayload, parsed)) throw Object.assign(new Error('RUNTIME_TICKET_INVALID'), { statusCode: 401 });
-    uid = ticketPayload.uid;
+    credential = ticketPayload;
   }
 
   // Re-checked on *every* request, ticket-path or cookie-path — a runtime cookie can live for
-  // hours, and a user removed from the organization partway through that window must lose access
-  // on their very next request, not just fail to obtain a new ticket.
+  // hours, but a revoked/expired control-plane session or removed organization membership must
+  // lose access on the very next request or handshake, not just fail to obtain a new ticket.
+  const liveSession = await prisma.session.findUnique({ where: { id: credential.sid } });
+  if (!liveSession || liveSession.userId !== credential.uid || liveSession.expiresAt <= new Date()) {
+    throw Object.assign(new Error('RUNTIME_SESSION_INVALID'), { statusCode: 401 });
+  }
   const workspace = await prisma.workspace.findUnique({ where: { id: parsed.workspaceId }, include: { project: true } });
   if (!workspace?.containerId) throw Object.assign(new Error('WORKSPACE_NOT_FOUND'), { statusCode: 404 });
-  const membership = await prisma.organizationMember.findFirst({ where: { userId: uid, organizationId: workspace.project.organizationId } });
+  const membership = await prisma.organizationMember.findFirst({ where: { userId: credential.uid, organizationId: workspace.project.organizationId } });
   if (!membership || !hasRole(membership.role, Role.DEVELOPER)) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
-  await request.enforceIdentityRateLimit?.('user', uid);
+  await request.enforceIdentityRateLimit?.('user', credential.uid);
   await request.enforceIdentityRateLimit?.('organization', workspace.project.organizationId);
 
   if (parsed.purpose === 'preview') {
@@ -202,7 +206,7 @@ async function requireRuntimeAccess(request: FastifyRequest) {
   }
 
   if (!usingExistingCookie) {
-    const value = issueRuntimeTicket({ uid, workspaceId: parsed.workspaceId, purpose: parsed.purpose, port: parsed.port }, RUNTIME_COOKIE_TTL_MS);
+    const value = issueRuntimeTicket({ ...credential, workspaceId: parsed.workspaceId, purpose: parsed.purpose, port: parsed.port }, RUNTIME_COOKIE_TTL_MS);
     request.runtimeNewCookie = { name: runtimeCookieName(parsed), value };
   }
 
@@ -327,12 +331,12 @@ export async function registerRuntimeTicketRoute(app: FastifyInstance) {
     const body = ticketRequestSchema.parse(request.body);
     const workspace = await prisma.workspace.findUnique({ where: { id: body.workspaceId }, include: { project: true } });
     if (!workspace) throw Object.assign(new Error('WORKSPACE_NOT_FOUND'), { statusCode: 404 });
-    const { user } = await requireOrgRole(request, workspace.project.organizationId, Role.DEVELOPER);
+    const { user, session } = await requireOrgRole(request, workspace.project.organizationId, Role.DEVELOPER);
     if (body.purpose === 'preview') {
       const registered = await prisma.workspacePort.findUnique({ where: { workspaceId_port: { workspaceId: body.workspaceId, port: body.port! } } });
       if (!registered) throw Object.assign(new Error('PREVIEW_PORT_NOT_REGISTERED'), { statusCode: 404 });
     }
-    const ticket = issueRuntimeTicket({ uid: user.id, workspaceId: body.workspaceId, purpose: body.purpose, port: body.port }, RUNTIME_TICKET_TTL_MS);
+    const ticket = issueRuntimeTicket({ uid: user.id, sid: session.id, workspaceId: body.workspaceId, purpose: body.purpose, port: body.port }, RUNTIME_TICKET_TTL_MS);
     const base = runtimeBaseDomain();
     const host = body.purpose === 'ide' ? `ide-${body.workspaceId}.${base}` : `preview-${body.workspaceId}-${body.port}.${base}`;
     const scheme = process.env.NODE_ENV === 'production' ? 'https' : 'http';

@@ -14,8 +14,9 @@ P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema 
 mais acesso direto ao daemon. A Fase 1 está concluída; a Fase 5 passou no smoke Linux limpo e resta
 parcial somente por credencial externa de agente; a Fase 6 está em andamento, com P1-1/P1-2/P1-3
 fechados por allowlist explícita de proxies e boot fail-closed de produção; o rate limit em camadas
-por IP/usuário/organização e a revisão RBAC HTTP/WebSocket passaram no CI Linux e smoke limpo; as
-Fases 7-9 seguem pendentes — ver Seção 7.
+por IP/usuário/organização e a revisão RBAC HTTP/WebSocket passaram no CI Linux e smoke limpo. A
+gestão/revogação de sessões foi implementada localmente e aguarda CI; as Fases 7-9 seguem pendentes
+— ver Seção 7.
 **Data:** 2026-08-12
 **Método:** leitura direta, execução local e testes de navegador; citações `arquivo:linha`. Nenhuma
 afirmação de segurança neste documento é promocional — cada risco listado tem evidência.
@@ -164,7 +165,7 @@ Pontos-chave já confirmados no código:
 | P2-2 | `infra/nginx/devcloud.conf` (não referenciado pelo compose) é config morta/confusa — sem TLS, presente no repo sem indicação de status. |
 | P2-3 | ✅ **Corrigido (Fase 5, 2026-08-10).** Removido `curl \| sh`: o Dockerfile baixa o tarball oficial do code-server `4.121.0` por arquitetura, valida SHA-256 fixado com `sha256sum --check --strict` e aborta o build em divergência. Build real confirmou o checksum e `code-server --version`. |
 | P2-4 | ✅ **Corrigido (Fase 5, 2026-08-10).** Fastify define explicitamente `bodyLimit=1 MiB`, `requestTimeout=30s` (tempo para receber a requisição completa) e `keepAliveTimeout=72s`; o nginx do painel usa o mesmo `client_max_body_size 1m`, `client_header_timeout 10s` e `client_body_timeout 30s`. `connectionTimeout` continua em zero por decisão explícita para não encerrar WebSockets ociosos válidos. O runtime mantém `25m` no nginx por transportar IDE/preview, separado do JSON do control plane. Teste verifica opções reais do servidor e resposta 413 acima de 1 MiB. |
-| P2-5 | Sem gerenciamento de sessões (listar/revogar dispositivos), sem MFA/passkeys, sem recuperação de conta/verificação de e-mail. |
+| P2-5 | 🟡 **Parcialmente corrigido (Fase 6, 2026-08-12), aguardando CI.** Gestão de sessões/dispositivos implementada: listagem segura, sessão atual, revogação individual/da atual/das demais, isolamento por usuário e auditoria. Ticket/cookie de runtime agora é vinculado à sessão de origem e perde validade na próxima requisição/WS após revogação. Permanecem MFA/passkeys, recuperação de conta e verificação de e-mail. | `apps/api/src/{routes/auth.ts,lib/runtimeTicket.ts,lib/runtimeGateway.ts,integration.test.ts,runtimeGateway.test.ts}`; `apps/web/app/settings/sessions/page.tsx` |
 | P2-6 | Sem métricas de fila BullMQ (profundidade, tempo por estágio, falhas, retries). |
 | P2-7 | 3 padrões de navegação divergentes coexistindo no frontend (dívida de consistência de UI, não é bug de segurança). |
 | P2-8 | Sem Playwright/teste de browser algum; sem teste de acessibilidade (axe). |
@@ -391,8 +392,8 @@ na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também fo
 adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
 A sequência vigente é a do plano operacional: preservar os bloqueios externos das Fases 2/5 e
-avançar a Fase 6 pelo gerenciamento e revogação de sessões/dispositivos, seguida das demais etapas
-6-9.
+avançar a Fase 6 pela validação CI do gerenciamento/revogação de sessões e depois planejar
+recuperação de conta, verificação de e-mail e MFA/passkeys, seguida das demais etapas 6-9.
 
 **Marco de CI (Fase 4, 2026-08-10):** run
 [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do

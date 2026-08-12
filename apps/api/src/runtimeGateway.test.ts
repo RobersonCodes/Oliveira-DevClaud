@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { prisma } from '@oliveira/database';
 import { DockerIdeEngine } from '@oliveira/ide-engine';
 import { buildApp } from './app.js';
+import { hashToken } from './lib/auth.js';
 
 const RUNTIME_BASE_DOMAIN = 'runtime.localhost';
 const WEB_ORIGIN = process.env.WEB_ORIGIN ?? 'http://localhost:3000';
@@ -297,7 +298,7 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
     // Directly craft an already-expired ticket rather than waiting out a real 60s TTL.
     const { issueRuntimeTicket } = await import('./lib/runtimeTicket.js');
     const owner = await prisma.organizationMember.findFirstOrThrow({ where: { organizationId } });
-    const expired = issueRuntimeTicket({ uid: owner.userId, workspaceId: workspace.id, purpose: 'ide' }, -1);
+    const expired = issueRuntimeTicket({ uid: owner.userId, sid: 'expired-ticket', workspaceId: workspace.id, purpose: 'ide' }, -1);
     void sessionCookie;
     const res = await app.inject({ method: 'GET', url: `/?t=${expired}`, headers: { host: ideHost(workspace.id), origin: WEB_ORIGIN } });
     expect(res.statusCode).toBe(401);
@@ -355,6 +356,23 @@ describe('Runtime Gateway host routing (real Postgres, in-process via app.inject
 
     const second = await app.inject({ method: 'GET', url: '/', headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) } });
     expect(second.statusCode).toBe(403);
+  });
+
+  it('an existing runtime cookie stops granting access immediately when its control-plane session is revoked', async () => {
+    const { sessionCookie, organizationId } = await registerUser();
+    const workspace = await makeWorkspaceFixture(organizationId);
+    const { ticket } = (await issueTicket(sessionCookie, workspace.id, 'ide')).json();
+    const runtimeCookie = await redeemTicketForCookie(ideHost(workspace.id), ticket);
+    const token = decodeURIComponent(sessionCookie.split('=')[1]!);
+    await prisma.session.delete({ where: { tokenHash: hashToken(token) } });
+
+    const afterRevocation = await app.inject({
+      method: 'GET',
+      url: '/',
+      headers: { host: ideHost(workspace.id), cookie: runtimeCookie, origin: originFor(ideHost(workspace.id)) }
+    });
+    expect(afterRevocation.statusCode).toBe(401);
+    expect(afterRevocation.json()).toEqual({ error: 'RUNTIME_SESSION_INVALID' });
   });
 
   it('rejects a preview request for a port that is no longer registered, even with a previously-issued valid ticket', async () => {

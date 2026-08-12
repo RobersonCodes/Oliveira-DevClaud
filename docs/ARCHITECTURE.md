@@ -171,6 +171,14 @@ Operações de revisão que integram ou descartam mudanças de agentes exigem `A
 diretas quanto em orquestrações. O inventário completo de rotas e suas políticas está em
 `docs/RBAC-MATRIX.md`.
 
+Cada login cria uma sessão independente armazenada somente como hash do bearer token. O usuário
+pode listar sessões ativas, identificar a atual e revogar uma, todas as outras ou a própria sessão;
+sessões expiradas são eliminadas da listagem. Tickets/cookies do Runtime Gateway carregam o ID da
+sessão de controle que os autorizou, e o gateway revalida sessão, expiração e membership em toda
+requisição HTTP e todo handshake WebSocket. Assim, revogar um dispositivo também invalida na
+requisição seguinte os runtimes que aquele dispositivo havia aberto, apesar do cookie de runtime
+ter TTL próprio.
+
 Antes de registrar rotas ou abrir a porta, a API valida a fronteira de configuração de produção.
 `SECURE_CONFIG_REQUIRED=true` vem fixado na imagem e impede que um override acidental de
 `NODE_ENV` degrade o cookie `__Host-` para um cookie sem `Secure`. Nesse modo, o boot exige origem

@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { prisma, Role } from '@oliveira/database';
-import { createSession, getSessionUser, hashPassword, hashToken, SESSION_COOKIE, sessionCookieOptions, verifyPassword } from '../lib/auth.js';
+import { createSession, hashPassword, hashToken, requireUser, SESSION_COOKIE, sessionCookieOptions, verifyPassword } from '../lib/auth.js';
 import { slugify } from '../lib/slug.js';
 import { audit } from '../lib/audit.js';
 
@@ -77,13 +77,54 @@ export async function authRoutes(app: FastifyInstance) {
   });
 
   app.get('/me', async (request, reply) => {
-    const auth = await getSessionUser(request);
-    if (!auth) return reply.code(401).send({ error: 'UNAUTHORIZED' });
+    const auth = await requireUser(request);
     return {
       id: auth.user.id,
       email: auth.user.email,
       name: auth.user.name,
       memberships: auth.user.memberships.map(m => ({ organizationId: m.organizationId, role: m.role }))
     };
+  });
+
+  app.get('/sessions', async request => {
+    const { user, session: currentSession } = await requireUser(request);
+    await prisma.session.deleteMany({ where: { userId: user.id, expiresAt: { lte: new Date() } } });
+    const sessions = await prisma.session.findMany({
+      where: { userId: user.id },
+      select: { id: true, userAgent: true, ipAddress: true, createdAt: true, lastUsedAt: true, expiresAt: true },
+      orderBy: { lastUsedAt: 'desc' }
+    });
+    return sessions.map(session => ({ ...session, current: session.id === currentSession.id }));
+  });
+
+  app.delete('/sessions/others', async (request, reply) => {
+    const { user, session } = await requireUser(request);
+    const revoked = await prisma.session.deleteMany({ where: { userId: user.id, id: { not: session.id } } });
+    await audit({
+      userId: user.id,
+      action: 'SESSIONS_OTHERS_REVOKED',
+      resource: 'Session',
+      resourceId: session.id,
+      ipAddress: request.ip,
+      metadata: { revoked: revoked.count }
+    });
+    return reply.send({ revoked: revoked.count });
+  });
+
+  app.delete('/sessions/:sessionId', async (request, reply) => {
+    const { sessionId } = z.object({ sessionId: z.string().cuid() }).parse(request.params);
+    const { user, session: currentSession } = await requireUser(request);
+    const revoked = await prisma.session.deleteMany({ where: { id: sessionId, userId: user.id } });
+    if (revoked.count === 0) throw Object.assign(new Error('SESSION_NOT_FOUND'), { statusCode: 404 });
+    await audit({
+      userId: user.id,
+      action: 'SESSION_REVOKED',
+      resource: 'Session',
+      resourceId: sessionId,
+      ipAddress: request.ip,
+      metadata: { current: sessionId === currentSession.id }
+    });
+    if (sessionId === currentSession.id) reply.clearCookie(SESSION_COOKIE, sessionCookieOptions());
+    return reply.code(204).send();
   });
 }
