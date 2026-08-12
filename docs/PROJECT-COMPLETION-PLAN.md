@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `c593287` (`fix(fase6): fail closed on unsafe production config`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1 foi corrigido no commit `30e5490`; P1-2/P1-3 foram corrigidos no commit `c593287` por validação fail-closed do boot, com CI Linux e smoke limpo verdes |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1 foi corrigido no commit `30e5490`; P1-2/P1-3 foram corrigidos no commit `c593287`; rate limit em camadas por IP/usuário/organização está implementado e validado localmente, aguardando CI Linux desta mudança |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Aplicar rate limit por usuário/organização e por IP onde fizer sentido, com regressão que preserve os limites estritos de login/cadastro (Fase 6) |
+| Próxima ação única | Revisar RBAC HTTP e WebSocket rota por rota e criar a matriz automatizada anônimo/membro/developer/admin/owner/host-admin (Fase 6) |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -686,7 +686,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 
 - [x] Restringir `trustProxy` aos proxies/redes reais.
 - [x] Falhar o boot de produção se origins, secrets ou flags seguras estiverem ausentes.
-- [ ] Aplicar rate limit por usuário/organização e por IP onde fizer sentido.
+- [x] Aplicar rate limit por usuário/organização e por IP onde fizer sentido.
 - [ ] Revisar RBAC HTTP e WebSocket rota por rota.
 - [ ] Adicionar gerenciamento e revogação de sessões/dispositivos.
 - [ ] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
@@ -726,6 +726,16 @@ valores. `productionConfig.test.ts` cobre inclusive a chamada real de `buildApp(
 Runtime Gateway não rodou por falta de `DATABASE_URL`/PostgreSQL e Docker Desktop parado; a
 validação integral foi suprida pelo CI Linux `31620694690` (migrations, lint, typecheck, testes,
 build e audit verdes) e pelo smoke de host limpo `31620699908`, ambos no commit `c593287`.
+
+O rate limit em camadas foi implementado em `apps/api/src/lib/rateLimits.ts`: orçamento global de
+`120/min` por IP confiável, `120/min` por usuário autenticado e `600/min` agregado por organização;
+cadastro/login preservam `5/min` e `8/min` por IP. `requireUser` e `requireOrgRole` aplicam as duas
+camadas de identidade, deduplicadas por requisição, inclusive para preHandlers WebSocket. Produção
+usa o Redis já obrigatório à stack; desenvolvimento/testes usam store local. Health/readiness ficam
+fora do limite. `rate-limits.test.ts`: **6/6** (IP, probes, auth estrito, usuário cross-IP/org,
+organização multiusuário, dedupe e resposta `429`/`Retry-After`); conjunto direcionado com proxy,
+boot e cookie: **51/51**. `npm run typecheck`, `npm run lint` e build da API passaram. CI Linux com
+Redis real permanece pendente para esta mudança.
 
 ---
 
@@ -886,6 +896,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-11 | Codex | Fase 5 (Etapa 5) — smoke Linux limpo | `PARCIAL` | CI recuperado no commit `5bdd7d8`: runs `31524472703`/`31524467564` inteiramente verdes após corrigir falso negativo de `code-server --version`. Workflow/script do commit `20df932` aprovados no run `31525879533` em `ubuntu-latest`: pull GHCR por digest, Compose, migrations, readiness, usuário/projeto/workspace/terminal, UID 10001, restart, PostgreSQL, Redis/AOF e bind persistentes, dump/tar com checksums e restore isolado de banco/workspace; cleanup e artefato sanitizado aprovados. P1-9 fechado. Sem secrets de provedor no repositório, o agente autenticado não foi simulado. Decisão: avançar a Fase 6, independente dos bloqueios externos das Fases 2/5, conforme permitido pelo plano | Restringir `trustProxy` e cobrir proxy confiável versus header direto por regressão |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — fronteira de proxy confiável | `EM ANDAMENTO` | P1-1 fechado pelo commit `30e5490`: `trustProxy:true` removido; allowlist `TRUSTED_PROXY_CIDRS` validada e vazia por padrão; configuração/runbook/nginx/smoke alinhados ao `/32` exato do gateway Compose. Regressão local `npx vitest run apps/api/src/trusted-proxy.test.ts`: 10/10; `npm run typecheck`, `npm run lint` e `npm run build -w @oliveira/api`: exit 0. CI Linux `31528430998` aprovou lint/typecheck/test/build/audit; smoke Linux limpo `31528431019` aprovou e confirmou o IP encaminhado no `AuditLog`. Sem nova mudança arquitetural nesta retomada: `docs/ARCHITECTURE.md` já foi atualizado no próprio commit | Fazer o boot de produção falhar sem origins, secrets e flags seguras obrigatórias (P1-2/P1-3) |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — boot seguro de produção | `EM ANDAMENTO` | P1-2/P1-3 corrigidos no commit `c593287`: validação central fail-closed antes do Fastify; `SECURE_CONFIG_REQUIRED=true` fixado na imagem/API e documentado; origins, hosts, domínio de runtime, secrets, endpoints, proxy e TTL validados sem vazar valores. Testes direcionados `productionConfig` + `trusted-proxy` + `auth`: 45/45; typecheck, lint, build API, `git diff --check` e Compose config: exit 0. Localmente, `runtimeGateway.test.ts` não chegou às asserções por ausência de `DATABASE_URL`/PostgreSQL e Docker Desktop parado; CI Linux `31620694690` supriu a limitação (migrations/lint/typecheck/test/build/audit verdes), e smoke limpo `31620699908` aprovou a stack integral e evidência sanitizada | Aplicar rate limit por usuário/organização e por IP, preservando limites estritos de autenticação |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — rate limit por identidade | `EM ANDAMENTO` | Três camadas implementadas: IP confiável 120/min, usuário 120/min e organização 600/min; cadastro/login preservam 5/min e 8/min; contadores de produção compartilhados no Redis; probes excluídos; verificações repetidas deduplicadas. `rate-limits.test.ts`: 6/6; conjunto direcionado: 51/51; typecheck, lint e build API aprovados. CI Linux/Redis real pendente | Revisar RBAC HTTP/WS rota por rota e automatizar a matriz completa de papéis |
 
 ### Modelo para futuras entradas
 

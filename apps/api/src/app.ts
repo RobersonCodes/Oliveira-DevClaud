@@ -2,7 +2,6 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import cookie from '@fastify/cookie';
 import helmet from '@fastify/helmet';
-import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { Redis } from 'ioredis';
 import { ZodError } from 'zod';
@@ -31,6 +30,7 @@ import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtim
 import { requireHostAdmin } from './lib/auth.js';
 import { parseTrustedProxyCidrs } from './lib/trustedProxy.js';
 import { validateProductionConfig } from './lib/productionConfig.js';
+import { createProductionRateLimitRedis, registerRateLimits } from './lib/rateLimits.js';
 
 export const API_BODY_LIMIT_BYTES = 1024 * 1024;
 export const API_REQUEST_TIMEOUT_MS = 30_000;
@@ -65,21 +65,42 @@ export async function buildApp(opts: { logger?: boolean; disableRateLimit?: bool
   await app.register(cors, { origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000', credentials: true });
   await app.register(cookie);
   await app.register(websocket, { options: { maxPayload: 1024 * 1024 } });
-  // Route-level `config: { rateLimit: {...} }` (e.g. auth.ts's stricter register/login limits) only
-  // has any effect while this plugin is registered, so skipping registration is enough to disable
-  // both the global default and every per-route override for integration tests.
-  if (!opts.disableRateLimit) await app.register(rateLimit, { max: 120, timeWindow: '1 minute' });
+  // Anonymous traffic is limited by trusted client IP; authenticated traffic is additionally
+  // limited by user and organization in requireUser/requireOrgRole. Production uses Redis so the
+  // budgets survive restarts and remain coherent if the API is replicated.
+  if (!opts.disableRateLimit) {
+    const rateLimitRedis = createProductionRateLimitRedis();
+    if (rateLimitRedis) {
+      rateLimitRedis.on('error', error => app.log.error({ err: error }, 'Rate-limit Redis error'));
+      try {
+        await rateLimitRedis.connect();
+      } catch (error) {
+        rateLimitRedis.disconnect();
+        throw error;
+      }
+    }
+    await registerRateLimits(app, { redis: rateLimitRedis });
+    if (rateLimitRedis) {
+      app.addHook('onClose', async () => { rateLimitRedis.disconnect(); });
+    }
+  }
 
   app.setErrorHandler((rawError, _request, reply) => {
     if (rawError instanceof ZodError) return reply.code(400).send({ error: 'VALIDATION_ERROR', issues: rawError.issues });
-    const error = rawError as Error & { statusCode?: number };
+    const error = rawError as Error & { statusCode?: number; retryAfter?: number; rateLimitScope?: string };
     const statusCode = error.statusCode ?? 500;
     if (statusCode >= 500) app.log.error(error);
-    return reply.code(statusCode).send({ error: statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : error.message });
+    if (statusCode === 429 && error.retryAfter !== undefined) {
+      reply.header('retry-after', String(Math.max(1, error.retryAfter)));
+    }
+    return reply.code(statusCode).send({
+      error: statusCode >= 500 ? 'INTERNAL_SERVER_ERROR' : error.message,
+      ...(error.rateLimitScope ? { scope: error.rateLimitScope } : {})
+    });
   });
 
-  app.get('/health', async () => ({ status: 'ok', service: 'oliveira-devcloud-api', version: '2.5.0' }));
-  app.get('/ready', async (_request, reply) => {
+  app.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok', service: 'oliveira-devcloud-api', version: '2.5.0' }));
+  app.get('/ready', { config: { rateLimit: false } }, async (_request, reply) => {
     const dependencies = { database: 'error', redis: 'error', runtimeBroker: 'error' };
 
     try {

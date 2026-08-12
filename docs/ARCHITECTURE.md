@@ -155,6 +155,14 @@ allowlist `TRUSTED_PROXY_CIDRS`. Na topologia de host compartilhado, essa allowl
 /32 do gateway da rede Compose pelo qual o nginx do host alcança a API. Outros containers da rede
 não podem falsificar o IP usado em rate limit e auditoria.
 
+O controle de abuso usa três orçamentos independentes por minuto. Toda rota comum consome o limite
+do IP do cliente (`120/min`), enquanto cadastro (`5/min`) e login (`8/min`) mantêm limites próprios
+mais estritos. Depois de uma sessão válida, `requireUser` consome também `120/min` por usuário e
+`requireOrgRole` consome `600/min` agregados por organização; múltiplas verificações de autorização
+na mesma requisição contam apenas uma vez. Em produção, todos os contadores vivem no Redis e são
+compartilhados entre réplicas/restarts. `/health` e `/ready` não consomem orçamento para que o
+próprio mecanismo de proteção não derrube observabilidade e orquestração.
+
 Antes de registrar rotas ou abrir a porta, a API valida a fronteira de configuração de produção.
 `SECURE_CONFIG_REQUIRED=true` vem fixado na imagem e impede que um override acidental de
 `NODE_ENV` degrade o cookie `__Host-` para um cookie sem `Secure`. Nesse modo, o boot exige origem

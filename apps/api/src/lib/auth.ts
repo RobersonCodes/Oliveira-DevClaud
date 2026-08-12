@@ -64,6 +64,7 @@ export function hasRole(actual: Role, required: Role) { return rank[actual] >= r
 export async function requireUser(request: FastifyRequest) {
   const auth = await getSessionUser(request);
   if (!auth) throw Object.assign(new Error('UNAUTHORIZED'), { statusCode: 401 });
+  await request.enforceIdentityRateLimit?.('user', auth.user.id);
   return auth;
 }
 
@@ -71,6 +72,7 @@ export async function requireOrgRole(request: FastifyRequest, organizationId: st
   const { user } = await requireUser(request);
   const membership = user.memberships.find(m => m.organizationId === organizationId);
   if (!membership || !hasRole(membership.role, required)) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
+  await request.enforceIdentityRateLimit?.('organization', organizationId);
   return { user, membership };
 }
 
