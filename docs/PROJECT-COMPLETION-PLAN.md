@@ -45,8 +45,8 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `30e5490` (`fix(fase6): restrict trusted proxy boundary`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1 foi corrigido no commit `30e5490`; P1-2/P1-3 também estão corrigidos localmente por validação fail-closed do boot de produção, aguardando CI Linux desta mudança |
+| Commit de referência | `c593287` (`fix(fase6): fail closed on unsafe production config`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3 e 4 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. Na Fase 6, P1-1 foi corrigido no commit `30e5490`; P1-2/P1-3 foram corrigidos no commit `c593287` por validação fail-closed do boot, com CI Linux e smoke limpo verdes |
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
@@ -98,8 +98,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
   45 aprovadas**; `npm run typecheck`, `npm run lint`, build da API, `git diff --check` e renderização
   do Compose aprovados. A suíte `runtimeGateway.test.ts` não pôde ser executada neste terminal:
   todos os casos interromperam na fixture antes das asserções porque `DATABASE_URL`/PostgreSQL não
-  estão disponíveis; Docker Desktop também está parado. CI Linux com infraestrutura real permanece
-  pendente para esta mudança.
+  estão disponíveis; Docker Desktop também está parado. Essa limitação foi suprida no commit
+  `c593287`: o CI Linux [31620694690](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31620694690)
+  aprovou migrations, lint, typecheck, testes, build e audit, e o smoke de produção em host limpo
+  [31620699908](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31620699908)
+  aprovou a stack integral e publicou evidência sanitizada.
 
 Os números acima são apenas o baseline. Substitua-os pelos resultados reais de cada nova execução.
 
@@ -719,9 +722,10 @@ ou universal e TTL de sessão fora de 1–30 dias. Os erros listam somente nomes
 valores. `productionConfig.test.ts` cobre inclusive a chamada real de `buildApp()` (**32/32**), e
 `auth.test.ts` confirma o cookie `__Host-`, `Secure`, `Path=/`, sem `Domain` (**3/3**). Somados aos
 10 testes de proxy, foram **45/45** direcionados. Typecheck do monorepo, lint, build da API,
-`git diff --check` e `docker-compose ... config --quiet` passaram. A suíte completa do Runtime
-Gateway não rodou por falta de `DATABASE_URL`/PostgreSQL neste terminal; Docker Desktop também não
-está iniciado, portanto a validação integral será feita no CI Linux desta alteração.
+`git diff --check` e `docker-compose ... config --quiet` passaram. Localmente, a suíte completa do
+Runtime Gateway não rodou por falta de `DATABASE_URL`/PostgreSQL e Docker Desktop parado; a
+validação integral foi suprida pelo CI Linux `31620694690` (migrations, lint, typecheck, testes,
+build e audit verdes) e pelo smoke de host limpo `31620699908`, ambos no commit `c593287`.
 
 ---
 
@@ -881,7 +885,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-11 | Codex | Fase 5 (Etapa 5) — sincronização do README | `EM ANDAMENTO` | README atualizado para registrar a publicação GHCR, o digest imutável e a separação entre build local de desenvolvimento e imagem de produção; `.env.example` alinhado à imagem local `1.1.0`, eliminando a divergência que faria o quickstart construir `1.1.0` e tentar executar `1.0`; `git diff --check` aprovado | Provisionar VM Linux x86_64 limpa e executar integralmente `docs/PRODUCTION-OPERATIONS.md`, inclusive smoke, restart, backup/restore e agente autenticado |
 | 2026-08-11 | Codex | Fase 5 (Etapa 5) — smoke Linux limpo | `PARCIAL` | CI recuperado no commit `5bdd7d8`: runs `31524472703`/`31524467564` inteiramente verdes após corrigir falso negativo de `code-server --version`. Workflow/script do commit `20df932` aprovados no run `31525879533` em `ubuntu-latest`: pull GHCR por digest, Compose, migrations, readiness, usuário/projeto/workspace/terminal, UID 10001, restart, PostgreSQL, Redis/AOF e bind persistentes, dump/tar com checksums e restore isolado de banco/workspace; cleanup e artefato sanitizado aprovados. P1-9 fechado. Sem secrets de provedor no repositório, o agente autenticado não foi simulado. Decisão: avançar a Fase 6, independente dos bloqueios externos das Fases 2/5, conforme permitido pelo plano | Restringir `trustProxy` e cobrir proxy confiável versus header direto por regressão |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — fronteira de proxy confiável | `EM ANDAMENTO` | P1-1 fechado pelo commit `30e5490`: `trustProxy:true` removido; allowlist `TRUSTED_PROXY_CIDRS` validada e vazia por padrão; configuração/runbook/nginx/smoke alinhados ao `/32` exato do gateway Compose. Regressão local `npx vitest run apps/api/src/trusted-proxy.test.ts`: 10/10; `npm run typecheck`, `npm run lint` e `npm run build -w @oliveira/api`: exit 0. CI Linux `31528430998` aprovou lint/typecheck/test/build/audit; smoke Linux limpo `31528431019` aprovou e confirmou o IP encaminhado no `AuditLog`. Sem nova mudança arquitetural nesta retomada: `docs/ARCHITECTURE.md` já foi atualizado no próprio commit | Fazer o boot de produção falhar sem origins, secrets e flags seguras obrigatórias (P1-2/P1-3) |
-| 2026-08-12 | Codex | Fase 6 (Etapa 6) — boot seguro de produção | `EM ANDAMENTO` | P1-2/P1-3 corrigidos: validação central fail-closed antes do Fastify; `SECURE_CONFIG_REQUIRED=true` fixado na imagem/API e documentado; origins, hosts, domínio de runtime, secrets, endpoints, proxy e TTL validados sem vazar valores. Testes direcionados `productionConfig` + `trusted-proxy` + `auth`: 45/45; typecheck, lint, build API, `git diff --check` e Compose config: exit 0. `runtimeGateway.test.ts` não chegou às asserções (32 fixtures falharam por ausência de `DATABASE_URL`/PostgreSQL); Docker Desktop está parado; CI Linux real pendente | Aplicar rate limit por usuário/organização e por IP, preservando limites estritos de autenticação |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — boot seguro de produção | `EM ANDAMENTO` | P1-2/P1-3 corrigidos no commit `c593287`: validação central fail-closed antes do Fastify; `SECURE_CONFIG_REQUIRED=true` fixado na imagem/API e documentado; origins, hosts, domínio de runtime, secrets, endpoints, proxy e TTL validados sem vazar valores. Testes direcionados `productionConfig` + `trusted-proxy` + `auth`: 45/45; typecheck, lint, build API, `git diff --check` e Compose config: exit 0. Localmente, `runtimeGateway.test.ts` não chegou às asserções por ausência de `DATABASE_URL`/PostgreSQL e Docker Desktop parado; CI Linux `31620694690` supriu a limitação (migrations/lint/typecheck/test/build/audit verdes), e smoke limpo `31620699908` aprovou a stack integral e evidência sanitizada | Aplicar rate limit por usuário/organização e por IP, preservando limites estritos de autenticação |
 
 ### Modelo para futuras entradas
 
