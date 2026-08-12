@@ -50,7 +50,7 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Etapa ativa | Etapa 6 — identidade, sessão e fronteiras de confiança; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Documentar o plano implementável de recuperação de conta, verificação de e-mail e MFA/passkeys (Fase 6) |
+| Próxima ação única | Revisar cobertura de auditoria para ações administrativas, sessões e agentes e corrigir lacunas verificáveis (Fase 6) |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -689,7 +689,7 @@ lacunas; somente a execução autenticada de agente continua externa.
 - [x] Aplicar rate limit por usuário/organização e por IP onde fizer sentido.
 - [x] Revisar RBAC HTTP e WebSocket rota por rota.
 - [x] Adicionar gerenciamento e revogação de sessões/dispositivos.
-- [ ] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
+- [x] Planejar recuperação de conta, verificação de e-mail e MFA/passkeys.
 - [ ] Revisar logs de auditoria para ações administrativas e de agentes.
 - [ ] Executar nova revisão cross-tenant após as mudanças.
 
@@ -757,6 +757,14 @@ runtime já emitido. Localmente: **17/17** testes sem infraestrutura, typecheck 
 builds API/web (incluindo geração estática de `/settings/sessions`) e `git diff --check` passaram.
 Regressões reais de PostgreSQL/Runtime Gateway foram aprovadas, junto com lint/typecheck/build/audit,
 nos CIs Linux `31642920258` e `31642923785`; smoke limpo `31642923772` também verde.
+
+O plano implementável de recuperação/verificação/MFA foi registrado em
+`docs/ACCOUNT-SECURITY-PLAN.md`. Ele fixa invariantes contra enumeração e reuso, schema aditivo,
+tokens somente em hash e uso único/transacional, revogação de todas as sessões após recuperação,
+passkeys/WebAuthn com challenges efêmeros no Redis, TOTP apenas como compatibilidade e recovery
+codes somente em hash. Também define endpoints, rollout sem bloquear contas existentes e a matriz
+de validação futura, preservando os testes físicos móveis como dependência da Fase 8. Nenhuma
+fronteira de runtime atual foi alterada por este item documental.
 
 ---
 
@@ -923,6 +931,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI da revisão RBAC | `EM ANDAMENTO` | Commit `e365017`; CIs Linux `31628756365`/`31628759439` aprovaram migrations, matriz HTTP real em PostgreSQL, regressões WS, lint, typecheck, testes, build e audit. Smoke de host limpo `31628759486` aprovado. P1-4 fechado e checklist RBAC concluído | Adicionar listagem e revogação de sessões/dispositivos com regressões de expiração/revogação |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — sessões e dispositivos | `EM ANDAMENTO` | API e tela de sessões implementadas; listagem omite token/hash, identifica sessão atual e permite revogar uma/todas as outras/a atual com auditoria e isolamento entre usuários. Runtime tickets/cookies agora carregam `sid` e revalidam a sessão de origem em toda requisição/WS. Local: 17/17, typecheck, lint, builds API/web e diff-check verdes; integração PostgreSQL/Runtime Gateway pendente de CI | Validar sessões e revogação de runtime no CI Linux |
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — evidência CI de sessões | `EM ANDAMENTO` | Commit `d1c07a9`; CIs `31642920258`/`31642923785` aprovaram migrations, revogação cross-device/cross-user, sessão expirada/atual, invalidação de runtime cookie, regressões WS, lint, typecheck, testes, build e audit. Smoke limpo `31642923772` aprovado | Planejar recuperação de conta, verificação de e-mail e MFA/passkeys |
+| 2026-08-12 | Codex | Fase 6 (Etapa 6) — plano de segurança de conta | `EM ANDAMENTO` | `docs/ACCOUNT-SECURITY-PLAN.md` define entrega incremental de verificação, recuperação, passkeys/WebAuthn, TOTP/recovery codes, invariantes anti-enumeração/reuso, revogação integral de sessões, rollout e matriz de testes. Item de planejamento concluído; implementação futura permanece risco P2-5 | Revisar logs de auditoria para ações administrativas, sessões e agentes |
 
 ### Modelo para futuras entradas
 
