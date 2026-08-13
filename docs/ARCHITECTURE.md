@@ -52,6 +52,21 @@ invariantes permanentes conhecidas são convertidas em `UnrecoverableError` pelo
 novas tentativas. Dedupe de ticks e `jobId` estável de setup continuam sendo as fronteiras contra
 efeitos concorrentes duplicados.
 
+As chaves são deliberadamente derivadas de identidades persistentes, não de timestamps: cada
+orquestração usa `tick-<orchestrationId>` e cada provisionamento usa seu próprio `SetupJob.id`.
+Estado no PostgreSQL é a autoridade final. Start, cancelamento, progresso, conclusão, recovery e
+reconciliação usam compare-and-swap condicionado ao estado anterior permitido; perder a disputa
+significa reler/retornar o estado vencedor, nunca sobrescrevê-lo. Por isso deduplicação no Redis é
+uma otimização de coordenação, enquanto o CAS no banco preserva a correção após retry, restart ou
+execução concorrente.
+
+Efeitos externos de merge têm uma segunda camada. O commit de merge recebe o trailer
+`Oliveira-Idempotency-Key` derivado do ID persistente da tarefa/orquestração; um retry consulta o
+histórico e retorna o commit existente. No banco, merge direto de agente passa por `READY → MERGING
+→ MERGED`, e merge de orquestração por `READY → APPROVED → MERGED`, garantindo um único proprietário
+do efeito externo por vez. Transações que tocam várias entidades mantêm ordem de lock fixa:
+`AgentTask → OrchestrationStep → Orchestration`.
+
 
 ## Terminal Plane (v0.4)
 

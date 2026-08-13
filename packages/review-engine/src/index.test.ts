@@ -78,5 +78,8 @@ describe('DockerReviewEngine — real broker, real git', () => {
 
     const mainFile = await exec(['cat', 'feature.txt']);
     expect(mainFile.output.trim()).toBe('agent-work');
+
+    const repeated = await review.approve(containerId, 'orch-2', baseCommit);
+    expect(repeated).toEqual({ mergeCommit: approved.mergeCommit, alreadyMerged: true });
   }, 30_000);
 });

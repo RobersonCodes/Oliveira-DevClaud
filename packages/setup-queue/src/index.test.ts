@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SETUP_PROVISION_JOB_OPTIONS } from './index.js';
+import { SETUP_PROVISION_JOB_OPTIONS, setupProvisionJobId } from './index.js';
 
 describe('setup provision retry policy', () => {
   it('uses a slower exponential backoff for expensive external operations', () => {
@@ -9,5 +9,11 @@ describe('setup provision retry policy', () => {
       removeOnComplete: 100,
       removeOnFail: 500
     });
+  });
+
+  it('uses the persistent SetupJob id as the idempotency key', () => {
+    expect(setupProvisionJobId('setup-123')).toBe('setup-123');
+    expect(setupProvisionJobId('setup-123')).toBe(setupProvisionJobId('setup-123'));
+    expect(setupProvisionJobId('setup-456')).not.toBe(setupProvisionJobId('setup-123'));
   });
 });

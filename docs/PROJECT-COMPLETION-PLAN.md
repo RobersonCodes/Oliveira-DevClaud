@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `0348ebf` (`docs(fase6): record final validation evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 está em andamento: políticas distintas de retry/backoff para orquestração e setup e classificação de falhas permanentes estão implementadas e validadas localmente, aguardando Redis real no CI |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 está em andamento: retry/backoff foi validado em CI/Redis e smoke limpo; chaves de idempotência e CAS para orquestração, setup e início/reconciliação de agentes estão implementados localmente, aguardando CI/PostgreSQL |
 | Etapa ativa | Etapa 7 — resiliência, concorrência e ciclo de vida; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar no CI/Redis real os retries transitórios e a interrupção imediata de falhas permanentes; se verde, concluir o primeiro item da Fase 7 |
+| Próxima ação única | Validar no CI/PostgreSQL/Redis as corridas de start/cancel/finalização e a preservação de estados terminais; se verde, concluir CAS/idempotência |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -799,7 +799,7 @@ da Fase 6 estão atendidos.
 
 **Implementação:**
 
-- [ ] Configurar retries e backoff por tipo de job BullMQ.
+- [x] Configurar retries e backoff por tipo de job BullMQ.
 - [ ] Definir idempotency keys e compare-and-swap nas transições críticas.
 - [ ] Implementar heartbeat de agent tasks, orquestrações e workspaces.
 - [ ] Recuperar jobs abandonados após crash/redeploy.
@@ -822,9 +822,26 @@ exponencial de 1 segundo; provisionamento usa até 3 tentativas e base de 5 segu
 instalação são operações externas mais caras. Ambas usam jitter de 25%. O worker converte invariantes
 claramente permanentes em `UnrecoverableError`, enquanto falhas de rede/timeout permanecem
 retryable; rejeições que não são `Error` são sanitizadas. Localmente, regressões puras **9/9**,
-typecheck dos três componentes e lint do monorepo passaram. Dois casos reais de BullMQ/Redis (falha
-transitória recuperada na terceira execução e falha permanente executada uma única vez) aguardam CI,
-pois este terminal não possui `REDIS_URL`/Redis disponível.
+typecheck dos três componentes e lint do monorepo passaram. Dois casos reais de BullMQ/Redis provam
+falha transitória recuperada na terceira execução e falha permanente executada uma única vez. O
+terminal local não possuía `REDIS_URL`; a limitação foi suprida pelos CIs `31648845323`/`31648842108`,
+que aprovaram Redis real, lint, typecheck, suíte completa, build e audit. Smoke de host limpo
+`31648845333` também verde.
+
+As chaves internas foram formalizadas sem quebrar jobs existentes: tick usa
+`tick-<orchestrationId>` no mecanismo de deduplicação BullMQ e setup usa o `SetupJob.id` persistente
+como `jobId`. Start/cancel/finalização de orquestração, progresso/cancelamento/finalização/recovery de
+setup, início/reconciliação/review de agentes e análise/aprovação/rejeição de orquestração agora usam
+`updateMany` condicionado ao estado esperado. Merge Git grava uma idempotency key persistente no
+commit; `MERGING` dá posse exclusiva ao merge direto de agente. Uma operação repetida bem-sucedida é
+idempotente; transição a partir de estado terminal incompatível retorna `409`, sem regressão de estado
+nem evento de auditoria duplicado. Foram adicionados cinco casos reais de PostgreSQL/Redis para start
+repetido, corrida start/cancel, terminal preservado, cancelamento de setup repetido e review repetido;
+os testes Docker reais de Git/review repetem o mesmo merge e recuperam o commit existente. A ordem de
+locks foi uniformizada em agent task → step → orchestration. Localmente: testes direcionados **22/22**,
+typecheck do monorepo, lint, schema Prisma, builds API/web/worker/engines/filas e diff-check verdes;
+integração real aguarda CI porque este terminal não tem
+PostgreSQL/Redis configurados.
 
 ---
 
@@ -969,6 +986,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 6 (Etapa 6) — encerramento | `CONCLUÍDA` | Commit `64a0d55`; CIs Linux/PostgreSQL `31647200113`/`31647203652` aprovaram migrations, lint, typecheck, suíte completa com casos cross-tenant, build e audit; smoke limpo `31647200111` aprovado. Auditoria também confirmada por `31646764048`/`31646760826` e smoke `31646764020`. Checklist e critérios integralmente atendidos | Configurar retries e backoff por tipo de job BullMQ (Fase 7) |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — início | `EM ANDAMENTO` | Checkpoint aberto no primeiro item do escopo: retries/backoff por tipo de job BullMQ; árvore limpa no início | Inventariar filas e implementar políticas testáveis para falhas transitórias e permanentes |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — retries/backoff local | `EM ANDAMENTO` | Orquestração: 5 tentativas/1s; setup: 3 tentativas/5s; ambos exponenciais com jitter 25%. Falhas invariantes usam `UnrecoverableError`; rede/timeout continuam retryable. Regressões puras 9/9, typechecks relevantes e lint verdes; testes reais adicionados | Validar retries e falhas permanentes no CI/Redis real |
+| 2026-08-12 | Codex | Fase 7 (Etapa 7) — retries/backoff CI | `EM ANDAMENTO` | Commit `d47b44b`; CIs `31648845323`/`31648842108` aprovaram Redis real, retry transitório, interrupção de falha permanente, lint, typecheck, suíte completa, build e audit; smoke `31648845333` verde. Primeiro item concluído | Aplicar CAS/idempotência nas transições críticas de orquestração e setup |
+| 2026-08-12 | Codex | Fase 7 (Etapa 7) — CAS/idempotência local | `EM ANDAMENTO` | Chaves estáveis formalizadas; CAS aplicado a orquestração, setup, agentes e reviews; merge Git usa trailer persistente e agente ganha estado `MERGING`; ordem de locks uniforme. Repetição é idempotente, terminal incompatível retorna 409 e worker stale não sobrescreve cancelamento. Direcionados 22/22, schema/typecheck/lint/builds verdes; regressões PostgreSQL/Redis/Docker adicionadas | Validar corridas, reviews e estados terminais no CI |
 
 ### Modelo para futuras entradas
 

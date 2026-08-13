@@ -503,6 +503,92 @@ describe('agent cancellation — keeps AgentTask, OrchestrationStep and Orchestr
   });
 });
 
+describe('critical transition CAS and idempotency (real Postgres + Redis)', () => {
+  it('starts a draft orchestration once and treats a repeated start as idempotent', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Start CAS', slug: `start-cas-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const orchestration = await prisma.orchestration.create({ data: { workspaceId: workspace.id, title: 'Start once', objective: 'Prove idempotent start', status: 'DRAFT' } });
+
+    const first = await app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/start`, headers: { cookie: owner.sessionCookie } });
+    const second = await app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/start`, headers: { cookie: owner.sessionCookie } });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ ok: true, alreadyStarted: false });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ ok: true, alreadyStarted: true });
+    expect((await prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })).status).toBe('QUEUED');
+    expect(await prisma.auditLog.count({ where: { resourceId: orchestration.id, action: 'ORCHESTRATION_STARTED' } })).toBe(1);
+  });
+
+  it('serializes concurrent start/cancel and never resurrects a cancelled orchestration', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Race CAS', slug: `race-cas-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const orchestration = await prisma.orchestration.create({ data: { workspaceId: workspace.id, title: 'Race safely', objective: 'Prove cancellation wins terminally', status: 'DRAFT' } });
+
+    const [start, cancel] = await Promise.all([
+      app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/start`, headers: { cookie: owner.sessionCookie } }),
+      app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/cancel`, headers: { cookie: owner.sessionCookie } })
+    ]);
+
+    expect([200, 409]).toContain(start.statusCode);
+    expect(cancel.statusCode).toBe(200);
+    expect((await prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })).status).toBe('CANCELLED');
+    const restart = await app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/start`, headers: { cookie: owner.sessionCookie } });
+    expect(restart.statusCode).toBe(409);
+    expect((await prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })).status).toBe('CANCELLED');
+  });
+
+  it('never lets cancellation overwrite terminal orchestration or setup completion', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Terminal CAS', slug: `terminal-cas-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const orchestration = await prisma.orchestration.create({ data: { workspaceId: workspace.id, title: 'Already done', objective: 'Stay complete', status: 'COMPLETED', finishedAt: new Date() } });
+    const setup = await prisma.setupJob.create({ data: { workspaceId: workspace.id, organizationId: owner.organizationId, status: 'READY', stage: 'READY', progress: 100, finishedAt: new Date() } });
+
+    const orchestrationCancel = await app.inject({ method: 'POST', url: `/api/v1/orchestrations/${orchestration.id}/cancel`, headers: { cookie: owner.sessionCookie } });
+    const setupCancel = await app.inject({ method: 'POST', url: `/api/v1/setup/jobs/${setup.id}/cancel`, headers: { cookie: owner.sessionCookie } });
+
+    expect(orchestrationCancel.statusCode).toBe(409);
+    expect(setupCancel.statusCode).toBe(409);
+    expect((await prisma.orchestration.findUniqueOrThrow({ where: { id: orchestration.id } })).status).toBe('COMPLETED');
+    expect((await prisma.setupJob.findUniqueOrThrow({ where: { id: setup.id } })).status).toBe('READY');
+  });
+
+  it('makes setup cancellation idempotent without duplicating audit events', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Setup CAS', slug: `setup-cas-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const setup = await prisma.setupJob.create({ data: { workspaceId: workspace.id, organizationId: owner.organizationId, status: 'RUNNING', stage: 'INSTALLING_DEPS' } });
+
+    const first = await app.inject({ method: 'POST', url: `/api/v1/setup/jobs/${setup.id}/cancel`, headers: { cookie: owner.sessionCookie } });
+    const second = await app.inject({ method: 'POST', url: `/api/v1/setup/jobs/${setup.id}/cancel`, headers: { cookie: owner.sessionCookie } });
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect((await prisma.setupJob.findUniqueOrThrow({ where: { id: setup.id } })).status).toBe('CANCEL_REQUESTED');
+    expect(await prisma.auditLog.count({ where: { resourceId: setup.id, action: 'WORKSPACE_PROVISION_CANCEL_REQUESTED' } })).toBe(1);
+  });
+
+  it('claims agent review rejection once and makes repeats idempotent', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Agent Review CAS', slug: `agent-review-cas-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id, containerId: 'test-container-not-used' } });
+    const task = await prisma.agentTask.create({ data: { workspaceId: workspace.id, agent: 'CODEX', title: 'Review once', prompt: 'Reject exactly once', status: 'COMPLETED', reviewStatus: 'READY', finishedAt: new Date() } });
+
+    const first = await app.inject({ method: 'POST', url: `/api/v1/agents/${task.id}/reject`, headers: { cookie: owner.sessionCookie } });
+    const second = await app.inject({ method: 'POST', url: `/api/v1/agents/${task.id}/reject`, headers: { cookie: owner.sessionCookie } });
+
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toMatchObject({ ok: true, alreadyRejected: false });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toMatchObject({ ok: true, alreadyRejected: true });
+    expect((await prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } })).reviewStatus).toBe('REJECTED');
+    expect(await prisma.auditLog.count({ where: { resourceId: task.id, action: 'AGENT_CHANGES_REJECTED' } })).toBe(1);
+  });
+});
+
 describe('rate limiting — the /register route\'s stricter per-route limit actually engages', () => {
   let limitedApp: FastifyInstance;
   const limitedUserIds: string[] = [];

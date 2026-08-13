@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { QueueEvents, UnrecoverableError, Worker } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
-import { ORCHESTRATION_TICK_JOB_OPTIONS, OrchestrationQueue, readyStepKeys, validateDag } from './index.js';
+import { ORCHESTRATION_TICK_JOB_OPTIONS, OrchestrationQueue, orchestrationTickDeduplicationId, readyStepKeys, validateDag } from './index.js';
 
 describe('orchestration tick retry policy', () => {
   it('uses a short exponential backoff with jitter and a bounded attempt count', () => {
@@ -12,6 +12,12 @@ describe('orchestration tick retry policy', () => {
       removeOnComplete: true,
       removeOnFail: 500
     });
+  });
+
+  it('derives one stable idempotency key per orchestration', () => {
+    expect(orchestrationTickDeduplicationId('orch-123')).toBe('tick-orch-123');
+    expect(orchestrationTickDeduplicationId('orch-123')).toBe(orchestrationTickDeduplicationId('orch-123'));
+    expect(orchestrationTickDeduplicationId('orch-456')).not.toBe(orchestrationTickDeduplicationId('orch-123'));
   });
 });
 

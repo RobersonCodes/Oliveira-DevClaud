@@ -130,6 +130,13 @@ export class DockerGitIsolationEngine {
   }
 
   async merge(containerId: string, worktree: WorktreeInfo, taskId: string) {
+    const id = safeTaskId(taskId);
+    const idempotencyKey = `agent-merge/${id}`;
+    const previous = this.assertOk(await this.exec(containerId, [
+      'git', 'log', '--format=%H', '--grep', `^Oliveira-Idempotency-Key: ${idempotencyKey}$`, '-n', '1'
+    ], '/workspace/repository'), 'MERGE_HISTORY_LOOKUP_FAILED').trim();
+    if (previous) return { mergeCommit: previous, alreadyMerged: true };
+
     await this.snapshot(containerId, worktree, taskId);
 
     const mainDirty = await this.exec(containerId, ['git', 'status', '--porcelain'], '/workspace/repository');
@@ -138,11 +145,11 @@ export class DockerGitIsolationEngine {
 
     const result = await this.exec(containerId, [
       'git', '-c', 'user.name=Oliveira DevCloud', '-c', 'user.email=devcloud@local',
-      'merge', '--no-ff', worktree.branchName, '-m', `merge(agent): ${safeTaskId(taskId)}`
+      'merge', '--no-ff', worktree.branchName, '-m', `merge(agent): ${id}\n\nOliveira-Idempotency-Key: ${idempotencyKey}`
     ], '/workspace/repository');
     this.assertOk(result, 'AGENT_MERGE_FAILED');
     const mergeCommit = this.assertOk(await this.exec(containerId, ['git', 'rev-parse', 'HEAD']), 'MERGE_COMMIT_NOT_FOUND');
-    return { mergeCommit };
+    return { mergeCommit, alreadyMerged: false };
   }
 
   async cleanup(containerId: string, worktree: WorktreeInfo, deleteBranch = true) {

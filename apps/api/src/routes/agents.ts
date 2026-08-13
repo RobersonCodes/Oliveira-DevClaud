@@ -60,6 +60,8 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!body.startNow) return reply.code(201).send(task);
 
     try {
+      const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.QUEUED }, data: { status: AgentTaskStatus.RUNNING, startedAt: new Date() } });
+      if (claimed.count === 0) throw Object.assign(new Error('AGENT_TASK_NOT_STARTABLE'), { statusCode: 409 });
       const worktree = await git.createWorktree(workspace.containerId, task.id, task.agent);
       const runtime = await engine.start({
         containerId: workspace.containerId,
@@ -68,24 +70,29 @@ export async function agentRoutes(app: FastifyInstance) {
         prompt: task.prompt,
         workingDirectory: worktree.path
       });
-      const [updated] = await prisma.$transaction([
-        prisma.agentTask.update({
-          where: { id: task.id },
+      const updated = await prisma.$transaction(async tx => {
+        const activated = await tx.agentTask.updateMany({
+          where: { id: task.id, status: AgentTaskStatus.RUNNING },
           data: {
-            status: AgentTaskStatus.RUNNING,
-            startedAt: new Date(),
             branchName: worktree.branchName,
             worktreePath: worktree.path,
             baseCommit: worktree.baseCommit,
             reviewStatus: AgentReviewStatus.PENDING
           }
-        }),
-        prisma.agentRun.create({ data: { taskId: task.id, workspaceId: workspace.id, sessionName: runtime.sessionName, statusFile: runtime.statusFile } })
-      ]);
+        });
+        if (activated.count === 0) return null;
+        await tx.agentRun.create({ data: { taskId: task.id, workspaceId: workspace.id, sessionName: runtime.sessionName, statusFile: runtime.statusFile } });
+        return tx.agentTask.findUniqueOrThrow({ where: { id: task.id } });
+      });
+      if (!updated) {
+        await engine.cancel(workspace.containerId, task.id).catch(() => undefined);
+        await git.cleanup(workspace.containerId, worktree, true).catch(() => undefined);
+        throw Object.assign(new Error('AGENT_START_LOST_RACE'), { statusCode: 409 });
+      }
       await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'AGENT_STARTED_ISOLATED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { agent: task.agent, branchName: worktree.branchName } });
       return reply.code(201).send(updated);
     } catch (error) {
-      await prisma.agentTask.update({ where: { id: task.id }, data: { status: AgentTaskStatus.FAILED, finishedAt: new Date(), metadata: { startError: error instanceof Error ? error.message : 'UNKNOWN' } } });
+      await prisma.agentTask.updateMany({ where: { id: task.id, status: { in: [AgentTaskStatus.QUEUED, AgentTaskStatus.RUNNING] } }, data: { status: AgentTaskStatus.FAILED, finishedAt: new Date(), metadata: { startError: error instanceof Error ? error.message : 'UNKNOWN' } } });
       throw error;
     }
   });
@@ -97,15 +104,24 @@ export async function agentRoutes(app: FastifyInstance) {
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('AGENT_ALREADY_RUNNING'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED || task.reviewStatus === AgentReviewStatus.REJECTED) throw Object.assign(new Error('AGENT_TASK_ALREADY_REVIEWED'), { statusCode: 409 });
 
-    const worktree = task.worktreePath && task.branchName && task.baseCommit
-      ? { path: task.worktreePath, branchName: task.branchName, baseCommit: task.baseCommit }
-      : await git.createWorktree(task.workspace.containerId, task.id, task.agent);
-
-    const runtime = await engine.start({ containerId: task.workspace.containerId, taskId: task.id, agent: task.agent, prompt: task.prompt, workingDirectory: worktree.path });
-    await prisma.$transaction([
-      prisma.agentTask.update({ where: { id: task.id }, data: { status: AgentTaskStatus.RUNNING, startedAt: new Date(), finishedAt: null, exitCode: null, branchName: worktree.branchName, worktreePath: worktree.path, baseCommit: worktree.baseCommit, reviewStatus: AgentReviewStatus.PENDING } }),
-      prisma.agentRun.create({ data: { taskId: task.id, workspaceId: task.workspaceId, sessionName: runtime.sessionName, statusFile: runtime.statusFile } })
-    ]);
+    const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: task.status, reviewStatus: task.reviewStatus }, data: { status: AgentTaskStatus.RUNNING, startedAt: new Date(), finishedAt: null, exitCode: null, reviewStatus: AgentReviewStatus.PENDING } });
+    if (claimed.count === 0) throw Object.assign(new Error('AGENT_TASK_NOT_STARTABLE'), { statusCode: 409 });
+    let worktree: ReturnType<typeof requireWorktree>;
+    try {
+      worktree = task.worktreePath && task.branchName && task.baseCommit
+        ? { path: task.worktreePath, branchName: task.branchName, baseCommit: task.baseCommit }
+        : await git.createWorktree(task.workspace.containerId, task.id, task.agent);
+      const runtime = await engine.start({ containerId: task.workspace.containerId, taskId: task.id, agent: task.agent, prompt: task.prompt, workingDirectory: worktree.path });
+      await prisma.$transaction(async tx => {
+        const activated = await tx.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.RUNNING }, data: { branchName: worktree.branchName, worktreePath: worktree.path, baseCommit: worktree.baseCommit } });
+        if (activated.count === 0) throw Object.assign(new Error('AGENT_START_LOST_RACE'), { statusCode: 409 });
+        await tx.agentRun.create({ data: { taskId: task.id, workspaceId: task.workspaceId, sessionName: runtime.sessionName, statusFile: runtime.statusFile } });
+      });
+    } catch (error) {
+      await engine.cancel(task.workspace.containerId, task.id).catch(() => undefined);
+      await prisma.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.RUNNING }, data: { status: AgentTaskStatus.FAILED, finishedAt: new Date() } });
+      throw error;
+    }
     await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_STARTED_ISOLATED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { branchName: worktree.branchName } });
     return { ok: true, worktree };
   });
@@ -118,7 +134,9 @@ export async function agentRoutes(app: FastifyInstance) {
     const runtime = await engine.status(task.workspace.containerId, task.id);
     if (runtime.status === 'RUNNING' || runtime.status === 'UNKNOWN') return { ...task, runtime };
     const status = runtime.status === 'COMPLETED' ? AgentTaskStatus.COMPLETED : AgentTaskStatus.FAILED;
-    const updated = await prisma.agentTask.update({ where: { id: task.id }, data: { status, exitCode: runtime.exitCode, finishedAt: new Date(), reviewStatus: AgentReviewStatus.READY } });
+    const reconciled = await prisma.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.RUNNING }, data: { status, exitCode: runtime.exitCode, finishedAt: new Date(), reviewStatus: AgentReviewStatus.READY } });
+    if (reconciled.count === 0) return prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } });
+    const updated = await prisma.agentTask.findUniqueOrThrow({ where: { id: task.id } });
     const latestRun = task.runs[0];
     if (latestRun) await prisma.agentRun.update({ where: { id: latestRun.id }, data: { exitCode: runtime.exitCode, finishedAt: new Date() } });
     await audit({
@@ -155,14 +173,26 @@ export async function agentRoutes(app: FastifyInstance) {
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('STOP_AGENT_BEFORE_MERGE'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED) return { ok: true, mergeCommit: task.mergeCommit, alreadyMerged: true };
     if (task.reviewStatus === AgentReviewStatus.REJECTED) throw Object.assign(new Error('AGENT_TASK_REJECTED'), { statusCode: 409 });
+    const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, reviewStatus: AgentReviewStatus.READY }, data: { reviewStatus: AgentReviewStatus.MERGING } });
+    if (claimed.count === 0) {
+      const current = await prisma.agentTask.findUnique({ where: { id: task.id }, select: { reviewStatus: true, mergeCommit: true } });
+      if (current?.reviewStatus === AgentReviewStatus.MERGED) return { ok: true, mergeCommit: current.mergeCommit, alreadyMerged: true };
+      throw Object.assign(new Error('AGENT_REVIEW_NOT_READY'), { statusCode: 409 });
+    }
 
-    const worktree = requireWorktree(task);
-    const result = await git.merge(task.workspace.containerId, worktree, task.id);
-    await git.cleanup(task.workspace.containerId, worktree, true);
-    const now = new Date();
-    await prisma.agentTask.update({ where: { id: task.id }, data: { reviewStatus: AgentReviewStatus.MERGED, mergeCommit: result.mergeCommit, mergedAt: now } });
-    await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CHANGES_MERGED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { branchName: task.branchName, mergeCommit: result.mergeCommit } });
-    return { ok: true, mergeCommit: result.mergeCommit };
+    try {
+      const worktree = requireWorktree(task);
+      const result = await git.merge(task.workspace.containerId, worktree, task.id);
+      await git.cleanup(task.workspace.containerId, worktree, true);
+      const now = new Date();
+      const merged = await prisma.agentTask.updateMany({ where: { id: task.id, reviewStatus: AgentReviewStatus.MERGING }, data: { reviewStatus: AgentReviewStatus.MERGED, mergeCommit: result.mergeCommit, mergedAt: now } });
+      if (merged.count === 0) throw Object.assign(new Error('AGENT_MERGE_LOST_RACE'), { statusCode: 409 });
+      await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CHANGES_MERGED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { branchName: task.branchName, mergeCommit: result.mergeCommit } });
+      return { ok: true, mergeCommit: result.mergeCommit, alreadyMerged: false };
+    } catch (error) {
+      await prisma.agentTask.updateMany({ where: { id: task.id, reviewStatus: AgentReviewStatus.MERGING }, data: { reviewStatus: AgentReviewStatus.READY } });
+      throw error;
+    }
   });
 
   app.post('/:taskId/reject', async request => {
@@ -171,12 +201,18 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!task.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('STOP_AGENT_BEFORE_REJECT'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED) throw Object.assign(new Error('AGENT_TASK_ALREADY_MERGED'), { statusCode: 409 });
-    if (task.reviewStatus !== AgentReviewStatus.REJECTED && task.worktreePath && task.branchName && task.baseCommit) {
+    if (task.reviewStatus === AgentReviewStatus.REJECTED) return { ok: true, alreadyRejected: true };
+    const rejected = await prisma.agentTask.updateMany({ where: { id: task.id, reviewStatus: { in: [AgentReviewStatus.PENDING, AgentReviewStatus.READY] } }, data: { reviewStatus: AgentReviewStatus.REJECTED, rejectedAt: new Date() } });
+    if (rejected.count === 0) {
+      const current = await prisma.agentTask.findUnique({ where: { id: task.id }, select: { reviewStatus: true } });
+      if (current?.reviewStatus === AgentReviewStatus.REJECTED) return { ok: true, alreadyRejected: true };
+      throw Object.assign(new Error('AGENT_REVIEW_NOT_REJECTABLE'), { statusCode: 409 });
+    }
+    if (task.worktreePath && task.branchName && task.baseCommit) {
       await git.cleanup(task.workspace.containerId, requireWorktree(task), true);
     }
-    await prisma.agentTask.update({ where: { id: task.id }, data: { reviewStatus: AgentReviewStatus.REJECTED, rejectedAt: new Date() } });
     await audit({ userId: user.id, organizationId: task.workspace.project.organizationId, action: 'AGENT_CHANGES_REJECTED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { branchName: task.branchName } });
-    return { ok: true };
+    return { ok: true, alreadyRejected: false };
   });
 
   app.post('/:taskId/cancel', async request => {
@@ -208,7 +244,7 @@ export async function agentRoutes(app: FastifyInstance) {
       if (step) {
         const stepClaim = await tx.orchestrationStep.updateMany({ where: { id: step.id, status: 'RUNNING' }, data: { status: 'CANCELLED', finishedAt: now } });
         if (stepClaim.count > 0) {
-          await tx.orchestration.updateMany({ where: { id: step.orchestrationId, status: { not: 'CANCELLED' } }, data: { status: 'CANCELLED', finishedAt: now } });
+          await tx.orchestration.updateMany({ where: { id: step.orchestrationId, status: { in: ['DRAFT', 'QUEUED', 'RUNNING'] } }, data: { status: 'CANCELLED', finishedAt: now } });
         }
       }
       if (latestRun) await tx.agentRun.update({ where: { id: latestRun.id }, data: { cancelledAt: now, finishedAt: now } });

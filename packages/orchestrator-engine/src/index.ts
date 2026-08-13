@@ -47,6 +47,8 @@ export const ORCHESTRATION_TICK_JOB_OPTIONS = {
   removeOnFail: 500
 } satisfies JobsOptions;
 
+export const orchestrationTickDeduplicationId = (orchestrationId: string) => `tick-${orchestrationId}`;
+
 export class OrchestrationQueue {
   readonly queue: Queue;
   constructor(
@@ -62,7 +64,7 @@ export class OrchestrationQueue {
     // the id until it completes; keepLastIfActive explicitly retains the latest pending request.
     return this.queue.add('tick', { orchestrationId }, {
       ...ORCHESTRATION_TICK_JOB_OPTIONS,
-      deduplication: { id: `tick-${orchestrationId}`, keepLastIfActive: true },
+      deduplication: { id: orchestrationTickDeduplicationId(orchestrationId), keepLastIfActive: true },
     });
   }
 }

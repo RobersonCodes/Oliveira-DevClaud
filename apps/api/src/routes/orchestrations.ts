@@ -52,9 +52,17 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     const o=await prisma.orchestration.findUnique({where:{id},include:{workspace:{include:{project:true}}}});
     if(!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'),{statusCode:404});
     const {user}=await requireOrgRole(request,o.workspace.project.organizationId,Role.DEVELOPER);
-    await prisma.orchestration.update({where:{id},data:{status:'QUEUED'}});
+    const claimed=await prisma.orchestration.updateMany({where:{id,status:'DRAFT'},data:{status:'QUEUED'}});
+    if(claimed.count===0){
+      const current=await prisma.orchestration.findUnique({where:{id},select:{status:true}});
+      if(current?.status==='QUEUED'||current?.status==='RUNNING'){
+        await queue.tick(id);
+        return {ok:true,alreadyStarted:true};
+      }
+      throw Object.assign(new Error('ORCHESTRATION_NOT_STARTABLE'),{statusCode:409});
+    }
     await audit({userId:user.id,organizationId:o.workspace.project.organizationId,action:'ORCHESTRATION_STARTED',resource:'Orchestration',resourceId:id,ipAddress:request.ip});
-    await queue.tick(id); return {ok:true};
+    await queue.tick(id); return {ok:true,alreadyStarted:false};
   });
 
   app.post('/:id/cancel', async request => {
@@ -62,8 +70,19 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     const o=await prisma.orchestration.findUnique({where:{id},include:{workspace:{include:{project:true}}}});
     if(!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'),{statusCode:404});
     const {user}=await requireOrgRole(request,o.workspace.project.organizationId,Role.DEVELOPER);
-    await prisma.$transaction([prisma.orchestration.update({where:{id},data:{status:'CANCELLED',finishedAt:new Date()}}),prisma.orchestrationStep.updateMany({where:{orchestrationId:id,status:{in:['BLOCKED','QUEUED']}},data:{status:'CANCELLED'}})]);
-    await audit({userId:user.id,organizationId:o.workspace.project.organizationId,action:'ORCHESTRATION_CANCELLED',resource:'Orchestration',resourceId:id,ipAddress:request.ip}); return {ok:true};
+    const now=new Date();
+    const cancelled=await prisma.$transaction(async tx=>{
+      const claim=await tx.orchestration.updateMany({where:{id,status:{in:['DRAFT','QUEUED','RUNNING']}},data:{status:'CANCELLED',finishedAt:now}});
+      if(claim.count===0)return false;
+      await tx.orchestrationStep.updateMany({where:{orchestrationId:id,status:{in:['BLOCKED','QUEUED']}},data:{status:'CANCELLED',finishedAt:now}});
+      return true;
+    });
+    if(!cancelled){
+      const current=await prisma.orchestration.findUnique({where:{id},select:{status:true}});
+      if(current?.status==='CANCELLED')return {ok:true,alreadyCancelled:true};
+      throw Object.assign(new Error('ORCHESTRATION_NOT_CANCELLABLE'),{statusCode:409});
+    }
+    await audit({userId:user.id,organizationId:o.workspace.project.organizationId,action:'ORCHESTRATION_CANCELLED',resource:'Orchestration',resourceId:id,ipAddress:request.ip}); return {ok:true,alreadyCancelled:false};
   });
 
   app.get('/:id/review', async request => {
@@ -102,6 +121,7 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     const { user } = await requireOrgRole(request, o.workspace.project.organizationId, Role.DEVELOPER);
     if (!o.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
     if (!['WAITING_REVIEW','RUNNING'].includes(o.status)) throw Object.assign(new Error('ORCHESTRATION_NOT_REVIEWABLE'), { statusCode: 409 });
+    if (['ANALYZING','APPROVED','MERGED'].includes(o.reviewStatus)) throw Object.assign(new Error('REVIEW_ALREADY_IN_PROGRESS_OR_COMPLETE'), { statusCode: 409 });
 
     const agentSteps = o.steps.filter(s => s.type === 'AGENT');
     if (!agentSteps.length || agentSteps.some(s => s.status !== 'COMPLETED' || !s.agentTask?.branchName)) {
@@ -115,7 +135,11 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     }
     const branches = agentSteps.map(s => ({ taskId: s.agentTask!.id, branchName: s.agentTask!.branchName! }));
     const gates = o.steps.filter(s => s.type === 'SYSTEM' && s.command && safeReviewGates.has(s.command)).map(s => s.command!);
-    await prisma.orchestration.update({ where: { id }, data: { reviewStatus: 'ANALYZING' } });
+    const analysisClaim = await prisma.orchestration.updateMany({
+      where: { id, status: o.status, reviewStatus: o.reviewStatus },
+      data: { reviewStatus: 'ANALYZING' }
+    });
+    if (analysisClaim.count === 0) throw Object.assign(new Error('REVIEW_STATE_CHANGED'), { statusCode: 409 });
     try {
       // Baseline intelligence is captured from the current main worktree before the integration branch is analyzed.
       const repository = await getRepositoryIntelligenceCached({ workspaceId: o.workspace.id, containerId: o.workspace.containerId });
@@ -169,16 +193,21 @@ export async function orchestrationRoutes(app: FastifyInstance) {
       const regressionBlocked = regressionIntelligence ? regressionIntelligence.blocking : false;
       const reviewStatus = result.conflicts.length ? 'CONFLICT' : (gateFailed || contractBlocked || regressionBlocked) ? 'GATE_FAILED' : 'READY';
       const reviewSummary = { ...result, contractGate, regressionIntelligence, ready: result.ready && !contractBlocked && !regressionBlocked };
-      const updated = await prisma.orchestration.update({
-        where: { id }, data: {
+      const saved = await prisma.orchestration.updateMany({
+        where: { id, status: { in: ['WAITING_REVIEW', 'RUNNING'] }, reviewStatus: 'ANALYZING' }, data: {
           reviewStatus, reviewBranch: result.reviewBranch, reviewWorktreePath: result.reviewPath,
           reviewBaseCommit: result.baseCommit, reviewSummary: reviewSummary as any, reviewedAt: new Date(), status: 'WAITING_REVIEW'
         }
       });
+      if (saved.count === 0) {
+        await reviews.cleanup(o.workspace.containerId, id, true).catch(() => undefined);
+        throw Object.assign(new Error('REVIEW_STATE_CHANGED'), { statusCode: 409 });
+      }
+      const updated = await prisma.orchestration.findUniqueOrThrow({ where: { id } });
       await audit({ userId: user.id, organizationId: o.workspace.project.organizationId, action: 'ORCHESTRATION_REVIEW_ANALYZED', resource: 'Orchestration', resourceId: id, ipAddress: request.ip, metadata: { reviewStatus, conflicts: result.conflicts.length, gates: result.gates.map(g => ({ command:g.command, ok:g.ok, exitCode:g.exitCode })), contractGate: contractGate ? { ok: contractGate.ok, blocking: contractGate.blocking.length, warnings: contractGate.warnings.length } : null, regressionIntelligence: regressionIntelligence ? { riskScore: regressionIntelligence.riskScore, riskLevel: regressionIntelligence.riskLevel, blocking: regressionIntelligence.blocking } : null } });
       return updated;
     } catch (error) {
-      await prisma.orchestration.update({ where: { id }, data: { reviewStatus: 'GATE_FAILED', reviewSummary: { error: error instanceof Error ? error.message : 'UNKNOWN' } } });
+      await prisma.orchestration.updateMany({ where: { id, reviewStatus: 'ANALYZING', status: { in: ['WAITING_REVIEW', 'RUNNING'] } }, data: { reviewStatus: 'GATE_FAILED', reviewSummary: { error: error instanceof Error ? error.message : 'UNKNOWN' } } });
       throw error;
     }
   });
@@ -191,22 +220,32 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     if (!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'), { statusCode: 404 });
     const { user } = await requireOrgRole(request, o.workspace.project.organizationId, Role.ADMIN);
     if (!o.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
+    if (o.reviewStatus === 'MERGED') return { ok:true, mergeCommit:o.mergeCommit, alreadyMerged:true };
     if (o.reviewStatus !== 'READY' || !o.reviewBaseCommit) throw Object.assign(new Error('REVIEW_NOT_READY'), { statusCode: 409 });
 
-    await prisma.orchestration.update({ where:{id}, data:{ reviewStatus:'APPROVED', approvedAt:new Date() } });
-    const result = await reviews.approve(o.workspace.containerId, id, o.reviewBaseCommit);
-    const agentTasks = o.steps.map(s => s.agentTask).filter(Boolean);
-    for (const task of agentTasks) {
-      if (task!.worktreePath && task!.branchName && task!.baseCommit) {
-        await git.cleanup(o.workspace.containerId, { path: task!.worktreePath, branchName: task!.branchName, baseCommit: task!.baseCommit }, true).catch(() => undefined);
+    const approved = await prisma.orchestration.updateMany({ where:{id,status:'WAITING_REVIEW',reviewStatus:'READY'}, data:{ reviewStatus:'APPROVED', approvedAt:new Date() } });
+    if(approved.count===0){const current=await prisma.orchestration.findUnique({where:{id},select:{reviewStatus:true,mergeCommit:true}});if(current?.reviewStatus==='MERGED')return {ok:true,mergeCommit:current.mergeCommit,alreadyMerged:true};throw Object.assign(new Error('REVIEW_STATE_CHANGED'),{statusCode:409});}
+    try {
+      const result = await reviews.approve(o.workspace.containerId, id, o.reviewBaseCommit);
+      const agentTasks = o.steps.map(s => s.agentTask).filter(Boolean);
+      for (const task of agentTasks) {
+        if (task!.worktreePath && task!.branchName && task!.baseCommit) {
+          await git.cleanup(o.workspace.containerId, { path: task!.worktreePath, branchName: task!.branchName, baseCommit: task!.baseCommit }, true).catch(() => undefined);
+        }
       }
+      const merged=await prisma.$transaction(async tx=>{
+        const claim=await tx.orchestration.updateMany({ where:{id,status:'WAITING_REVIEW',reviewStatus:'APPROVED'}, data:{ reviewStatus:'MERGED', status:'COMPLETED', mergeCommit:result.mergeCommit, mergedAt:new Date(), finishedAt:new Date() } });
+        if(claim.count===0)return false;
+        await tx.agentTask.updateMany({ where:{id:{in:agentTasks.map(t=>t!.id)}}, data:{ reviewStatus:'MERGED', mergeCommit:result.mergeCommit, mergedAt:new Date() } });
+        return true;
+      });
+      if(!merged)throw Object.assign(new Error('REVIEW_STATE_CHANGED'),{statusCode:409});
+      await audit({ userId:user.id, organizationId:o.workspace.project.organizationId, action:'ORCHESTRATION_REVIEW_APPROVED_AND_MERGED', resource:'Orchestration', resourceId:id, ipAddress:request.ip, metadata:{mergeCommit:result.mergeCommit, agentTasks:agentTasks.length} });
+      return { ok:true, mergeCommit:result.mergeCommit, alreadyMerged:result.alreadyMerged };
+    } catch(error) {
+      await prisma.orchestration.updateMany({where:{id,reviewStatus:'APPROVED',status:'WAITING_REVIEW'},data:{reviewStatus:'READY',approvedAt:null}});
+      throw error;
     }
-    await prisma.$transaction([
-      prisma.orchestration.update({ where:{id}, data:{ reviewStatus:'MERGED', status:'COMPLETED', mergeCommit:result.mergeCommit, mergedAt:new Date(), finishedAt:new Date() } }),
-      prisma.agentTask.updateMany({ where:{id:{in:agentTasks.map(t=>t!.id)}}, data:{ reviewStatus:'MERGED', mergeCommit:result.mergeCommit, mergedAt:new Date() } })
-    ]);
-    await audit({ userId:user.id, organizationId:o.workspace.project.organizationId, action:'ORCHESTRATION_REVIEW_APPROVED_AND_MERGED', resource:'Orchestration', resourceId:id, ipAddress:request.ip, metadata:{mergeCommit:result.mergeCommit, agentTasks:agentTasks.length} });
-    return { ok:true, mergeCommit:result.mergeCommit };
   });
 
   app.post('/:id/review/reject', async request => {
@@ -215,10 +254,12 @@ export async function orchestrationRoutes(app: FastifyInstance) {
     if(!o) throw Object.assign(new Error('ORCHESTRATION_NOT_FOUND'),{statusCode:404});
     const {user}=await requireOrgRole(request,o.workspace.project.organizationId,Role.ADMIN);
     if(!o.workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'),{statusCode:409});
+    if(o.reviewStatus==='REJECTED')return {ok:true,alreadyRejected:true};
+    const rejected=await prisma.orchestration.updateMany({where:{id,status:{in:['WAITING_REVIEW','RUNNING']},reviewStatus:{in:['READY','CONFLICT','GATE_FAILED','ANALYZING']}},data:{reviewStatus:'REJECTED',rejectedAt:new Date(),status:'WAITING_REVIEW'}});
+    if(rejected.count===0){const current=await prisma.orchestration.findUnique({where:{id},select:{reviewStatus:true}});if(current?.reviewStatus==='REJECTED')return {ok:true,alreadyRejected:true};throw Object.assign(new Error('REVIEW_NOT_REJECTABLE'),{statusCode:409});}
     await reviews.cleanup(o.workspace.containerId,id,true).catch(()=>undefined);
-    await prisma.orchestration.update({where:{id},data:{reviewStatus:'REJECTED',rejectedAt:new Date(),status:'WAITING_REVIEW'}});
     await audit({userId:user.id,organizationId:o.workspace.project.organizationId,action:'ORCHESTRATION_REVIEW_REJECTED',resource:'Orchestration',resourceId:id,ipAddress:request.ip});
-    return {ok:true};
+    return {ok:true,alreadyRejected:false};
   });
 
 }

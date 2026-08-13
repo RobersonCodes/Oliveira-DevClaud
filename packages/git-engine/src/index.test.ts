@@ -104,6 +104,9 @@ describe('DockerGitIsolationEngine — real container, real git', () => {
     expect(worktreeList.output).not.toContain('task-full-cycle');
     const branchList = await exec(['git', 'branch', '--list', worktree.branchName]);
     expect(branchList.output.trim()).toBe('');
+
+    const repeated = await git.merge(containerId, worktree, 'task-full-cycle');
+    expect(repeated).toEqual({ mergeCommit: merged.mergeCommit, alreadyMerged: true });
   });
 
   it('refuses to create a second worktree for the same agent+task branch', async () => {

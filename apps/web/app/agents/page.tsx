@@ -7,7 +7,7 @@ type Task = {
   id:string; workspaceId:string; agent:Agent; title:string; prompt:string; status:string;
   startedAt?:string|null; finishedAt?:string|null; exitCode?:number|null;
   branchName?:string|null; worktreePath?:string|null; baseCommit?:string|null;
-  reviewStatus?:'PENDING'|'READY'|'MERGED'|'REJECTED'; mergeCommit?:string|null;
+  reviewStatus?:'PENDING'|'READY'|'MERGING'|'MERGED'|'REJECTED'; mergeCommit?:string|null;
 };
 type Changes = { branchName:string; baseCommit:string; status:string; files:string; committedStat:string; committedDiff:string; workingStat:string; workingDiff:string };
 

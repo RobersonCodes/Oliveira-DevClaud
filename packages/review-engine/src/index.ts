@@ -74,14 +74,17 @@ export class DockerReviewEngine {
 
   async approve(containerId:string, orchestrationId:string, expectedBaseCommit:string){
     const id=safeId(orchestrationId), branch=`review/${id}`;
+    const idempotencyKey=`orchestration-merge/${id}`;
+    const previous=this.ok(await this.exec(containerId,['git','log','--format=%H','--grep',`^Oliveira-Idempotency-Key: ${idempotencyKey}$`,'-n','1']),'MERGE_HISTORY_LOOKUP_FAILED');
+    if(previous)return {mergeCommit:previous,alreadyMerged:true};
     const current=this.ok(await this.exec(containerId,['git','rev-parse','HEAD']),'GIT_HEAD_NOT_FOUND');
     if(current!==expectedBaseCommit) throw new Error('MAIN_BRANCH_MOVED_SINCE_REVIEW');
     const dirty=this.ok(await this.exec(containerId,['git','status','--porcelain']),'MAIN_WORKTREE_STATUS_FAILED');
     if(dirty) throw new Error('MAIN_WORKTREE_DIRTY');
-    const merge=await this.exec(containerId,['git','-c','user.name=Oliveira DevCloud','-c','user.email=devcloud@local','merge','--no-ff',branch,'-m',`merge(orchestration): ${id}`]);
+    const merge=await this.exec(containerId,['git','-c','user.name=Oliveira DevCloud','-c','user.email=devcloud@local','merge','--no-ff',branch,'-m',`merge(orchestration): ${id}\n\nOliveira-Idempotency-Key: ${idempotencyKey}`]);
     this.ok(merge,'ORCHESTRATION_MERGE_FAILED');
     const mergeCommit=this.ok(await this.exec(containerId,['git','rev-parse','HEAD']),'MERGE_COMMIT_NOT_FOUND');
     await this.cleanup(containerId,id,true);
-    return {mergeCommit};
+    return {mergeCommit,alreadyMerged:false};
   }
 }
