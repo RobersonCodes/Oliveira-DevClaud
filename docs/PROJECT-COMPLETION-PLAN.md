@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-12 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `0348ebf` (`docs(fase6): record final validation evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 está em andamento: retry/backoff e CAS/idempotência foram validados em CI com PostgreSQL/Redis/Docker e smoke limpo; heartbeat persistente de agentes/orquestrações/workspaces está implementado localmente, aguardando CI |
+| Commit de referência | `6bb9022` (`feat(fase7): persist runtime heartbeats`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 está em andamento: retry/backoff, CAS/idempotência e heartbeat persistente de agentes/orquestrações/workspaces foram validados em CI com PostgreSQL/Redis/Docker e smoke limpo |
 | Etapa ativa | Etapa 7 — resiliência, concorrência e ciclo de vida; pendências externas das Etapas 2 e 5 preservadas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar migration e monitor de heartbeat no CI/PostgreSQL/Docker; se verde, concluir o terceiro item e usar os timestamps na recuperação de jobs abandonados |
+| Próxima ação única | Usar os timestamps de heartbeat para recuperar jobs abandonados após crash/redeploy, com testes de posse, corrida e estado terminal |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -801,7 +801,7 @@ da Fase 6 estão atendidos.
 
 - [x] Configurar retries e backoff por tipo de job BullMQ.
 - [x] Definir idempotency keys e compare-and-swap nas transições críticas.
-- [ ] Implementar heartbeat de agent tasks, orquestrações e workspaces.
+- [x] Implementar heartbeat de agent tasks, orquestrações e workspaces.
 - [ ] Recuperar jobs abandonados após crash/redeploy.
 - [ ] Criar dead-letter/revisão manual para falhas permanentes.
 - [ ] Implementar quotas de CPU, memória, processos, disco e duração.
@@ -854,7 +854,9 @@ para workspaces e agents, só grava após `inspect().running` do Runtime Broker 
 Agent Engine. Falha de um probe não renova timestamp falso nem impede os demais. Agentes ligados a
 uma orquestração também renovam a orquestração uma única vez por sweep. O timer evita sobreposição,
 faz uma passagem inicial e é encerrado no graceful shutdown. Regressão pura cobre runtime vivo,
-morto, probe com falha e dedupe de orquestração; migration/schema e integração real aguardam CI.
+morto, probe com falha e dedupe de orquestração. No commit `6bb9022`, os CIs
+`31660067591`/`31660064853` aprovaram migration, PostgreSQL/Redis/Docker, lint, typecheck, suíte
+completa, build e audit; o smoke de host limpo `31660067592` também passou. Terceiro item concluído.
 
 ---
 
@@ -1003,6 +1005,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — CAS/idempotência local | `EM ANDAMENTO` | Chaves estáveis formalizadas; CAS aplicado a orquestração, setup, agentes e reviews; merge Git usa trailer persistente e agente ganha estado `MERGING`; ordem de locks uniforme. Repetição é idempotente, terminal incompatível retorna 409 e worker stale não sobrescreve cancelamento. Direcionados 22/22, schema/typecheck/lint/builds verdes; regressões PostgreSQL/Redis/Docker adicionadas | Validar corridas, reviews e estados terminais no CI |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — CAS/idempotência CI | `EM ANDAMENTO` | Commit `5ca7566`; CIs `31659328635`/`31659325929` aprovaram migration, corridas PostgreSQL/Redis, merges Docker idempotentes, lint, typecheck, suíte completa, build e audit; smoke `31659328804` verde. Segundo item concluído | Implementar heartbeat persistente de agentes, orquestrações e workspaces |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — heartbeat local | `EM ANDAMENTO` | Campos/indexes/migration para Workspace, AgentTask e Orchestration; leases de jobs ativos e probes reais de Runtime Broker/Agent Engine a cada 15s, sem heartbeat em falha. Regressão pura adicionada | Validar heartbeat no CI/PostgreSQL/Docker |
+| 2026-08-12 | Codex | Fase 7 (Etapa 7) — heartbeat CI e checkpoint | `EM ANDAMENTO` | Commit `6bb9022`; CIs `31660067591`/`31660064853` e smoke limpo `31660067592` verdes. Migration, PostgreSQL/Redis/Docker, monitor de liveness, lint, typecheck, suíte completa, build e audit aprovados. Terceiro item concluído; árvore limpa antes do checkpoint | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
 
 ### Modelo para futuras entradas
 
