@@ -8,11 +8,15 @@ import { Redis as IORedis } from 'ioredis';
 import { prisma } from '@oliveira/database';
 import { DockerAgentEngine } from '@oliveira/agent-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
+import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
 import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine';
 import { asBullMqJobError } from './lib/jobErrors.js';
+import { refreshRuntimeHeartbeats } from './lib/heartbeats.js';
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
-const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine();
+const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine(); const heartbeatWorkspaces = new DockerWorkspaceEngine();
+const activeOrchestrationIds = new Set<string>();
+const activeSetupJobIds = new Set<string>();
 const safeSystemCommands = new Set(['npm test','npm run test','npm run build','npm run lint','npm run typecheck']);
 const safeAgentStartErrorCode = (error: unknown) => {
   const message = error instanceof Error ? error.message : '';
@@ -23,9 +27,9 @@ async function tick(orchestrationId:string){
   const o=await prisma.orchestration.findUnique({where:{id:orchestrationId},include:{workspace:true,steps:{include:{agentTask:{select:{status:true}}}}}}); if(!o||!['QUEUED','RUNNING'].includes(o.status)) return;
   if(!o.workspace.containerId) throw new Error('WORKSPACE_HAS_NO_CONTAINER');
   if(o.status==='QUEUED'){
-    const started=await prisma.orchestration.updateMany({where:{id:o.id,status:'QUEUED'},data:{startedAt:o.startedAt??new Date(),status:'RUNNING'}});
+    const now=new Date();const started=await prisma.orchestration.updateMany({where:{id:o.id,status:'QUEUED'},data:{startedAt:o.startedAt??now,status:'RUNNING',heartbeatAt:now}});
     if(started.count===0){const current=await prisma.orchestration.findUnique({where:{id:o.id},select:{status:true}});if(current?.status!=='RUNNING')return;}
-  }
+  }else await prisma.orchestration.updateMany({where:{id:o.id,status:'RUNNING'},data:{heartbeatAt:new Date()}});
 
   // Reconcile running agent steps with their persistent tmux runtime. `o.steps` is a snapshot read
   // at the top of this tick — by the time we act on it, a concurrent tick (or a user hitting
@@ -86,7 +90,7 @@ async function tick(orchestrationId:string){
         const wt=await git.createWorktree(o.workspace.containerId,task.id,task.agent);
         const runtime=await agents.start({containerId:o.workspace.containerId,taskId:task.id,agent:task.agent,prompt:task.prompt,workingDirectory:wt.path});
         const activated=await prisma.$transaction(async tx=>{
-          const taskStillQueued=await tx.agentTask.updateMany({where:{id:task.id,status:'QUEUED'},data:{status:'RUNNING',startedAt:new Date(),branchName:wt.branchName,worktreePath:wt.path,baseCommit:wt.baseCommit}});
+          const now=new Date();const taskStillQueued=await tx.agentTask.updateMany({where:{id:task.id,status:'QUEUED'},data:{status:'RUNNING',startedAt:now,heartbeatAt:now,branchName:wt.branchName,worktreePath:wt.path,baseCommit:wt.baseCommit}});
           if(taskStillQueued.count===0)return false;
           const stepStillOwned=await tx.orchestrationStep.updateMany({where:{id:step.id,status:'RUNNING',agentTaskId:task.id},data:{startedAt:new Date()}});
           if(stepStillOwned.count===0)throw new Error('ORCHESTRATION_STEP_STATE_CHANGED');
@@ -131,8 +135,11 @@ async function tick(orchestrationId:string){
 }
 
 const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{
-  try { if(job.name==='tick') await tick(job.data.orchestrationId); }
+  const orchestrationId=job.data.orchestrationId as string;
+  activeOrchestrationIds.add(orchestrationId);
+  try { if(job.name==='tick') await tick(orchestrationId); }
   catch(error) { throw asBullMqJobError(error); }
+  finally { activeOrchestrationIds.delete(orchestrationId); }
 }, {connection,concurrency:4});
 console.log('Oliveira DevCloud orchestration worker online');
 
@@ -172,14 +179,45 @@ async function provision(setupJobId:string){
   }catch(e:any){const failed=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING},data:{status:SetupJobStatus.FAILED,stage:SetupStage.FAILED,message:'Provisionamento falhou',errorCode:String(e?.message??'SETUP_FAILED').slice(0,120),errorMessage:String(e?.details??e?.message??e).slice(0,4000),finishedAt:new Date(),heartbeatAt:new Date()}});if(failed.count>0)await setupLog(job.id,String(e?.details??e?.message??e).slice(0,4000),SetupStage.FAILED,'ERROR');else await cancellationCheckpoint(job.id);throw e}
 }
 const setupWorker = new Worker('oliveira-setup',async job=>{
-  try { if(job.name==='provision')await provision(job.data.setupJobId); }
+  const setupJobId=job.data.setupJobId as string;
+  activeSetupJobIds.add(setupJobId);
+  try { if(job.name==='provision')await provision(setupJobId); }
   catch(error) { throw asBullMqJobError(error); }
+  finally { activeSetupJobIds.delete(setupJobId); }
 },{connection,concurrency:2});
 console.log('Oliveira DevCloud setup worker v1.4 online');
 
 // Recover jobs that were RUNNING when a worker/process stopped unexpectedly.
 async function recoverInterruptedSetupJobs(){const cutoff=new Date(Date.now()-60_000);const stale=await prisma.setupJob.findMany({where:{status:SetupJobStatus.RUNNING,OR:[{heartbeatAt:null},{heartbeatAt:{lt:cutoff}}]}});let recovered=0;for(const job of stale){const claimed=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING,OR:[{heartbeatAt:null},{heartbeatAt:{lt:cutoff}}]},data:{status:SetupJobStatus.QUEUED,message:'Recuperando job interrompido'}});if(claimed.count===0)continue;recovered+=1;await setupLog(job.id,'Worker detectou execução interrompida; job reenfileirado',job.stage,'WARN');await setupQueue.requeue(job.id)}if(recovered)console.log(`Recovered ${recovered} interrupted setup job(s)`)}
 recoverInterruptedSetupJobs().catch(error=>console.error('Setup recovery failed',error));
+
+const HEARTBEAT_INTERVAL_MS=15_000;
+let heartbeatSweepRunning=false;
+async function heartbeatSweep(){
+  if(heartbeatSweepRunning)return;
+  heartbeatSweepRunning=true;
+  const now=new Date();
+  try{
+    if(activeSetupJobIds.size)await prisma.setupJob.updateMany({where:{id:{in:[...activeSetupJobIds]},status:SetupJobStatus.RUNNING},data:{heartbeatAt:now}});
+    if(activeOrchestrationIds.size)await prisma.orchestration.updateMany({where:{id:{in:[...activeOrchestrationIds]},status:'RUNNING'},data:{heartbeatAt:now}});
+    const [workspaces,runningAgents]=await Promise.all([
+      prisma.workspace.findMany({where:{status:'RUNNING',containerId:{not:null}},select:{id:true,containerId:true}}),
+      prisma.agentTask.findMany({where:{status:'RUNNING',workspace:{containerId:{not:null}}},select:{id:true,workspace:{select:{containerId:true}},orchestrationStep:{select:{orchestrationId:true}}}})
+    ]);
+    await refreshRuntimeHeartbeats({
+      workspaces:workspaces.flatMap(workspace=>workspace.containerId?[{id:workspace.id,containerId:workspace.containerId}]:[]),
+      agents:runningAgents.flatMap(task=>task.workspace.containerId?[{id:task.id,containerId:task.workspace.containerId,orchestrationId:task.orchestrationStep?.orchestrationId}]:[]),
+      workspaceIsLive:async containerId=>(await heartbeatWorkspaces.inspect(containerId)).running,
+      agentIsLive:async(containerId,taskId)=>(await agents.status(containerId,taskId)).status==='RUNNING',
+      touchWorkspace:async(workspaceId,at)=>{await prisma.workspace.updateMany({where:{id:workspaceId,status:'RUNNING'},data:{heartbeatAt:at}})},
+      touchAgent:async(taskId,at)=>{await prisma.agentTask.updateMany({where:{id:taskId,status:'RUNNING'},data:{heartbeatAt:at}})},
+      touchOrchestration:async(orchestrationId,at)=>{await prisma.orchestration.updateMany({where:{id:orchestrationId,status:'RUNNING'},data:{heartbeatAt:at}})}
+    },now);
+  }finally{heartbeatSweepRunning=false;}
+}
+const heartbeatTimer=setInterval(()=>void heartbeatSweep().catch(error=>console.error('Runtime heartbeat sweep failed',error)),HEARTBEAT_INTERVAL_MS);
+heartbeatTimer.unref();
+void heartbeatSweep().catch(error=>console.error('Initial runtime heartbeat sweep failed',error));
 
 // Without this, `docker stop`/a rolling deploy SIGKILLs the process after its default grace period:
 // BullMQ jobs mid-processing (an agent tick, a workspace provisioning step) are abandoned without
@@ -190,6 +228,7 @@ let shuttingDown = false;
 async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
+  clearInterval(heartbeatTimer);
   console.log(`${signal} received, shutting down gracefully`);
   const forceExit = setTimeout(() => {
     console.warn('Graceful shutdown timed out after 15s, forcing exit');

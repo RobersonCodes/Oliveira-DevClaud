@@ -189,6 +189,7 @@ model Workspace {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lastActiveAt DateTime @default(now())
+  heartbeatAt  DateTime?
   project      Project @relation(fields:[projectId], references:[id], onDelete:Cascade)
   terminals    TerminalSession[]
   ports        WorkspacePort[]
@@ -204,6 +205,7 @@ model Workspace {
   contractIntelligenceSnapshots ContractIntelligenceSnapshot[]
   activityLogs ActivityLog[]
   @@index([projectId])
+  @@index([status, heartbeatAt])
 }
 
 model TerminalSession {
@@ -252,6 +254,7 @@ model AgentTask {
   status      AgentTaskStatus @default(QUEUED)
   startedAt   DateTime?
   finishedAt  DateTime?
+  heartbeatAt DateTime?
   exitCode    Int?
   metadata    Json?
   branchName  String?
@@ -265,6 +268,7 @@ model AgentTask {
   runs        AgentRun[]
   orchestrationStep OrchestrationStep?
   @@index([workspaceId, status])
+  @@index([status, heartbeatAt])
 }
 
 model AgentRun {
@@ -293,6 +297,7 @@ model Orchestration {
   createdAt   DateTime @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
+  heartbeatAt DateTime?
   reviewStatus OrchestrationReviewStatus @default(NOT_READY)
   reviewBranch String?
   reviewWorktreePath String?
@@ -307,6 +312,7 @@ model Orchestration {
   steps       OrchestrationStep[]
   commandRuns CommandRun[]
   @@index([workspaceId, status])
+  @@index([status, heartbeatAt])
 }
 
 model OrchestrationStep {

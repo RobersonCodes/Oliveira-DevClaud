@@ -60,7 +60,8 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!body.startNow) return reply.code(201).send(task);
 
     try {
-      const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.QUEUED }, data: { status: AgentTaskStatus.RUNNING, startedAt: new Date() } });
+      const now = new Date();
+      const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.QUEUED }, data: { status: AgentTaskStatus.RUNNING, startedAt: now, heartbeatAt: now } });
       if (claimed.count === 0) throw Object.assign(new Error('AGENT_TASK_NOT_STARTABLE'), { statusCode: 409 });
       const worktree = await git.createWorktree(workspace.containerId, task.id, task.agent);
       const runtime = await engine.start({
@@ -104,7 +105,8 @@ export async function agentRoutes(app: FastifyInstance) {
     if (task.status === AgentTaskStatus.RUNNING) throw Object.assign(new Error('AGENT_ALREADY_RUNNING'), { statusCode: 409 });
     if (task.reviewStatus === AgentReviewStatus.MERGED || task.reviewStatus === AgentReviewStatus.REJECTED) throw Object.assign(new Error('AGENT_TASK_ALREADY_REVIEWED'), { statusCode: 409 });
 
-    const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: task.status, reviewStatus: task.reviewStatus }, data: { status: AgentTaskStatus.RUNNING, startedAt: new Date(), finishedAt: null, exitCode: null, reviewStatus: AgentReviewStatus.PENDING } });
+    const now = new Date();
+    const claimed = await prisma.agentTask.updateMany({ where: { id: task.id, status: task.status, reviewStatus: task.reviewStatus }, data: { status: AgentTaskStatus.RUNNING, startedAt: now, heartbeatAt: now, finishedAt: null, exitCode: null, reviewStatus: AgentReviewStatus.PENDING } });
     if (claimed.count === 0) throw Object.assign(new Error('AGENT_TASK_NOT_STARTABLE'), { statusCode: 409 });
     let worktree: ReturnType<typeof requireWorktree>;
     try {

@@ -37,7 +37,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const workspace = await prisma.workspace.create({ data: { projectId: project.id, cpuLimit: body.cpuLimit, memoryMb: body.memoryMb, status: WorkspaceStatus.CREATING } });
     try {
       const runtime = await engine.create({ workspaceId: workspace.id, projectId: project.id, repositoryUrl: project.repositoryUrl, defaultBranch: project.defaultBranch, limits: body });
-      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { containerId: runtime.containerId, status: WorkspaceStatus.RUNNING, lastActiveAt: new Date() } });
+      const now = new Date();
+      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { containerId: runtime.containerId, status: WorkspaceStatus.RUNNING, lastActiveAt: now, heartbeatAt: now } });
       await audit({ userId: user.id, organizationId: project.organizationId, action: 'WORKSPACE_CREATED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip, metadata: { cpuLimit: body.cpuLimit, memoryMb: body.memoryMb } });
       await recordActivity({ organizationId: project.organizationId, workspaceId: workspace.id, userId: user.id, type: 'workspace.created', message: `Workspace criado para o projeto ${project.name}` });
       return reply.code(201).send(updated);
@@ -62,7 +63,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
       if (!workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
       await engine[action](workspace.containerId);
       const status = action === 'stop' ? WorkspaceStatus.STOPPED : WorkspaceStatus.RUNNING;
-      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { status, lastActiveAt: new Date() } });
+      const now = new Date();
+      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { status, lastActiveAt: now, heartbeatAt: status === WorkspaceStatus.RUNNING ? now : workspace.heartbeatAt } });
       await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: `WORKSPACE_${action.toUpperCase()}`, resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
       const activityByAction = { start: { type: 'workspace.started', message: 'Workspace iniciado' }, stop: { type: 'workspace.stopped', message: 'Workspace parado' }, restart: { type: 'workspace.restarted', message: 'Workspace reiniciado' } } as const;
       await recordActivity({ organizationId: workspace.project.organizationId, workspaceId: workspace.id, userId: user.id, ...activityByAction[action] });

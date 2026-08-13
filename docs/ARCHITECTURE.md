@@ -67,6 +67,15 @@ histórico e retorna o commit existente. No banco, merge direto de agente passa 
 do efeito externo por vez. Transações que tocam várias entidades mantêm ordem de lock fixa:
 `AgentTask → OrchestrationStep → Orchestration`.
 
+### Heartbeats de runtime
+
+`Workspace`, `AgentTask` e `Orchestration` possuem `heartbeatAt` persistente e indexado. O worker
+renova a lease de jobs que está executando; para runtime externo, o timestamp só avança depois de o
+Runtime Broker confirmar container `running` ou o Agent Engine confirmar processo `RUNNING`.
+Indisponibilidade do probe mantém o heartbeat anterior deliberadamente stale, permitindo que a
+recuperação diferencie “vivo confirmado” de “não foi possível verificar”. O sweep roda a cada 15s,
+sem sobreposição, e é desligado antes do graceful shutdown.
+
 
 ## Terminal Plane (v0.4)
 
