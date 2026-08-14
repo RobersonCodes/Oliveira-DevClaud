@@ -12,6 +12,8 @@ import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
 import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine';
 import { asBullMqJobError } from './lib/jobErrors.js';
 import { refreshRuntimeHeartbeats } from './lib/heartbeats.js';
+import { recoverInterruptedRuntimeJobs } from './lib/recovery.js';
+import { createPrismaRuntimeRecoveryDependencies } from './lib/recoveryStore.js';
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
 const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine(); const heartbeatWorkspaces = new DockerWorkspaceEngine();
@@ -190,6 +192,27 @@ console.log('Oliveira DevCloud setup worker v1.4 online');
 async function recoverInterruptedSetupJobs(){const cutoff=new Date(Date.now()-60_000);const stale=await prisma.setupJob.findMany({where:{status:SetupJobStatus.RUNNING,OR:[{heartbeatAt:null},{heartbeatAt:{lt:cutoff}}]}});let recovered=0;for(const job of stale){const claimed=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING,OR:[{heartbeatAt:null},{heartbeatAt:{lt:cutoff}}]},data:{status:SetupJobStatus.QUEUED,message:'Recuperando job interrompido'}});if(claimed.count===0)continue;recovered+=1;await setupLog(job.id,'Worker detectou execução interrompida; job reenfileirado',job.stage,'WARN');await setupQueue.requeue(job.id)}if(recovered)console.log(`Recovered ${recovered} interrupted setup job(s)`)}
 recoverInterruptedSetupJobs().catch(error=>console.error('Setup recovery failed',error));
 
+const RUNTIME_RECOVERY_STALE_MS=60_000;
+const RUNTIME_RECOVERY_INTERVAL_MS=30_000;
+let runtimeRecoveryRunning=false;
+async function runtimeRecoverySweep(){
+  if(runtimeRecoveryRunning)return;
+  runtimeRecoveryRunning=true;
+  try{
+    const result=await recoverInterruptedRuntimeJobs(createPrismaRuntimeRecoveryDependencies({
+      database:prisma,
+      inspectAgent:async(containerId,taskId)=>agents.status(containerId,taskId),
+      enqueueOrchestration:async orchestrationId=>{await queue.tick(orchestrationId)}
+    }),{staleAfterMs:RUNTIME_RECOVERY_STALE_MS});
+    if(result.liveAgents||result.completedAgents||result.failedAgents||result.orchestrations||result.errors){
+      console.log('Runtime recovery sweep',result);
+    }
+  }finally{runtimeRecoveryRunning=false;}
+}
+const runtimeRecoveryTimer=setInterval(()=>void runtimeRecoverySweep().catch(error=>console.error('Runtime recovery failed',error)),RUNTIME_RECOVERY_INTERVAL_MS);
+runtimeRecoveryTimer.unref();
+void runtimeRecoverySweep().catch(error=>console.error('Initial runtime recovery failed',error));
+
 const HEARTBEAT_INTERVAL_MS=15_000;
 let heartbeatSweepRunning=false;
 async function heartbeatSweep(){
@@ -228,6 +251,7 @@ async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(heartbeatTimer);
+  clearInterval(runtimeRecoveryTimer);
   console.log(`${signal} received, shutting down gracefully`);
   const forceExit = setTimeout(() => {
     console.warn('Graceful shutdown timed out after 15s, forcing exit');

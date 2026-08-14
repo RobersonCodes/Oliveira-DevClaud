@@ -43,14 +43,14 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 
 | Campo | Valor |
 |---|---|
-| Atualizado em | 2026-08-13 |
+| Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `3e6a856` (`docs(readme): document hardening validation gates`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. A rodada extraordinária da auditoria `main…HEAD` e sua atualização no README foram concluídas com evidência verificável: login sem oráculo de lockout, CI com permissões mínimas, ESLint efetivo e prova negativa do gate documentados |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. Recovery periódico de AgentTask/Orchestration foi implementado localmente com lease/CAS e regressões puras; as provas PostgreSQL de posse, corrida e terminal aguardam CI |
 | Etapa ativa | Etapa 7 — recuperação de jobs abandonados após crash/redeploy |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Usar os timestamps de heartbeat para recuperar jobs abandonados após crash/redeploy, com testes de posse, corrida e estado terminal |
+| Próxima ação única | Publicar o recovery e exigir CI Linux/PostgreSQL verde para posse única, runtime perdido, retomada e cancelamento concorrente |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -858,6 +858,17 @@ morto, probe com falha e dedupe de orquestração. No commit `6bb9022`, os CIs
 `31660067591`/`31660064853` aprovaram migration, PostgreSQL/Redis/Docker, lint, typecheck, suíte
 completa, build e audit; o smoke de host limpo `31660067592` também passou. Terceiro item concluído.
 
+Recovery de runtime foi extraído para uma rotina testável e integrado ao worker no startup e a cada
+30s, com cutoff de 60s. AgentTask stale é inspecionada no Agent Engine: runtime vivo renova a lease e
+retoma o tick; resultado concluído/falho é reconciliado atomicamente com AgentRun e
+OrchestrationStep; runtime ausente falha a cadeia. Orchestration stale em `RUNNING/NOT_READY` recebe
+uma lease por CAS antes de ser reenfileirada. Todas as gravações preservam a ordem task → step →
+orchestration e perdem silenciosamente a corrida para cancelamento/conclusão terminal. Localmente,
+testes puros de recovery + heartbeat passaram **6/6**; lint terminou com 0 erros/19 avisos legados,
+typecheck dos 26 workspaces e `git diff --check` passaram. Quatro regressões com o adaptador Prisma
+real cobrem conclusão retomada, runtime perdido, dois workers disputando a mesma posse e cancelamento
+concorrente; a evidência PostgreSQL aguarda CI porque este host não possui banco de teste configurado.
+
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
 **Status:** `CONCLUÍDA`. Esta rodada interrompeu temporariamente a próxima ação ordinária da Fase 7
@@ -1065,6 +1076,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-13 | Codex | Fase 7 — encerramento da remediação extraordinária | `CONCLUÍDA` | Commits `6bfcdf7`/`358818b`; CIs Linux/PostgreSQL `31763253499`/`31763255649` aprovaram migrations, imagem, lint real, prova negativa `no-debugger`, typecheck, 33 arquivos/289 testes aprovados + 2 ignorados, build e audit sem vulnerabilidades; smoke limpo `31763255656` aprovado. P1-14 corrigido, P1-15 residual inventariado e P1-19 corrigido. P1-18, P1-11, P1-12, P2-2/P2-6/P2-7/P2-8 permaneceram intocados | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
 | 2026-08-13 | Codex | Fase 7 — documentação pós-remediação no README | `EM ANDAMENTO` | Usuário solicitou explicitar no README as garantias já implementadas e validadas; escopo limitado a lint ESLint TS/React, prova negativa do gate CI e login sem distinção observável de lockout | Atualizar README e validar conteúdo/links antes de publicar |
 | 2026-08-13 | Codex | Fase 7 — encerramento da documentação pós-remediação | `CONCLUÍDA` | Commit `3e6a856`; README explicita ESLint TS/React, `permissions: contents: read`, prova negativa `no-debugger` e resposta anti-enumeração do login. Local: 25 links relativos sem ausências, `git diff --check` verde e lint com 0 erros/19 avisos legados. CIs `31764930855`/`31764934304` aprovaram migrations, imagem, lint/prova negativa, typecheck, testes, build e audit; smoke limpo `31764934319` aprovado | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
+| 2026-08-14 | Codex | Fase 7 — recovery de jobs, início | `EM ANDAMENTO` | Retomada da próxima ação única em árvore limpa no commit `d056677`; escopo e aceite confirmados: heartbeat + recovery para AgentTask/Orchestration, com CAS de posse, corrida e preservação de estados terminais. Recovery já existente de SetupJob será preservado e usado como referência, não como substituto do aceite | Inventariar estados/transições e extrair recovery testável antes de integrar ao startup do worker |
+| 2026-08-14 | Codex | Fase 7 — recovery de jobs, validação local | `EM ANDAMENTO` | Sweep periódico 30s/cutoff 60s integrado; AgentTask viva/terminal/perdida e Orchestration stale usam lease/CAS, dedupe e ordem task → step → orchestration. Testes puros recovery+heartbeat 6/6; typecheck dos 26 workspaces, lint 0 erros/19 avisos e diff-check verdes. Quatro regressões Prisma reais adicionadas; PostgreSQL local indisponível | Commitar/push e validar posse, corrida e estados terminais no CI Linux/PostgreSQL |
 
 ### Modelo para futuras entradas
 
