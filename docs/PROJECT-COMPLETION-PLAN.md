@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `d8354f4` (`feat(fase7): enforce resource and duration quotas`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento: quotas foram publicadas em `d8354f4`; smoke `31771915719`, migrations, lint/prova negativa e typecheck passaram. A incompatibilidade `143` do BusyBox encontrada pelos CIs `31771912825`/`31771915723` foi corrigida localmente com distinção temporal no broker e normalização no Agent Engine; falta revalidar no CI |
+| Commit de referência | `fd955a8` (`fix(fase7): normalize busybox timeout exits`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com seis itens concluídos: quotas de CPU, memória, PIDs, disco e duração foram validadas nos CIs Linux/PostgreSQL/Docker `31773353483`/`31773355663`, inclusive timeout real portátil `504`/`124`, e no smoke limpo `31773355668` |
 | Etapa ativa | Etapa 7 — quotas de recursos e duração |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Publicar a normalização portátil de timeout e exigir os novos CIs Linux/PostgreSQL/Docker verdes |
+| Próxima ação única | Remover storage, containers e redes órfãos com segurança |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -804,7 +804,7 @@ da Fase 6 estão atendidos.
 - [x] Implementar heartbeat de agent tasks, orquestrações e workspaces.
 - [x] Recuperar jobs abandonados após crash/redeploy.
 - [x] Criar dead-letter/revisão manual para falhas permanentes.
-- [ ] Implementar quotas de CPU, memória, processos, disco e duração.
+- [x] Implementar quotas de CPU, memória, processos, disco e duração.
 - [ ] Remover storage, containers e redes órfãos com segurança.
 - [ ] Coletar métricas de profundidade, latência, retry e falha das filas.
 - [ ] Testar restart de API, worker, Redis e broker durante operações.
@@ -893,10 +893,13 @@ persistentes; o reconciliador de 15s interrompe runtimes antes de fechar estados
 tenants não afetados e propaga falhas para a cadeia relacionada. O Runtime Broker passou a encerrar
 o comando real dentro do container quando um exec expira. Localmente, schema Prisma, typecheck dos
 26 workspaces, lint com 0 erros/19 avisos legados, build completo, testes puros direcionados
-**11/11**, renderização do Compose e diff-check passaram. As três suítes Docker não inicializaram
-porque o daemon local está indisponível; o audit local também não alcançou o endpoint do npm. As
-regressões reais PostgreSQL/Docker foram adicionadas e ainda precisam do CI para que o sexto item
-possa ser marcado como concluído.
+**11/11**, renderização do Compose e diff-check passaram; Docker local e audit de rede ficaram
+indisponíveis. O primeiro CI expôs a diferença do BusyBox, que retorna `143` após o `SIGTERM`; o
+commit `fd955a8` passou a distinguir esse caso de um exit `143` imediato e normalizou o Agent Engine
+para `124`. Os CIs Linux/PostgreSQL/Docker `31773353483`/`31773355663` aprovaram migration, imagem,
+lint e prova negativa, typecheck, as regressões reais de encerramento e a suíte completa (**39
+arquivos, 317 aprovados e 2 ignorados**), build e audit sem vulnerabilidades. O smoke limpo
+`31773355668` também passou. Sexto item da Fase 7 concluído.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1115,6 +1118,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, validação local | `EM ANDAMENTO` | Contrato e migration persistem CPU/memória/PIDs/disco/duração; cgroups recebem PIDs configurável; reconciliador mede o bind mount sem seguir symlinks, falha fechado e fecha cadeias por CAS; deadlines cobrem workspace, AgentTask, Orchestration e SetupJob; timeout do broker encerra o processo real. Schema válido, typecheck dos 26 workspaces, lint 0 erros/19 avisos, build completo, testes puros 11/11, Compose e diff-check verdes. Três suítes Docker não inicializaram sem daemon local e o audit não alcançou o endpoint npm; regressões reais PostgreSQL/Docker aguardam CI | Commitar/push e exigir CI Linux/PostgreSQL/Docker verde antes de concluir o item |
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, primeira validação CI | `EM ANDAMENTO` | Commit `d8354f4`; smoke limpo `31771915719` verde. CIs `31771912825`/`31771915723`: migrations, imagem, lint/prova negativa e typecheck verdes; testes 314 aprovados, 2 ignorados e 2 falhos. Logs provam que Alpine/BusyBox encerra os processos no prazo com exit `143`, mas broker e Agent Engine ainda não o normalizam para `EXEC_TIMEOUT`/`124` | Obter aprovação explícita para a correção focada exigida pelo fluxo `gh-fix-ci` e revalidar no CI |
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, correção BusyBox | `EM ANDAMENTO` | Correção aprovada pelo usuário: broker classifica `143` como timeout somente após consumir o watchdog e preserva `143` imediato; Agent Engine normaliza os sinais do timeout para `124`. Nova regressão Docker cobre o exit imediato. Typecheck de broker/agente, testes puros 11/11, lint 0 erros/19 avisos e diff-check verdes; Docker local segue indisponível | Commitar/push e revalidar encerramento real e semântica `504`/`124` no CI Linux |
+| 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, CI e encerramento | `CONCLUÍDA` | Commits `d8354f4`/`fd955a8`; CIs `31773353483`/`31773355663` aplicaram migration e aprovaram cgroups, persistência PostgreSQL, quota de disco no filesystem real, deadlines e timeout portátil com processo encerrado, além da suíte total 317 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31773355668` verde. Sexto item concluído | Remover storage, containers e redes órfãos com segurança |
 
 ### Modelo para futuras entradas
 
