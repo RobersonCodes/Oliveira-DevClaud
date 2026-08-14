@@ -15,6 +15,9 @@ const registerSchema = credentials.extend({ name: z.string().min(2).max(100), or
 const LOCKOUT_THRESHOLD = 5;
 const BASE_LOCKOUT_MINUTES = 15;
 const MAX_LOCKOUT_MINUTES = 24 * 60;
+// Unknown accounts still pay the same bcrypt cost as known accounts. This hash belongs to a fixed,
+// unusable sentinel password and is intentionally not a secret.
+const UNKNOWN_ACCOUNT_PASSWORD_HASH = '$2b$12$Y9Qpf7CDcpmE9Hwt9avzdOof9oRMKQd4SpjIgw.SkcI9Refb.pVHC';
 function nextLockout(attempts: number): Date {
   const tier = attempts - LOCKOUT_THRESHOLD;
   const minutes = Math.min(BASE_LOCKOUT_MINUTES * 2 ** tier, MAX_LOCKOUT_MINUTES);
@@ -26,7 +29,7 @@ export async function authRoutes(app: FastifyInstance) {
     const body = registerSchema.parse(request.body);
     const email = body.email.toLowerCase();
     if (await prisma.user.findUnique({ where: { email } })) return reply.code(409).send({ error: 'EMAIL_ALREADY_EXISTS' });
-    let baseSlug = slugify(body.organizationName) || 'organization';
+    const baseSlug = slugify(body.organizationName) || 'organization';
     let slug = baseSlug;
     for (let i = 1; await prisma.organization.findUnique({ where: { slug } }); i++) slug = `${baseSlug}-${i}`;
     const passwordHash = await hashPassword(body.password);
@@ -45,17 +48,18 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/login', { config: { rateLimit: { max: 8, timeWindow: '1 minute' } } }, async (request, reply) => {
     const body = credentials.parse(request.body);
     const user = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
-    if (user?.lockedUntil && user.lockedUntil > new Date()) {
-      return reply.code(423).send({ error: 'ACCOUNT_LOCKED', lockedUntil: user.lockedUntil });
-    }
-    if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
-      if (user) {
+    const locked = Boolean(user?.lockedUntil && user.lockedUntil > new Date());
+    const passwordMatches = await verifyPassword(body.password, user?.passwordHash ?? UNKNOWN_ACCOUNT_PASSWORD_HASH);
+    if (!user || locked || !passwordMatches) {
+      if (user && !locked) {
         const attempts = user.failedLoginAttempts + 1;
         await prisma.user.update({
           where: { id: user.id },
           data: { failedLoginAttempts: attempts, lockedUntil: attempts >= LOCKOUT_THRESHOLD ? nextLockout(attempts) : null }
         });
       }
+      // Lockout state is deliberately not exposed on this public channel. Existing, unknown and
+      // locked accounts must have the same observable status and payload for failed authentication.
       return reply.code(401).send({ error: 'INVALID_CREDENTIALS' });
     }
     if (user.failedLoginAttempts > 0 || user.lockedUntil) {

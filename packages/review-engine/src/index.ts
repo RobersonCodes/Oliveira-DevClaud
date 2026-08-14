@@ -17,7 +17,7 @@ const safeId = (value: string) => {
   return value;
 };
 const safeBranch = (value: string) => {
-  if (!/^[a-zA-Z0-9._\/-]{1,220}$/.test(value) || value.includes('..') || value.startsWith('-')) throw new Error('INVALID_BRANCH_NAME');
+  if (!/^[a-zA-Z0-9._/-]{1,220}$/.test(value) || value.includes('..') || value.startsWith('-')) throw new Error('INVALID_BRANCH_NAME');
   return value;
 };
 

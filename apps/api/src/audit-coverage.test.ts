@@ -17,7 +17,7 @@ describe('security audit coverage', () => {
     ['./routes/agents.ts', 'AGENT_CHANGES_REJECTED'],
     ['./lib/runtimeGateway.ts', 'RUNTIME_TICKET_ISSUED']
   ])('keeps %s covered by %s', async (file, action) => {
-    expect(await source(file)).toMatch(new RegExp(`action:\\s*['\"]${action}['\"]`));
+    expect(await source(file)).toMatch(new RegExp(`action:\\s*['"]${action}['"]`));
   });
 
   it('never places credential material in runtime ticket audit metadata', async () => {

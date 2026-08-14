@@ -1,7 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma, Role, WorkspaceStatus } from '@oliveira/database';
-import type { Prisma } from '@oliveira/database';
+import { prisma, Role, WorkspaceStatus, type Prisma } from '@oliveira/database';
 import { DockerTmuxTerminalEngine } from '@oliveira/terminal-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';

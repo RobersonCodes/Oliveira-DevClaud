@@ -5,7 +5,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: fileURLToPath(new URL('../../../.env', import.meta.url)) });
 import { Worker } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
-import { prisma } from '@oliveira/database';
+import { prisma, SetupStage, SetupJobStatus, SecretKind } from '@oliveira/database';
 import { DockerAgentEngine } from '@oliveira/agent-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
 import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
@@ -144,7 +144,6 @@ const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{
 console.log('Oliveira DevCloud orchestration worker online');
 
 // v1.4 resilient asynchronous workspace provisioning
-import { SetupStage, SetupJobStatus, SecretKind } from '@oliveira/database';
 import { detectProject, installDependencies } from '@oliveira/setup-engine';
 import { DockerIdeEngine } from '@oliveira/ide-engine';
 import { SetupQueue } from '@oliveira/setup-queue';

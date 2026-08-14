@@ -10,7 +10,7 @@ const createSchema = z.object({
   organizationId: z.string().cuid(),
   name: z.string().min(2).max(100),
   repositoryUrl: z.string().url().max(2048).optional(),
-  defaultBranch: z.string().regex(/^[A-Za-z0-9._\/-]+$/).max(200).default('main')
+  defaultBranch: z.string().regex(/^[A-Za-z0-9._/-]+$/).max(200).default('main')
 });
 
 export async function projectRoutes(app: FastifyInstance) {

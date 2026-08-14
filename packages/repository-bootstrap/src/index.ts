@@ -1,7 +1,7 @@
 import { RuntimeBrokerClient } from '@oliveira/runtime-broker-client';
 
 const broker = new RuntimeBrokerClient();
-const safeBranch = (v: string) => { if (!/^[A-Za-z0-9._\/-]+$/.test(v)) throw new Error('INVALID_BRANCH'); return v; };
+const safeBranch = (v: string) => { if (!/^[A-Za-z0-9._/-]+$/.test(v)) throw new Error('INVALID_BRANCH'); return v; };
 
 /**
  * Shared by apps/api (repositories.ts) and apps/worker (index.ts) — previously two byte-for-byte

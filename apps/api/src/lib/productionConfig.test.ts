@@ -83,11 +83,12 @@ describe('production configuration boundary', () => {
       .toThrow('DEV_CLOUD_HOST_MUST_MATCH_WEB_ORIGIN');
   });
 
-  it.each(['localhost', 'runtime.localhost', '127.0.0.1', '*.runtime.tiremax.shop', 'single-label'])
-    ('rejects a development or malformed runtime domain: %s', domain => {
+  it.each(['localhost', 'runtime.localhost', '127.0.0.1', '*.runtime.tiremax.shop', 'single-label'])(
+    'rejects a development or malformed runtime domain: %s', domain => {
       expect(() => validateProductionConfig(validProductionEnv({ RUNTIME_BASE_DOMAIN: domain })))
         .toThrow('RUNTIME_BASE_DOMAIN_INVALID');
-    });
+    }
+  );
 
   it('rejects weak or placeholder service secrets and a malformed master key', () => {
     expect(() => validateProductionConfig(validProductionEnv({ RUNTIME_TICKET_SECRET: 'short' })))

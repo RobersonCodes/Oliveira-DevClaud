@@ -67,16 +67,22 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     expect(right.cookies.some(c => c.name === 'odc_session')).toBe(true);
   });
 
-  it('locks the account after 5 failed logins and rejects even the correct password while locked (423)', async () => {
+  it('makes invalid login responses identical for existing, unknown and locked accounts', async () => {
     const { body } = await registerUser();
-    for (let i = 0; i < 5; i++) {
-      const attempt = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: 'totally-wrong-password' } });
-      expect(attempt.statusCode).toBe(401);
-    }
+    const existing = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: 'totally-wrong-password' } });
+    const unknown = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: `${crypto.randomUUID()}@example.test`, password: 'totally-wrong-password' } });
+    await prisma.user.update({ where: { id: (await prisma.user.findUniqueOrThrow({ where: { email: body.email } })).id }, data: { failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 15 * 60_000) } });
     const lockedOut = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: body.password } });
-    expect(lockedOut.statusCode).toBe(423);
-    expect(lockedOut.json().error).toBe('ACCOUNT_LOCKED');
-    expect(new Date(lockedOut.json().lockedUntil).getTime()).toBeGreaterThan(Date.now());
+
+    const fingerprint = (response: typeof existing) => ({
+      statusCode: response.statusCode,
+      headers: response.headers,
+      body: response.body
+    });
+    expect(fingerprint(existing)).toEqual(fingerprint(unknown));
+    expect(fingerprint(lockedOut)).toEqual(fingerprint(existing));
+    expect(fingerprint(existing)).toMatchObject({ statusCode: 401, body: JSON.stringify({ error: 'INVALID_CREDENTIALS' }) });
+    expect(lockedOut.json()).not.toHaveProperty('lockedUntil');
   });
 
   it('logout clears the session so /me stops working with the old cookie', async () => {

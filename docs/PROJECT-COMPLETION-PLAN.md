@@ -43,14 +43,14 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 
 | Campo | Valor |
 |---|---|
-| Atualizado em | 2026-08-12 |
+| Atualizado em | 2026-08-13 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `6bb9022` (`feat(fase7): persist runtime heartbeats`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 está em andamento: retry/backoff, CAS/idempotência e heartbeat persistente de agentes/orquestrações/workspaces foram validados em CI com PostgreSQL/Redis/Docker e smoke limpo |
-| Etapa ativa | Etapa 7 — resiliência, concorrência e ciclo de vida; pendências externas das Etapas 2 e 5 preservadas |
+| Commit de referência | `4fb9c1a` (`docs(fase7): checkpoint heartbeat validation`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. Uma auditoria `main…HEAD` abriu uma rodada extraordinária de quatro correções: oráculo de enumeração no login, permissões explícitas do CI, lint real e atualização das evidências P1-14/P1-15 |
+| Etapa ativa | Etapa 7 — rodada extraordinária de remediação da auditoria `main…HEAD`; recovery de jobs fica preservado como retomada |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Usar os timestamps de heartbeat para recuperar jobs abandonados após crash/redeploy, com testes de posse, corrida e estado terminal |
+| Próxima ação única | Commitar e enviar a remediação para validar no CI Linux/PostgreSQL a regressão de login, o lint real e sua prova negativa |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -858,6 +858,36 @@ morto, probe com falha e dedupe de orquestração. No commit `6bb9022`, os CIs
 `31660067591`/`31660064853` aprovaram migration, PostgreSQL/Redis/Docker, lint, typecheck, suíte
 completa, build e audit; o smoke de host limpo `31660067592` também passou. Terceiro item concluído.
 
+#### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
+
+**Status:** `EM ANDAMENTO`. Esta rodada interrompe temporariamente a próxima ação ordinária da Fase 7
+para corrigir defeitos verificáveis encontrados pela auditoria. Não altera o escopo dos riscos
+P1-18, P1-11, P1-12, P2-2, P2-6, P2-7 ou P2-8, que permanecem fora desta rodada.
+
+- [ ] Remover o oráculo de enumeração no lockout do login e provar respostas indistinguíveis em
+      PostgreSQL real para conta existente não bloqueada, inexistente e bloqueada.
+- [ ] Fixar `permissions: contents: read` no workflow de CI, sem elevação desnecessária por job.
+- [ ] Substituir o `npm run lint` no-op por ESLint real para TypeScript/React e provar o gate positivo
+      e a falha com erro proposital posteriormente revertido.
+- [ ] Atualizar P1-14 e P1-15 no roadmap conforme a cobertura já existente.
+- [ ] Executar typecheck, testes relevantes, lint e CI Linux; registrar comandos, resultados, commit
+      e runs antes de concluir a rodada.
+
+**Decisão:** o estado de lockout continuará sendo persistido para defesa contra brute force, mas
+nenhuma resposta do endpoint de login distinguirá conta bloqueada de qualquer outra credencial
+inválida. O registro já expõe existência por `409` e permanece explicitamente fora de escopo.
+
+**Validação local (antes do CI):** `npm.cmd run lint` terminou com exit 0 e 0 erros (19 avisos
+legados, mantidos visíveis); a prova negativa `npm.cmd exec -- eslint
+apps/api/src/lint-gate-probe.ts` terminou com exit 1 e `no-debugger`, seguida da remoção do arquivo
+temporário; `npm.cmd run typecheck` passou nos 26 workspaces; 48/48 testes sem infraestrutura
+passaram (`auth.test.ts`, `audit-coverage.test.ts`, `productionConfig.test.ts`); `git diff --check`
+passou. A regressão nova de login depende de PostgreSQL real; `DATABASE_URL` está ausente e o Docker
+Desktop local está parado, portanto sua evidência conclusiva será obrigatoriamente o CI Linux.
+
+**Próxima retomada após a rodada:** usar os timestamps de heartbeat para recuperar jobs abandonados
+após crash/redeploy, com testes de posse, corrida e estado terminal.
+
 ---
 
 ### Fase 8 — produto mobile-first e PWA
@@ -1006,6 +1036,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — CAS/idempotência CI | `EM ANDAMENTO` | Commit `5ca7566`; CIs `31659328635`/`31659325929` aprovaram migration, corridas PostgreSQL/Redis, merges Docker idempotentes, lint, typecheck, suíte completa, build e audit; smoke `31659328804` verde. Segundo item concluído | Implementar heartbeat persistente de agentes, orquestrações e workspaces |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — heartbeat local | `EM ANDAMENTO` | Campos/indexes/migration para Workspace, AgentTask e Orchestration; leases de jobs ativos e probes reais de Runtime Broker/Agent Engine a cada 15s, sem heartbeat em falha. Regressão pura adicionada | Validar heartbeat no CI/PostgreSQL/Docker |
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — heartbeat CI e checkpoint | `EM ANDAMENTO` | Commit `6bb9022`; CIs `31660067591`/`31660064853` e smoke limpo `31660067592` verdes. Migration, PostgreSQL/Redis/Docker, monitor de liveness, lint, typecheck, suíte completa, build e audit aprovados. Terceiro item concluído; árvore limpa antes do checkpoint | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
+| 2026-08-13 | Codex | Fase 7 — remediação extraordinária da auditoria `main…HEAD` | `EM ANDAMENTO` | Árvore limpa em `4fb9c1a`; quatro itens aceitos no escopo: login sem enumeração, `permissions` mínimo no CI, ESLint real e atualização P1-14/P1-15. Riscos explicitamente fora de escopo preservados | Corrigir primeiro o oráculo de enumeração do login e adicionar regressão PostgreSQL real |
+| 2026-08-13 | Codex | Fase 7 — remediação da auditoria, validação local | `EM ANDAMENTO` | Login uniformizado em `401 INVALID_CREDENTIALS` com bcrypt sentinela; regressão compara status/headers/corpo; CI limitado a `contents: read`; ESLint flat cobre TS/React. Local: lint 0 erros/19 avisos; prova negativa `no-debugger` exit 1 e arquivo revertido; typecheck de 26 workspaces; 48/48 testes sem infraestrutura; diff-check limpo. PostgreSQL/Docker locais indisponíveis | Commitar/push e exigir CI Linux/PostgreSQL verde, inclusive a prova negativa do lint |
 
 ### Modelo para futuras entradas
 
