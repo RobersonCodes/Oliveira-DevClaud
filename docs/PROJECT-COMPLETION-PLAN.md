@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-13 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `4fb9c1a` (`docs(fase7): checkpoint heartbeat validation`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. Uma auditoria `main…HEAD` abriu uma rodada extraordinária de quatro correções: oráculo de enumeração no login, permissões explícitas do CI, lint real e atualização das evidências P1-14/P1-15 |
-| Etapa ativa | Etapa 7 — rodada extraordinária de remediação da auditoria `main…HEAD`; recovery de jobs fica preservado como retomada |
+| Commit de referência | `358818b` (`test(fase7): ignore volatile login response date`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. A rodada extraordinária da auditoria `main…HEAD` foi concluída: login sem oráculo de lockout, CI com permissões mínimas, ESLint efetivo e roadmap P1-14/P1-15 atualizado, todos com evidência verificável |
+| Etapa ativa | Etapa 7 — recuperação de jobs abandonados após crash/redeploy |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Revalidar localmente a fingerprint sem `Date`, commitar o ajuste aprovado e exigir CI Linux integral verde |
+| Próxima ação única | Usar os timestamps de heartbeat para recuperar jobs abandonados após crash/redeploy, com testes de posse, corrida e estado terminal |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -860,17 +860,17 @@ completa, build e audit; o smoke de host limpo `31660067592` também passou. Ter
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
-**Status:** `EM ANDAMENTO`. Esta rodada interrompe temporariamente a próxima ação ordinária da Fase 7
-para corrigir defeitos verificáveis encontrados pela auditoria. Não altera o escopo dos riscos
+**Status:** `CONCLUÍDA`. Esta rodada interrompeu temporariamente a próxima ação ordinária da Fase 7
+para corrigir defeitos verificáveis encontrados pela auditoria. Não alterou o escopo dos riscos
 P1-18, P1-11, P1-12, P2-2, P2-6, P2-7 ou P2-8, que permanecem fora desta rodada.
 
-- [ ] Remover o oráculo de enumeração no lockout do login e provar respostas indistinguíveis em
+- [x] Remover o oráculo de enumeração no lockout do login e provar respostas indistinguíveis em
       PostgreSQL real para conta existente não bloqueada, inexistente e bloqueada.
-- [ ] Fixar `permissions: contents: read` no workflow de CI, sem elevação desnecessária por job.
-- [ ] Substituir o `npm run lint` no-op por ESLint real para TypeScript/React e provar o gate positivo
+- [x] Fixar `permissions: contents: read` no workflow de CI, sem elevação desnecessária por job.
+- [x] Substituir o `npm run lint` no-op por ESLint real para TypeScript/React e provar o gate positivo
       e a falha com erro proposital posteriormente revertido.
-- [ ] Atualizar P1-14 e P1-15 no roadmap conforme a cobertura já existente.
-- [ ] Executar typecheck, testes relevantes, lint e CI Linux; registrar comandos, resultados, commit
+- [x] Atualizar P1-14 e P1-15 no roadmap conforme a cobertura já existente.
+- [x] Executar typecheck, testes relevantes, lint e CI Linux; registrar comandos, resultados, commit
       e runs antes de concluir a rodada.
 
 **Decisão:** o estado de lockout continuará sendo persistido para defesa contra brute force, mas
@@ -896,6 +896,16 @@ aprovação explícita conforme o fluxo `gh-fix-ci`.
 **Aprovação do ajuste CI:** o usuário aprovou explicitamente remover somente `Date` da fingerprint.
 Status, corpo e todos os demais headers permanecem comparados; nenhuma mudança adicional no login ou
 no escopo da rodada foi autorizada ou necessária.
+
+**Validação conclusiva:** no commit `358818b`, os CIs Linux/PostgreSQL
+[31763253499](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31763253499) (push) e
+[31763255649](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31763255649) (PR)
+aprovaram migrations, imagem e usuário non-root, lint real, prova negativa com `no-debugger`,
+typecheck, **33 arquivos/289 testes aprovados e 2 ignorados (291 no total)**, build e audit com zero
+vulnerabilidades. A regressão PostgreSQL confirmou a mesma fingerprint observável (`401`, corpo e
+headers estáveis) para conta existente com senha errada, inexistente e bloqueada. O smoke em host
+Linux limpo [31763255656](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31763255656)
+também passou, inclusive upload da evidência sanitizada e remoção da stack descartável.
 
 **Próxima retomada após a rodada:** usar os timestamps de heartbeat para recuperar jobs abandonados
 após crash/redeploy, com testes de posse, corrida e estado terminal.
@@ -1052,6 +1062,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-13 | Codex | Fase 7 — remediação da auditoria, validação local | `EM ANDAMENTO` | Login uniformizado em `401 INVALID_CREDENTIALS` com bcrypt sentinela; regressão compara status/headers/corpo; CI limitado a `contents: read`; ESLint flat cobre TS/React. Local: lint 0 erros/19 avisos; prova negativa `no-debugger` exit 1 e arquivo revertido; typecheck de 26 workspaces; 48/48 testes sem infraestrutura; diff-check limpo. PostgreSQL/Docker locais indisponíveis | Commitar/push e exigir CI Linux/PostgreSQL verde, inclusive a prova negativa do lint |
 | 2026-08-13 | Codex | Fase 7 — remediação da auditoria, primeira CI | `EM ANDAMENTO` | Commit `6bfcdf7`; CIs `31760123297`/`31760125893`: migrations, lint real, prova negativa e typecheck verdes; Test 288 aprovados/1 falha/2 ignorados. Única falha: fingerprint incluiu header volátil `Date` (`01:21:09` vs `01:21:10`); build/audit não rodaram. Smoke `31760125899` verde | Obter aprovação explícita e excluir apenas `Date` da fingerprint; revalidar CI integral |
 | 2026-08-13 | Codex | Fase 7 — ajuste aprovado da regressão CI | `EM ANDAMENTO` | Usuário aprovou explicitamente o plano focado; somente `Date` foi removido da fingerprint, preservando status/corpo/demais headers. `npm.cmd run lint`: 0 erros/19 avisos; `npm.cmd run typecheck`: 26 workspaces aprovados | Commitar/push e validar novamente PostgreSQL, suíte integral, build e audit no CI |
+| 2026-08-13 | Codex | Fase 7 — encerramento da remediação extraordinária | `CONCLUÍDA` | Commits `6bfcdf7`/`358818b`; CIs Linux/PostgreSQL `31763253499`/`31763255649` aprovaram migrations, imagem, lint real, prova negativa `no-debugger`, typecheck, 33 arquivos/289 testes aprovados + 2 ignorados, build e audit sem vulnerabilidades; smoke limpo `31763255656` aprovado. P1-14 corrigido, P1-15 residual inventariado e P1-19 corrigido. P1-18, P1-11, P1-12, P2-2/P2-6/P2-7/P2-8 permaneceram intocados | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
 
 ### Modelo para futuras entradas
 
