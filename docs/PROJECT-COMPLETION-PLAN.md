@@ -45,8 +45,8 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `2de7068` (`docs(fase7): record restart fault evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento com manifest/ícones/tema e shell PWA network-only implementados localmente; P1-16 permanece parcial até navegação mobile, 320px/safe areas, touch targets e testes físicos |
+| Commit de referência | `2637473` (`feat(fase8): add network-only PWA shell`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento com manifest/ícones/tema e shell PWA network-only aprovados nos CIs `31830093847`/`31830096715` e smoke `31830096679`; P1-16 permanece parcial até navegação mobile, 320px/safe areas, touch targets e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
@@ -1029,7 +1029,10 @@ direcionados **3/3**, typecheck web, lint (0 erros/19 avisos legados), build Nex
 --check` passaram. No `next start` real: home/manifest/worker `200`, `display=standalone`, metadados
 manifest/Apple/tema presentes, worker com `Cache-Control: no-cache, no-store, must-revalidate`,
 `Service-Worker-Allowed: /` e sem interceptação de fetch. Testes físicos e de navegação mobile
-permanecem pendentes conforme os itens ainda abertos.
+permanecem pendentes conforme os itens ainda abertos. No commit `2637473`, os CIs
+`31830093847`/`31830096715` aprovaram **43 arquivos, 327 testes e 2 ignorados**, lint/prova negativa,
+typecheck, build e audit sem vulnerabilidades; o smoke Ubuntu `31830096679` também passou, inclusive
+fault injection, restore isolado e cleanup.
 
 ---
 
@@ -1174,6 +1177,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart e encerramento | `CONCLUÍDA` | Commit `4474778`; smoke Ubuntu `31815417716` aprovou API sob leituras autenticadas, Redis com job BullMQ enfileirado, Runtime Broker durante instalação e worker sob `SIGKILL`/recovery stale; backup/restore e cleanup também verdes. CIs `31815401603`/`31815417747`: 42 arquivos, 324 testes aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Nono item e todos os critérios da Fase 7 concluídos | Iniciar Fase 8 pelo inventário P1-16 e pelo shell PWA instalável |
 | 2026-08-14 | Codex | Fase 8 — PWA/mobile-first, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `2de7068`; P1-16 confirmado como primeiro escopo. Decisões iniciais: manifest pela convenção App Router, viewport/theme separados e registro do service worker em componente Client; conteúdo autenticado não será prometido nem armazenado para execução offline | Inventariar layout/assets/config e implementar o shell PWA instalável com testes |
 | 2026-08-14 | Codex | Fase 8 — shell PWA, validação local | `EM ANDAMENTO` | Manifest/ícone PWA+Apple/tema, worker network-only e indicador de reconexão implementados; revisão React corrigiu corrida de timer após nova queda. Testes PWA 3/3, typecheck web, lint 0 erros/19 avisos legados, build Next 16 e diff-check verdes. `next start` real confirmou home/manifest/sw `200`, instalação `standalone`, metadata e headers anti-cache/scope; processo temporário removido. Testes físicos não executados nesta etapa | Commitar/push, validar CI e seguir para navegação mobile persistente + 320px/safe areas |
+| 2026-08-14 | Codex | Fase 8 — shell PWA, CI e encerramento do corte | `EM ANDAMENTO` | Commit `2637473`; CIs `31830093847`/`31830096715` aprovaram 43 arquivos, 327 testes + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31830096679` verde com fault injection, restore e cleanup. Primeiros dois itens da Fase 8 concluídos; P1-16 permanece parcial pelos itens mobile ainda abertos | Implementar navegação mobile persistente, layout a partir de 320px e safe areas |
 
 ### Modelo para futuras entradas
 
