@@ -91,6 +91,19 @@ falha de Redis ou duas requisições concorrentes retomam o mesmo enqueue em vez
 duplicado. A resolução sem retry usa `OPEN → RESOLVED`; somente a transição vencedora produz evento
 de auditoria.
 
+### Quotas de recursos e duração
+
+Cada workspace persiste limites de CPU, memória, PIDs, disco e duração. CPU, memória e PIDs são
+aplicados diretamente pelo Runtime Broker nos cgroups do container. Como `/workspace` é um bind
+mount real do host, a quota de disco não usa `StorageOpt` do writable layer: o worker mede o
+diretório sem seguir links simbólicos a cada 15 segundos e interrompe o runtime quando o limite é
+excedido. Falha de leitura também é tratada como violação, para que a fiscalização seja fail-closed.
+
+Workspace, AgentTask, Orchestration e SetupJob mantêm deadlines persistentes. O reconciliador usa
+compare-and-swap para preservar estados terminais e propaga a falha de quota na ordem task → step →
+orchestration. Comandos do broker são envolvidos pelo `timeout` do próprio container; assim, expirar
+uma operação encerra o processo real, e não apenas a Promise no processo Node.js.
+
 
 ## Terminal Plane (v0.4)
 

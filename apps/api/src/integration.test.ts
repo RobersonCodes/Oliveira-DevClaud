@@ -660,6 +660,28 @@ describe('dead-letter review and manual reprocessing (real Postgres + Redis)', (
   });
 });
 
+describe('job duration quota contracts (real Postgres + Redis)', () => {
+  it('persists bounded deadlines for direct agents, orchestrations and setup jobs', async () => {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'Quota project', slug: `quota-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id, containerId: 'quota-container-not-used', status: 'RUNNING', runtimeStartedAt: new Date() } });
+
+    const agent = await app.inject({ method: 'POST', url: '/api/v1/agents', headers: { cookie: owner.sessionCookie }, payload: { workspaceId: workspace.id, agent: 'CODEX', title: 'Bounded agent', prompt: 'Respect the deadline', maxDurationSeconds: 90, startNow: false } });
+    const orchestration = await app.inject({ method: 'POST', url: '/api/v1/orchestrations', headers: { cookie: owner.sessionCookie }, payload: { workspaceId: workspace.id, title: 'Bounded orchestration', objective: 'Respect the deadline', maxDurationSeconds: 120, startNow: false, steps: [{ key: 'typecheck', title: 'Typecheck', type: 'SYSTEM', command: 'npm run typecheck' }] } });
+    const setup = await app.inject({ method: 'POST', url: `/api/v1/setup/${workspace.id}/provision`, headers: { cookie: owner.sessionCookie }, payload: { clone: false, install: false, startIde: false, registerPorts: false, maxDurationSeconds: 180 } });
+
+    expect(agent.statusCode).toBe(201);
+    expect(agent.json().maxDurationSeconds).toBe(90);
+    expect(orchestration.statusCode).toBe(201);
+    expect(orchestration.json().maxDurationSeconds).toBe(120);
+    expect(setup.statusCode).toBe(202);
+    expect(setup.json().maxDurationSeconds).toBe(180);
+
+    const cancelled = await app.inject({ method: 'POST', url: `/api/v1/setup/jobs/${setup.json().id}/cancel`, headers: { cookie: owner.sessionCookie } });
+    expect(cancelled.statusCode).toBe(200);
+  });
+});
+
 describe('rate limiting — the /register route\'s stricter per-route limit actually engages', () => {
   let limitedApp: FastifyInstance;
   const limitedUserIds: string[] = [];

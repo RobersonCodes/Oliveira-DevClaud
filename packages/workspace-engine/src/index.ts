@@ -2,7 +2,13 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
-export type WorkspaceLimits = { cpuLimit: number; memoryMb: number };
+export type WorkspaceLimits = {
+  cpuLimit: number;
+  memoryMb: number;
+  pidsLimit?: number;
+  diskMb?: number;
+  maxRuntimeMinutes?: number;
+};
 export type CreateWorkspaceInput = {
   workspaceId: string;
   projectId: string;

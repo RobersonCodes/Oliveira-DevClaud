@@ -188,6 +188,17 @@ describe('Runtime Broker — workspace container lifecycle', () => {
 });
 
 describe('Runtime Broker — exec allowlist', () => {
+  it('kills the real container process when an exec duration expires', async () => {
+    await withBroker(async client => {
+      const workspaceId = crypto.randomUUID();
+      const created = await client.createWorkspaceContainer(workspaceId, { projectId: crypto.randomUUID(), limits: { cpuLimit: 1, memoryMb: 512 } });
+      containerIds.push(created.containerId);
+      await expect(client.exec(created.containerId, { cmd: ['sh', '-c', 'sleep 30'], timeoutMs: 250 })).rejects.toMatchObject({ statusCode: 504 });
+      const probe = await client.exec(created.containerId, { cmd: ['sh', '-c', 'pgrep -f "^sleep 30$" >/dev/null'], timeoutMs: 2_000 });
+      expect(probe.exitCode).not.toBe(0);
+    });
+  }, 30_000);
+
   it('rejects an exec `user` outside the allowlist before ever touching Docker', async () => {
     await withBroker(async (client, broker) => {
       const workspaceId = crypto.randomUUID();

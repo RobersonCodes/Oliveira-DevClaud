@@ -1,7 +1,7 @@
 import Docker from 'dockerode';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import type { CreateWorkspaceContainerInput, ContainerInspectResult, WorkspaceContainerResult } from '@oliveira/runtime-broker-client';
+import type { ValidatedCreateWorkspaceContainerInput, ContainerInspectResult, WorkspaceContainerResult } from '@oliveira/runtime-broker-client';
 import { connectRelayToWorkspaceNetwork, disconnectRelayFromWorkspaceNetwork, ensureWorkspaceNetwork, removeWorkspaceNetwork, workspaceNetworkName } from './network.js';
 
 const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 64);
@@ -20,7 +20,7 @@ export type BrokerConfig = {
  * running in api/worker) only ever supplies a workspaceId, a projectId for labeling, and a resource
  * request that gets clamped, never applied verbatim.
  */
-export async function createWorkspaceContainer(docker: Docker, config: BrokerConfig, workspaceId: string, input: CreateWorkspaceContainerInput): Promise<WorkspaceContainerResult> {
+export async function createWorkspaceContainer(docker: Docker, config: BrokerConfig, workspaceId: string, input: ValidatedCreateWorkspaceContainerInput): Promise<WorkspaceContainerResult> {
   const name = `odc-${safeId(workspaceId)}`;
   const workspacePath = path.join(config.workspaceRoot, safeId(workspaceId));
 
@@ -47,6 +47,8 @@ export async function createWorkspaceContainer(docker: Docker, config: BrokerCon
       'dev.oliveira.devcloud': 'workspace',
       'dev.oliveira.workspace-id': workspaceId,
       'dev.oliveira.project-id': input.projectId,
+      'dev.oliveira.disk-mb': String(input.limits.diskMb),
+      'dev.oliveira.max-runtime-minutes': String(input.limits.maxRuntimeMinutes),
       'dev.oliveira.nonce': crypto.randomBytes(8).toString('hex')
     },
     Env: [
@@ -58,7 +60,7 @@ export async function createWorkspaceContainer(docker: Docker, config: BrokerCon
       NanoCpus: nanoCpus,
       Memory: memory,
       MemorySwap: memory,
-      PidsLimit: 512,
+      PidsLimit: input.limits.pidsLimit,
       AutoRemove: false,
       NetworkMode: networkName,
       Binds: [`${workspacePath}:/workspace`],

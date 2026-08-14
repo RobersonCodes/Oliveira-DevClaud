@@ -19,8 +19,12 @@ const MAX_OUTPUT_BYTES = 2_000_000;
  */
 export async function execInContainer(docker: Docker, containerId: string, input: ExecRequestInput): Promise<ExecResult> {
   const container = docker.getContainer(containerId);
+  const timeoutMs = input.timeoutMs ?? 180_000;
+  const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
   const exec = await container.exec({
-    Cmd: input.cmd,
+    // The in-container watchdog kills the actual command as well as timing out this HTTP request.
+    // A Promise.race alone would return 504 while leaving clone/install/test processes running.
+    Cmd: ['timeout', '-s', 'TERM', '-k', '2s', `${timeoutSeconds}s`, ...input.cmd],
     WorkingDir: input.workingDir,
     User: input.user,
     Env: input.env,
@@ -41,13 +45,20 @@ export async function execInContainer(docker: Docker, containerId: string, input
     stream.on('close', resolve);
     stream.on('error', reject);
   });
-  const timeoutMs = input.timeoutMs ?? 180_000;
+  let timeoutHandle: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    const t = setTimeout(() => reject(Object.assign(new Error('EXEC_TIMEOUT'), { statusCode: 504 })), timeoutMs);
-    t.unref();
+    timeoutHandle = setTimeout(() => reject(Object.assign(new Error('EXEC_TIMEOUT'), { statusCode: 504 })), timeoutMs + 3_000);
+    timeoutHandle.unref();
   });
-  await Promise.race([ended, timeout]);
+  try {
+    await Promise.race([ended, timeout]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 
   const result = await exec.inspect();
+  if (result.ExitCode === 124 || result.ExitCode === 137) {
+    throw Object.assign(new Error('EXEC_TIMEOUT'), { statusCode: 504 });
+  }
   return { exitCode: result.ExitCode ?? 1, output };
 }

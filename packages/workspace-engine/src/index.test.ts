@@ -92,6 +92,13 @@ describe('DockerWorkspaceEngine — real broker, real Docker container lifecycle
     expect(info.HostConfig.Memory).toBe(32768 * 1024 * 1024);
   });
 
+  it('applies a caller-selected process quota inside the allowed broker range', async () => {
+    const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 1, memoryMb: 512, pidsLimit: 64 } }));
+    containerIds.push(runtime.containerId);
+    const info = await docker.getContainer(runtime.containerId).inspect();
+    expect(info.HostConfig.PidsLimit).toBe(64);
+  });
+
   it('clamps a below-minimum cpu request up to 0.25 cores', async () => {
     const runtime = await engine.create(workspaceInput({ limits: { cpuLimit: 0.001, memoryMb: 512 } }));
     containerIds.push(runtime.containerId);

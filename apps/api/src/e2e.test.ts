@@ -90,13 +90,15 @@ describe('E2E — login → project → real workspace → real terminal → run
     // 3. Start a real workspace container from the real image.
     const workspaceRes = await fetch(`${baseUrl}/api/v1/workspaces`, {
       method: 'POST', headers: { 'content-type': 'application/json', cookie: sessionCookie },
-      body: JSON.stringify({ projectId: project.id, cpuLimit: 0.5, memoryMb: 512 })
+      body: JSON.stringify({ projectId: project.id, cpuLimit: 0.5, memoryMb: 512, pidsLimit: 96, diskMb: 512, maxRuntimeMinutes: 15 })
     });
     expect(workspaceRes.status).toBe(201);
     const workspace = await workspaceRes.json();
     createdWorkspaceIds.push(workspace.id);
     expect(workspace.status).toBe('RUNNING');
     expect(workspace.containerId).toBeTruthy();
+    expect(workspace).toMatchObject({ cpuLimit: 0.5, memoryMb: 512, pidsLimit: 96, diskMb: 512, maxRuntimeMinutes: 15 });
+    expect(workspace.runtimeStartedAt).toBeTruthy();
 
     // 4. Open a terminal session (creates a real tmux session inside the real container).
     const terminalRes = await fetch(`${baseUrl}/api/v1/terminals`, {

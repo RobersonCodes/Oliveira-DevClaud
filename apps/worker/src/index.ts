@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { config as loadEnv } from 'dotenv';
 // `npm run dev -w @oliveira/worker` runs with cwd set to apps/worker, not the repo root, so the
 // default dotenv cwd-lookup would never find the root .env. Resolve it relative to this file instead.
@@ -15,6 +16,7 @@ import { refreshRuntimeHeartbeats } from './lib/heartbeats.js';
 import { recoverInterruptedRuntimeJobs } from './lib/recovery.js';
 import { createPrismaRuntimeRecoveryDependencies } from './lib/recoveryStore.js';
 import { recordPermanentJobFailure } from './lib/deadLetters.js';
+import { enforceResourceQuotas, remainingDurationMs } from './lib/quotas.js';
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
 const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine(); const heartbeatWorkspaces = new DockerWorkspaceEngine();
@@ -45,8 +47,9 @@ async function captureSetupDeadLetter(job: { id?: string; attemptsMade: number; 
 async function tick(orchestrationId:string){
   const o=await prisma.orchestration.findUnique({where:{id:orchestrationId},include:{workspace:true,steps:{include:{agentTask:{select:{status:true}}}}}}); if(!o||!['QUEUED','RUNNING'].includes(o.status)) return;
   if(!o.workspace.containerId) throw new Error('WORKSPACE_HAS_NO_CONTAINER');
+  let orchestrationStartedAt=o.startedAt;
   if(o.status==='QUEUED'){
-    const now=new Date();const started=await prisma.orchestration.updateMany({where:{id:o.id,status:'QUEUED'},data:{startedAt:o.startedAt??now,status:'RUNNING',heartbeatAt:now}});
+    const now=new Date();orchestrationStartedAt=o.startedAt??now;const started=await prisma.orchestration.updateMany({where:{id:o.id,status:'QUEUED'},data:{startedAt:orchestrationStartedAt,status:'RUNNING',heartbeatAt:now}});
     if(started.count===0){const current=await prisma.orchestration.findUnique({where:{id:o.id},select:{status:true}});if(current?.status!=='RUNNING')return;}
   }else await prisma.orchestration.updateMany({where:{id:o.id,status:'RUNNING'},data:{heartbeatAt:new Date()}});
 
@@ -99,7 +102,7 @@ async function tick(orchestrationId:string){
       // Create the task and claim the step in one transaction. Only the winner of the conditional
       // update keeps its task; concurrent losers delete their provisional row before returning.
       const task=await prisma.$transaction(async tx=>{
-        const candidate=await tx.agentTask.create({data:{workspaceId:o.workspaceId,agent:step.agent!,title:step.title,prompt:step.prompt!,status:'QUEUED'}});
+        const candidate=await tx.agentTask.create({data:{workspaceId:o.workspaceId,agent:step.agent!,title:step.title,prompt:step.prompt!,maxDurationSeconds:Math.min(o.maxDurationSeconds,14_400),status:'QUEUED'}});
         const claimed=await tx.orchestrationStep.updateMany({where:{id:step.id,status:'QUEUED',agentTaskId:null},data:{status:'RUNNING',startedAt:new Date(),agentTaskId:candidate.id}});
         if(claimed.count===0){await tx.agentTask.delete({where:{id:candidate.id}});return null;}
         return candidate;
@@ -107,7 +110,10 @@ async function tick(orchestrationId:string){
       if(!task)continue;
       try{
         const wt=await git.createWorktree(o.workspace.containerId,task.id,task.agent);
-        const runtime=await agents.start({containerId:o.workspace.containerId,taskId:task.id,agent:task.agent,prompt:task.prompt,workingDirectory:wt.path});
+        const remainingMs=remainingDurationMs(orchestrationStartedAt??new Date(),o.maxDurationSeconds);
+        if(remainingMs<=0)throw Object.assign(new Error('ORCHESTRATION_DURATION_EXCEEDED'),{statusCode:504});
+        const remainingSeconds=Math.max(1,Math.floor(remainingMs/1000));
+        const runtime=await agents.start({containerId:o.workspace.containerId,taskId:task.id,agent:task.agent,prompt:task.prompt,workingDirectory:wt.path,maxDurationSeconds:Math.min(task.maxDurationSeconds,remainingSeconds)});
         const activated=await prisma.$transaction(async tx=>{
           const now=new Date();const taskStillQueued=await tx.agentTask.updateMany({where:{id:task.id,status:'QUEUED'},data:{status:'RUNNING',startedAt:now,heartbeatAt:now,branchName:wt.branchName,worktreePath:wt.path,baseCommit:wt.baseCommit}});
           if(taskStillQueued.count===0)return false;
@@ -175,30 +181,34 @@ import { resolveSecretByKind } from './lib/secretResolver.js';
 
 const setupIde=new DockerIdeEngine(); const setupQueue=new SetupQueue();
 async function setupLog(id:string,message:string,stage?:SetupStage,level='INFO'){await prisma.setupJobLog.create({data:{setupJobId:id,message,stage,level}})}
-async function setupProgress(id:string,stage:SetupStage,progress:number,message:string){const moved=await prisma.setupJob.updateMany({where:{id,status:SetupJobStatus.RUNNING},data:{stage,progress,message,heartbeatAt:new Date(),startedAt:stage===SetupStage.CLONING_REPOSITORY?new Date():undefined}});if(moved.count===0)return false;await setupLog(id,message,stage);return true}
+async function setupProgress(id:string,stage:SetupStage,progress:number,message:string){const moved=await prisma.setupJob.updateMany({where:{id,status:SetupJobStatus.RUNNING},data:{stage,progress,message,heartbeatAt:new Date()}});if(moved.count===0)return false;await setupLog(id,message,stage);return true}
 async function cancellationCheckpoint(id:string){const now=new Date();const cancelled=await prisma.setupJob.updateMany({where:{id,status:SetupJobStatus.CANCEL_REQUESTED},data:{status:SetupJobStatus.CANCELLED,stage:SetupStage.CANCELLED,message:'Provisionamento cancelado',finishedAt:now,heartbeatAt:now}});if(cancelled.count===0)return false;await setupLog(id,'Provisionamento interrompido em checkpoint seguro',SetupStage.CANCELLED,'WARN');return true}
 async function provision(setupJobId:string){
   const job=await prisma.setupJob.findUnique({where:{id:setupJobId},include:{workspace:{include:{project:true}}}}); if(!job)return;
   if([SetupJobStatus.READY,SetupJobStatus.CANCELLED,SetupJobStatus.CANCEL_REQUESTED].includes(job.status as any)){await cancellationCheckpoint(job.id);return;}
-  if(job.status!==SetupJobStatus.RUNNING){const claimed=await prisma.setupJob.updateMany({where:{id:job.id,status:{in:[SetupJobStatus.QUEUED,SetupJobStatus.FAILED]}},data:{status:SetupJobStatus.RUNNING,finishedAt:null,errorCode:null,errorMessage:null,heartbeatAt:new Date()}});if(claimed.count===0)return;}
+  const startedAt=job.startedAt??new Date();
+  if(job.status!==SetupJobStatus.RUNNING){const claimed=await prisma.setupJob.updateMany({where:{id:job.id,status:{in:[SetupJobStatus.QUEUED,SetupJobStatus.FAILED]}},data:{status:SetupJobStatus.RUNNING,startedAt,finishedAt:null,errorCode:null,errorMessage:null,heartbeatAt:startedAt}});if(claimed.count===0)return;}
+  else if(!job.startedAt)await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING,startedAt:null},data:{startedAt,heartbeatAt:startedAt}});
   const ws=job.workspace; const options=(job.options??{}) as any;
+  const deadlineAt=new Date(startedAt.getTime()+job.maxDurationSeconds*1000);
+  const setupTimeoutMs=()=>{const remaining=deadlineAt.getTime()-Date.now();if(remaining<=0)throw Object.assign(new Error('SETUP_DURATION_EXCEEDED'),{statusCode:504});return Math.max(1,Math.min(600_000,remaining))};
   try{
     if(!ws.containerId)throw new Error('WORKSPACE_HAS_NO_CONTAINER');
     if(await cancellationCheckpoint(job.id))return;
     if(!await setupProgress(job.id,SetupStage.CLONING_REPOSITORY,15,'Clonando repositório')){await cancellationCheckpoint(job.id);return;}
-    if(options.clone!==false&&ws.project.repositoryUrl){const token=await resolveSecretByKind(job.organizationId,SecretKind.GITHUB_TOKEN);try{await bootstrapRepository({containerId:ws.containerId,repositoryUrl:ws.project.repositoryUrl,defaultBranch:ws.project.defaultBranch,githubToken:token});await setupLog(job.id,'Repositório clonado com sucesso',SetupStage.CLONING_REPOSITORY)}catch(e:any){if(!String(e?.details??'').includes('already exists and is not an empty directory'))throw e;await setupLog(job.id,'Repositório já presente; clone ignorado',SetupStage.CLONING_REPOSITORY,'WARN')}}
+    if(options.clone!==false&&ws.project.repositoryUrl){const token=await resolveSecretByKind(job.organizationId,SecretKind.GITHUB_TOKEN);try{await bootstrapRepository({containerId:ws.containerId,repositoryUrl:ws.project.repositoryUrl,defaultBranch:ws.project.defaultBranch,githubToken:token,timeoutMs:setupTimeoutMs()});await setupLog(job.id,'Repositório clonado com sucesso',SetupStage.CLONING_REPOSITORY)}catch(e:any){if(!String(e?.details??'').includes('already exists and is not an empty directory'))throw e;await setupLog(job.id,'Repositório já presente; clone ignorado',SetupStage.CLONING_REPOSITORY,'WARN')}}
     if(await cancellationCheckpoint(job.id))return;
-    if(!await setupProgress(job.id,SetupStage.DETECTING_STACK,35,'Detectando stack')){await cancellationCheckpoint(job.id);return;} const detection=await detectProject(ws.containerId);await setupLog(job.id,`Stack detectada: ${detection.stack}`,SetupStage.DETECTING_STACK);
+    if(!await setupProgress(job.id,SetupStage.DETECTING_STACK,35,'Detectando stack')){await cancellationCheckpoint(job.id);return;} const detection=await detectProject(ws.containerId,{deadlineAt});await setupLog(job.id,`Stack detectada: ${detection.stack}`,SetupStage.DETECTING_STACK);
     if(await cancellationCheckpoint(job.id))return;
-    if(!await setupProgress(job.id,SetupStage.INSTALLING_DEPS,55,'Instalando dependências')){await cancellationCheckpoint(job.id);return;} let installResult:any={skipped:true};if(options.install!==false){installResult=await installDependencies(ws.containerId,detection);await setupLog(job.id,'Instalação de dependências concluída',SetupStage.INSTALLING_DEPS)}else await setupLog(job.id,'Instalação de dependências ignorada',SetupStage.INSTALLING_DEPS);
+    if(!await setupProgress(job.id,SetupStage.INSTALLING_DEPS,55,'Instalando dependências')){await cancellationCheckpoint(job.id);return;} let installResult:any={skipped:true};if(options.install!==false){installResult=await installDependencies(ws.containerId,detection,{deadlineAt});await setupLog(job.id,'Instalação de dependências concluída',SetupStage.INSTALLING_DEPS)}else await setupLog(job.id,'Instalação de dependências ignorada',SetupStage.INSTALLING_DEPS);
     if(await cancellationCheckpoint(job.id))return;
     if(!await setupProgress(job.id,SetupStage.CONFIGURING_PORTS,78,'Configurando portas')){await cancellationCheckpoint(job.id);return;} if(options.registerPorts!==false)for(const port of detection.suggestedPorts){if(port!==13337)await prisma.workspacePort.upsert({where:{workspaceId_port:{workspaceId:ws.id,port}},create:{workspaceId:ws.id,port,label:`${detection.stack} preview`},update:{label:`${detection.stack} preview`}})}
     if(await cancellationCheckpoint(job.id))return;
-    if(!await setupProgress(job.id,SetupStage.STARTING_IDE,90,'Iniciando IDE')){await cancellationCheckpoint(job.id);return;} let ideResult:any=null;if(options.startIde!==false){ideResult=await setupIde.start(ws.containerId);await prisma.ideSession.upsert({where:{workspaceId:ws.id},create:{workspaceId:ws.id,active:true,port:ideResult.port,startedAt:new Date()},update:{active:true,port:ideResult.port,startedAt:new Date(),lastActiveAt:new Date()}})}
+    if(!await setupProgress(job.id,SetupStage.STARTING_IDE,90,'Iniciando IDE')){await cancellationCheckpoint(job.id);return;} let ideResult:any=null;if(options.startIde!==false){ideResult=await setupIde.start(ws.containerId,{timeoutMs:setupTimeoutMs()});await prisma.ideSession.upsert({where:{workspaceId:ws.id},create:{workspaceId:ws.id,active:true,port:ideResult.port,startedAt:new Date()},update:{active:true,port:ideResult.port,startedAt:new Date(),lastActiveAt:new Date()}})}
     if(await cancellationCheckpoint(job.id))return;
     const result={workspaceId:ws.id,detection,dependencies:installResult.skipped?'SKIPPED':'INSTALLED',ideUrl:ideResult?`/api/v1/proxy/ide/${ws.id}/`:null,ports:detection.suggestedPorts.map(port=>({port,previewUrl:`/api/v1/proxy/preview/${ws.id}/${port}/`}))};
     const ready=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING},data:{status:SetupJobStatus.READY,stage:SetupStage.READY,progress:100,message:'Workspace Ready',result,finishedAt:new Date(),heartbeatAt:new Date()}});if(ready.count>0)await setupLog(job.id,'Workspace Ready',SetupStage.READY);else await cancellationCheckpoint(job.id);
-  }catch(e:any){const failed=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING},data:{status:SetupJobStatus.FAILED,stage:SetupStage.FAILED,message:'Provisionamento falhou',errorCode:String(e?.message??'SETUP_FAILED').slice(0,120),errorMessage:String(e?.details??e?.message??e).slice(0,4000),finishedAt:new Date(),heartbeatAt:new Date()}});if(failed.count>0)await setupLog(job.id,String(e?.details??e?.message??e).slice(0,4000),SetupStage.FAILED,'ERROR');else await cancellationCheckpoint(job.id);throw e}
+  }catch(e:any){const failure=Date.now()>=deadlineAt.getTime()?Object.assign(new Error('SETUP_DURATION_EXCEEDED'),{statusCode:504}):e;const failed=await prisma.setupJob.updateMany({where:{id:job.id,status:SetupJobStatus.RUNNING},data:{status:SetupJobStatus.FAILED,stage:SetupStage.FAILED,message:'Provisionamento falhou',errorCode:String(failure?.message??'SETUP_FAILED').slice(0,120),errorMessage:String(failure?.details??failure?.message??failure).slice(0,4000),finishedAt:new Date(),heartbeatAt:new Date()}});if(failed.count>0)await setupLog(job.id,String(failure?.details??failure?.message??failure).slice(0,4000),SetupStage.FAILED,'ERROR');else await cancellationCheckpoint(job.id);throw failure}
 }
 const setupWorker = new Worker('oliveira-setup',async job=>{
   const setupJobId=job.data.setupJobId as string;
@@ -237,6 +247,26 @@ async function runtimeRecoverySweep(){
 const runtimeRecoveryTimer=setInterval(()=>void runtimeRecoverySweep().catch(error=>console.error('Runtime recovery failed',error)),RUNTIME_RECOVERY_INTERVAL_MS);
 runtimeRecoveryTimer.unref();
 void runtimeRecoverySweep().catch(error=>console.error('Initial runtime recovery failed',error));
+
+const RESOURCE_QUOTA_INTERVAL_MS=15_000;
+const workspaceRoot=path.resolve(process.env.WORKSPACE_ROOT??'/var/lib/oliveira-devcloud/workspaces');
+let resourceQuotaSweepRunning=false;
+async function resourceQuotaSweep(){
+  if(resourceQuotaSweepRunning)return;
+  resourceQuotaSweepRunning=true;
+  try{
+    const result=await enforceResourceQuotas({
+      database:prisma,
+      workspaceRoot,
+      stopWorkspace:async containerId=>heartbeatWorkspaces.stop(containerId),
+      cancelAgent:async(containerId,taskId)=>agents.cancel(containerId,taskId)
+    });
+    if(result.workspaces||result.agents||result.orchestrations||result.setupJobs||result.errors)console.log('Resource quota sweep',result);
+  }finally{resourceQuotaSweepRunning=false;}
+}
+const resourceQuotaTimer=setInterval(()=>void resourceQuotaSweep().catch(error=>console.error('Resource quota sweep failed',error)),RESOURCE_QUOTA_INTERVAL_MS);
+resourceQuotaTimer.unref();
+void resourceQuotaSweep().catch(error=>console.error('Initial resource quota sweep failed',error));
 
 const HEARTBEAT_INTERVAL_MS=15_000;
 let heartbeatSweepRunning=false;
@@ -277,6 +307,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
   clearInterval(heartbeatTimer);
   clearInterval(runtimeRecoveryTimer);
+  clearInterval(resourceQuotaTimer);
   console.log(`${signal} received, shutting down gracefully`);
   const forceExit = setTimeout(() => {
     console.warn('Graceful shutdown timed out after 15s, forcing exit');

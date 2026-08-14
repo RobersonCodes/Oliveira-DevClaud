@@ -15,15 +15,27 @@ export const EXEC_ALLOWED_USERS = ['devcloud'] as const;
 // non-broker package can depend on just this lightweight client rather than the broker service.
 export const WORKSPACE_NETWORK_NAME_PREFIX = 'odc-ws-net-';
 
+export const WORKSPACE_LIMIT_DEFAULTS = {
+  cpuLimit: 1,
+  memoryMb: 2048,
+  pidsLimit: 512,
+  diskMb: 10_240,
+  maxRuntimeMinutes: 480
+} as const;
+
 export const CreateWorkspaceContainerSchema = z.object({
   projectId: z.string().min(1),
   defaultBranch: z.string().min(1).max(255).optional(),
   limits: z.object({
     cpuLimit: z.number().positive(),
-    memoryMb: z.number().positive()
+    memoryMb: z.number().positive(),
+    pidsLimit: z.number().int().min(64).max(4096).default(WORKSPACE_LIMIT_DEFAULTS.pidsLimit),
+    diskMb: z.number().int().min(512).max(102_400).default(WORKSPACE_LIMIT_DEFAULTS.diskMb),
+    maxRuntimeMinutes: z.number().int().min(15).max(10_080).default(WORKSPACE_LIMIT_DEFAULTS.maxRuntimeMinutes)
   })
 });
-export type CreateWorkspaceContainerInput = z.infer<typeof CreateWorkspaceContainerSchema>;
+export type CreateWorkspaceContainerInput = z.input<typeof CreateWorkspaceContainerSchema>;
+export type ValidatedCreateWorkspaceContainerInput = z.output<typeof CreateWorkspaceContainerSchema>;
 
 export const StopOrRestartSchema = z.object({
   timeoutSeconds: z.number().int().positive().max(120).default(10)

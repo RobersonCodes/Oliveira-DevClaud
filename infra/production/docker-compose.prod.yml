@@ -90,6 +90,10 @@ services:
       redis: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
       runtime-broker: { condition: service_healthy }
+    volumes:
+      # Read-only view of the real workspace bind roots. The quota reconciler measures this path
+      # directly; Docker StorageOpt would cover only the container writable layer, not /workspace.
+      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces:ro
   web:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.web }
     restart: unless-stopped

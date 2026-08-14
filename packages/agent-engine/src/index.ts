@@ -9,6 +9,7 @@ export type StartAgentInput = {
   agent: AgentKind;
   prompt: string;
   workingDirectory?: string;
+  maxDurationSeconds?: number;
 };
 
 export type AgentRuntime = {
@@ -48,11 +49,13 @@ export class DockerAgentEngine {
     // User input is passed only through an environment variable. The shell program itself is fixed.
     // This avoids concatenating prompts into a command string while still allowing exit-code persistence.
     const command = [binary, ...args].join(' ');
-    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; ${command} 2>&1 | tee "$ODC_LOG_FILE"; code=\${PIPESTATUS[0]}; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
+    const maxDurationSeconds = Math.max(1, Math.min(input.maxDurationSeconds ?? 3600, 14_400));
+    const agentCommand = `${command} 2>&1 | tee "$ODC_LOG_FILE"; exit \${PIPESTATUS[0]}`;
+    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; timeout -s TERM -k 10s ${maxDurationSeconds}s bash -lc "$ODC_AGENT_COMMAND"; code=$?; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
 
     const result = await this.exec(input.containerId, [
       'tmux', 'new-session', '-d', '-s', sessionName, '-c', input.workingDirectory ?? '/workspace/repository',
-      'env', `ODC_AGENT_PROMPT=${input.prompt}`, `ODC_STATUS_FILE=${statusFile}`, `ODC_LOG_FILE=${logFile}`,
+      'env', `ODC_AGENT_PROMPT=${input.prompt}`, `ODC_STATUS_FILE=${statusFile}`, `ODC_LOG_FILE=${logFile}`, `ODC_AGENT_COMMAND=${agentCommand}`,
       'bash', '-lc', wrapper
     ]);
     if (result.exitCode !== 0) throw new Error('AGENT_START_FAILED');

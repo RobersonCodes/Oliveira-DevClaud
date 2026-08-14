@@ -36,13 +36,13 @@ export async function orchestrationRoutes(app: FastifyInstance) {
   });
 
   app.post('/', async (request, reply) => {
-    const body = z.object({ workspaceId:z.string().cuid(), title:z.string().min(3).max(120), objective:z.string().min(3).max(5000), steps:z.array(stepSchema).min(1).max(30), startNow:z.boolean().default(true) }).parse(request.body);
+    const body = z.object({ workspaceId:z.string().cuid(), title:z.string().min(3).max(120), objective:z.string().min(3).max(5000), steps:z.array(stepSchema).min(1).max(30), maxDurationSeconds:z.number().int().min(60).max(28800).default(7200), startNow:z.boolean().default(true) }).parse(request.body);
     validateDag(body.steps);
     const workspace = await prisma.workspace.findUnique({ where:{id:body.workspaceId}, include:{project:true} });
     if (!workspace) throw Object.assign(new Error('WORKSPACE_NOT_FOUND'),{statusCode:404});
     const {user}=await requireOrgRole(request, workspace.project.organizationId, Role.DEVELOPER);
-    const orchestration=await prisma.orchestration.create({ data:{workspaceId:body.workspaceId,title:body.title,objective:body.objective,status:body.startNow?'QUEUED':'DRAFT',steps:{create:body.steps.map(s=>({key:s.key,title:s.title,type:s.type,agent:s.agent,prompt:s.prompt,command:s.command,dependsOn:s.dependsOn,status:s.dependsOn.length?'BLOCKED':'QUEUED'}))}},include:{steps:true} });
-    await audit({userId:user.id,organizationId:workspace.project.organizationId,action:'ORCHESTRATION_CREATED',resource:'Orchestration',resourceId:orchestration.id,ipAddress:request.ip,metadata:{steps:body.steps.length}});
+    const orchestration=await prisma.orchestration.create({ data:{workspaceId:body.workspaceId,title:body.title,objective:body.objective,maxDurationSeconds:body.maxDurationSeconds,status:body.startNow?'QUEUED':'DRAFT',steps:{create:body.steps.map(s=>({key:s.key,title:s.title,type:s.type,agent:s.agent,prompt:s.prompt,command:s.command,dependsOn:s.dependsOn,status:s.dependsOn.length?'BLOCKED':'QUEUED'}))}},include:{steps:true} });
+    await audit({userId:user.id,organizationId:workspace.project.organizationId,action:'ORCHESTRATION_CREATED',resource:'Orchestration',resourceId:orchestration.id,ipAddress:request.ip,metadata:{steps:body.steps.length,maxDurationSeconds:body.maxDurationSeconds}});
     if(body.startNow) await queue.tick(orchestration.id);
     return reply.code(201).send(orchestration);
   });

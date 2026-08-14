@@ -22,7 +22,7 @@ operações Git e execução de agentes permanecem no backend.
 
 | Capacidade | Implementação |
 | --- | --- |
-| Workspaces isolados | Containers Docker non-root, com limites de CPU, memória e PIDs |
+| Workspaces isolados | Containers Docker non-root, com quotas de CPU, memória, PIDs, disco e duração |
 | Terminal persistente | xterm.js + WebSocket autenticado + tmux no container |
 | IDE remota | code-server atrás de Runtime Gateway com origem, ticket e cookie isolados |
 | Execução multiagente | Codex e Claude em Git worktrees independentes |
@@ -262,7 +262,7 @@ A segurança é tratada como fronteira arquitetural, não apenas como validaçã
 | Runtime Gateway | Site separado, cookies `__Host-`, tickets HMAC de 60s e autorização revalidada |
 | Conteúdo não confiável | CSP/Permissions/Referrer impostos pelo gateway; `Domain` removido de cookies upstream |
 | Segredos | AES-256-GCM em repouso e mascaramento em respostas e logs |
-| Containers | Usuário non-root, `CapDrop: ALL`, `no-new-privileges` e limites de recursos |
+| Containers | Usuário non-root, `CapDrop: ALL`, `no-new-privileges`, cgroups e reconciliação de quotas |
 | Comandos | Argumentos estruturados e allow-list nos quality gates |
 | Abuso | Rate limiting global e limites mais restritivos nas rotas de autenticação |
 | Auditoria | Registro de atividades e decisões relevantes do fluxo operacional |

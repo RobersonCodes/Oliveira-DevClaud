@@ -67,7 +67,7 @@ export async function deadLetterRoutes(app: FastifyInstance) {
         if (deadLetter.queue === DeadLetterQueue.SETUP) {
           const source = await tx.setupJob.findUnique({ where: { id: deadLetter.sourceId } });
           if (!source || source.status !== 'FAILED') throw Object.assign(new Error('DEAD_LETTER_SOURCE_NOT_RETRYABLE'), { statusCode: 409 });
-          const next = await tx.setupJob.create({ data: { workspaceId: source.workspaceId, userId: user.id, organizationId: source.organizationId, options: source.options ?? undefined, attempt: source.attempt + 1, parentJobId: source.id } });
+          const next = await tx.setupJob.create({ data: { workspaceId: source.workspaceId, userId: user.id, organizationId: source.organizationId, options: source.options ?? undefined, maxDurationSeconds: source.maxDurationSeconds, attempt: source.attempt + 1, parentJobId: source.id } });
           await tx.setupJobLog.create({ data: { setupJobId: next.id, stage: SetupStage.QUEUED, message: `Reprocessamento manual criado a partir da dead-letter ${id}` } });
           await tx.deadLetterJob.update({ where: { id }, data: { requeuedSourceId: next.id } });
         } else {

@@ -76,4 +76,16 @@ describe('DockerAgentEngine — real broker, real tmux, fake CLI', () => {
     const status = await engine.status(containerId, taskId);
     expect(status.status).not.toBe('RUNNING');
   }, 20_000);
+
+  it('terminates an agent process when its persisted duration quota expires', async () => {
+    const taskId = crypto.randomUUID();
+    await engine.start({ containerId, taskId, agent: 'CLAUDE', prompt: 'must-time-out', maxDurationSeconds: 1 });
+    let status = await engine.status(containerId, taskId);
+    const deadline = Date.now() + 10_000;
+    while (status.status === 'RUNNING' && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 250));
+      status = await engine.status(containerId, taskId);
+    }
+    expect(status).toMatchObject({ status: 'FAILED', exitCode: 124 });
+  }, 20_000);
 });

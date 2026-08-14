@@ -40,6 +40,13 @@ stat -c '%g' /var/run/docker.sock
 sudo install -d -o 10001 -g 10001 -m 0750 /var/lib/oliveira-devcloud/workspaces
 ```
 
+Os limites padrão por workspace são 1 CPU, 2 GiB de memória, 512 processos, 10 GiB de disco e 480
+minutos por sessão de runtime. A API aceita valores dentro dos intervalos validados pelo contrato;
+CPU, memória e PIDs são impostos pelo Docker, enquanto o worker precisa montar
+`WORKSPACE_ROOT_HOST` como somente leitura para medir o bind mount real e aplicar quota de disco e
+duração. Não remova esse mount do worker: sem leitura do diretório, a fiscalização falha fechada e o
+workspace é interrompido.
+
 Copie o GID retornado para `DOCKER_GID`. A imagem `workspace-node-v1.1.0` foi publicada no GHCR pelo
 workflow [31445506653](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31445506653).
 Produção deve usar o digest imutável já configurado em `.env.production.example`:

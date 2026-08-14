@@ -27,30 +27,36 @@ export class DockerIdeEngine {
     return ip;
   }
 
-  async isRunning(containerId: string): Promise<boolean> {
+  async isRunning(containerId: string, timeoutMs?: number): Promise<boolean> {
     const info = await this.broker.inspect(containerId);
     if (!info.running) return false;
-    const result = await this.broker.exec(containerId, { cmd: ['sh', '-lc', `pgrep -f "code-server.*--bind-addr 0.0.0.0:${IDE_PORT}" >/dev/null`] });
+    const result = await this.broker.exec(containerId, { cmd: ['sh', '-lc', `pgrep -f "code-server.*--bind-addr 0.0.0.0:${IDE_PORT}" >/dev/null`], timeoutMs });
     return result.exitCode === 0;
   }
 
-  async start(containerId: string): Promise<IdeRuntime> {
+  async start(containerId: string, opts?: { timeoutMs?: number }): Promise<IdeRuntime> {
+    const deadline = Date.now() + Math.min(opts?.timeoutMs ?? 12_000, 12_000);
+    const remaining = () => {
+      const timeoutMs = deadline - Date.now();
+      if (timeoutMs <= 0) throw Object.assign(new Error('SETUP_DURATION_EXCEEDED'), { statusCode: 504 });
+      return timeoutMs;
+    };
     const info = await this.broker.inspect(containerId);
     if (!info.running) throw Object.assign(new Error('WORKSPACE_NOT_RUNNING'), { statusCode: 409 });
 
-    if (!(await this.isRunning(containerId))) {
+    if (!(await this.isRunning(containerId, remaining()))) {
       await this.broker.exec(containerId, {
         cmd: ['sh', '-lc', `nohup code-server --bind-addr 0.0.0.0:${IDE_PORT} --auth none --disable-telemetry /workspace/repository >/workspace/code-server.log 2>&1 &`],
         workingDir: '/workspace/repository',
-        user: 'devcloud'
+        user: 'devcloud',
+        timeoutMs: remaining()
       });
 
-      const deadline = Date.now() + 12_000;
       while (Date.now() < deadline) {
-        if (await this.isRunning(containerId)) break;
+        if (await this.isRunning(containerId, remaining())) break;
         await new Promise(r => setTimeout(r, 350));
       }
-      if (!(await this.isRunning(containerId))) throw Object.assign(new Error('IDE_START_FAILED'), { statusCode: 502 });
+      if (!(await this.isRunning(containerId, remaining()))) throw Object.assign(new Error('IDE_START_FAILED'), { statusCode: 502 });
     }
 
     return { running: true, host: await this.internalHost(containerId), port: IDE_PORT };

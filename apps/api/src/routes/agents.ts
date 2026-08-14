@@ -45,6 +45,7 @@ export async function agentRoutes(app: FastifyInstance) {
       agent: z.nativeEnum(AgentType),
       title: z.string().trim().min(3).max(120),
       prompt: z.string().trim().min(3).max(30000),
+      maxDurationSeconds: z.number().int().min(60).max(14400).default(3600),
       startNow: z.boolean().default(true)
     }).parse(request.body);
 
@@ -54,9 +55,9 @@ export async function agentRoutes(app: FastifyInstance) {
     if (!workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
 
     const task = await prisma.agentTask.create({
-      data: { workspaceId: workspace.id, agent: body.agent, title: body.title, prompt: body.prompt, status: AgentTaskStatus.QUEUED }
+      data: { workspaceId: workspace.id, agent: body.agent, title: body.title, prompt: body.prompt, maxDurationSeconds: body.maxDurationSeconds, status: AgentTaskStatus.QUEUED }
     });
-    await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'AGENT_TASK_CREATED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { agent: body.agent } });
+    await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'AGENT_TASK_CREATED', resource: 'AgentTask', resourceId: task.id, ipAddress: request.ip, metadata: { agent: body.agent, maxDurationSeconds: body.maxDurationSeconds } });
     if (!body.startNow) return reply.code(201).send(task);
 
     try {
@@ -69,7 +70,8 @@ export async function agentRoutes(app: FastifyInstance) {
         taskId: task.id,
         agent: task.agent,
         prompt: task.prompt,
-        workingDirectory: worktree.path
+        workingDirectory: worktree.path,
+        maxDurationSeconds: task.maxDurationSeconds
       });
       const updated = await prisma.$transaction(async tx => {
         const activated = await tx.agentTask.updateMany({
@@ -113,7 +115,7 @@ export async function agentRoutes(app: FastifyInstance) {
       worktree = task.worktreePath && task.branchName && task.baseCommit
         ? { path: task.worktreePath, branchName: task.branchName, baseCommit: task.baseCommit }
         : await git.createWorktree(task.workspace.containerId, task.id, task.agent);
-      const runtime = await engine.start({ containerId: task.workspace.containerId, taskId: task.id, agent: task.agent, prompt: task.prompt, workingDirectory: worktree.path });
+      const runtime = await engine.start({ containerId: task.workspace.containerId, taskId: task.id, agent: task.agent, prompt: task.prompt, workingDirectory: worktree.path, maxDurationSeconds: task.maxDurationSeconds });
       await prisma.$transaction(async tx => {
         const activated = await tx.agentTask.updateMany({ where: { id: task.id, status: AgentTaskStatus.RUNNING }, data: { branchName: worktree.branchName, worktreePath: worktree.path, baseCommit: worktree.baseCommit } });
         if (activated.count === 0) throw Object.assign(new Error('AGENT_START_LOST_RACE'), { statusCode: 409 });

@@ -197,6 +197,12 @@ model Workspace {
   status       WorkspaceStatus @default(CREATING)
   cpuLimit     Float @default(1)
   memoryMb     Int @default(2048)
+  pidsLimit    Int @default(512)
+  diskMb       Int @default(10240)
+  maxRuntimeMinutes Int @default(480)
+  runtimeStartedAt DateTime?
+  quotaViolation String?
+  quotaExceededAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lastActiveAt DateTime @default(now())
@@ -266,6 +272,7 @@ model AgentTask {
   startedAt   DateTime?
   finishedAt  DateTime?
   heartbeatAt DateTime?
+  maxDurationSeconds Int @default(3600)
   exitCode    Int?
   metadata    Json?
   branchName  String?
@@ -309,6 +316,7 @@ model Orchestration {
   startedAt   DateTime?
   finishedAt  DateTime?
   heartbeatAt DateTime?
+  maxDurationSeconds Int @default(7200)
   reviewStatus OrchestrationReviewStatus @default(NOT_READY)
   reviewBranch String?
   reviewWorktreePath String?
@@ -467,6 +475,7 @@ model SetupJob {
   finishedAt     DateTime?
   updatedAt      DateTime       @updatedAt
   heartbeatAt    DateTime?
+  maxDurationSeconds Int @default(1800)
   attempt        Int            @default(1)
   parentJobId    String?
   logs           SetupJobLog[]

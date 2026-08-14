@@ -46,11 +46,11 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
 | Commit de referência | `4cf4b6f` (`feat(fase7): persist permanent job dead letters`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com retries/backoff, CAS/idempotência, heartbeat, recovery e dead-letter/revisão manual validados em CI Linux/PostgreSQL/Redis. Falhas permanentes ficam visíveis por tenant com payload sanitizado e reprocessamento concorrente idempotente |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento: retries/backoff, CAS/idempotência, heartbeat, recovery e dead-letter/revisão manual estão validados em CI; quotas persistidas de CPU, memória, PIDs, disco e duração estão implementadas localmente e aguardam validação real Linux/PostgreSQL/Docker |
 | Etapa ativa | Etapa 7 — quotas de recursos e duração |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Implementar quotas de CPU, memória, processos, disco e duração para workspaces e jobs |
+| Próxima ação única | Validar quotas e deadlines no CI Linux/PostgreSQL/Docker, incluindo encerramento real do processo e isolamento entre tenants |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -886,6 +886,18 @@ auditoria. A suíte completa terminou com **37 arquivos, 306 aprovados e 2 ignor
 build e audit sem vulnerabilidades. O smoke de host limpo `31768875002` também passou. Quinto item
 da Fase 7 concluído.
 
+Quotas de recursos e duração foram implementadas com um contrato persistido único. CPU, memória e
+PIDs seguem para os cgroups Docker; o limite de disco mede o bind mount real sem seguir symlinks e
+falha fechado se não puder inspecioná-lo. Workspace, AgentTask, Orchestration e SetupJob têm deadlines
+persistentes; o reconciliador de 15s interrompe runtimes antes de fechar estados por CAS, preserva
+tenants não afetados e propaga falhas para a cadeia relacionada. O Runtime Broker passou a encerrar
+o comando real dentro do container quando um exec expira. Localmente, schema Prisma, typecheck dos
+26 workspaces, lint com 0 erros/19 avisos legados, build completo, testes puros direcionados
+**11/11**, renderização do Compose e diff-check passaram. As três suítes Docker não inicializaram
+porque o daemon local está indisponível; o audit local também não alcançou o endpoint do npm. As
+regressões reais PostgreSQL/Docker foram adicionadas e ainda precisam do CI para que o sexto item
+possa ser marcado como concluído.
+
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
 **Status:** `CONCLUÍDA`. Esta rodada interrompeu temporariamente a próxima ação ordinária da Fase 7
@@ -1099,6 +1111,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, início | `EM ANDAMENTO` | Inventário confirmou que BullMQ retém até 500 falhas no Redis e SetupJob possui retry isolado, mas não há registro durável unificado, revisão administrativa ou sanitização comum. Decisão: DLQ PostgreSQL por organização, payload somente com IDs, escrita idempotente e reprocessamento protegido por CAS/ADMIN | Modelar DLQ, captura do worker e API de listar/reprocessar/resolver com regressões reais |
 | 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, validação local | `EM ANDAMENTO` | Migration/modelo por tenant, captura idempotente aguardada pelo worker e API `ADMIN` de listar/resolver/reprocessar implementados. Requeue usa `OPEN → REQUEUEING → REQUEUED` e identidade persistida antes do Redis. Schema válido; direcionados 24/24; lint 0 erros/19 avisos legados; typecheck dos 26 workspaces e diff-check verdes. Regressões PostgreSQL/Redis reais adicionadas; infraestrutura local indisponível | Commitar/push e exigir CI Linux/PostgreSQL/Redis verde para captura sanitizada e corrida de reprocessamento |
 | 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, CI e encerramento | `CONCLUÍDA` | Commit `4cf4b6f`; CIs `31768871870`/`31768875046` aplicaram migration e aprovaram persistência PostgreSQL sanitizada, RBAC, resolução/requeue concorrentes, suíte total 306 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31768875002` verde. Quinto item concluído | Implementar quotas de CPU, memória, processos, disco e duração para workspaces e jobs |
+| 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `10249aa`. Inventário: CPU/memória já são persistidas e aplicadas como `NanoCpus`/`Memory`; processos têm teto Docker fixo de 512. Faltam PIDs configurável/persistido, limite verificável do bind mount de disco e deadlines para workspace/AgentTask/Orchestration/SetupJob | Definir um contrato único de limites, persistência e reconciliação testável sem confundir quota do writable layer com o bind mount real |
+| 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, validação local | `EM ANDAMENTO` | Contrato e migration persistem CPU/memória/PIDs/disco/duração; cgroups recebem PIDs configurável; reconciliador mede o bind mount sem seguir symlinks, falha fechado e fecha cadeias por CAS; deadlines cobrem workspace, AgentTask, Orchestration e SetupJob; timeout do broker encerra o processo real. Schema válido, typecheck dos 26 workspaces, lint 0 erros/19 avisos, build completo, testes puros 11/11, Compose e diff-check verdes. Três suítes Docker não inicializaram sem daemon local e o audit não alcançou o endpoint npm; regressões reais PostgreSQL/Docker aguardam CI | Commitar/push e exigir CI Linux/PostgreSQL/Docker verde antes de concluir o item |
 
 ### Modelo para futuras entradas
 
