@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `cf39675` (`docs(fase7): record runtime recovery evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com retries/backoff, CAS/idempotência, heartbeat e recovery validados em CI. Dead-letter PostgreSQL e revisão manual `ADMIN` estão implementados e validados localmente sem infraestrutura; migration, captura persistente e corrida de reprocessamento aguardam CI Linux/PostgreSQL/Redis |
-| Etapa ativa | Etapa 7 — dead-letter e revisão manual para falhas permanentes |
+| Commit de referência | `4cf4b6f` (`feat(fase7): persist permanent job dead letters`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com retries/backoff, CAS/idempotência, heartbeat, recovery e dead-letter/revisão manual validados em CI Linux/PostgreSQL/Redis. Falhas permanentes ficam visíveis por tenant com payload sanitizado e reprocessamento concorrente idempotente |
+| Etapa ativa | Etapa 7 — quotas de recursos e duração |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar no CI Linux/PostgreSQL/Redis a captura sanitizada, revisão `ADMIN` e reprocessamento concorrente da dead-letter |
+| Próxima ação única | Implementar quotas de CPU, memória, processos, disco e duração para workspaces e jobs |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -803,7 +803,7 @@ da Fase 6 estão atendidos.
 - [x] Definir idempotency keys e compare-and-swap nas transições críticas.
 - [x] Implementar heartbeat de agent tasks, orquestrações e workspaces.
 - [x] Recuperar jobs abandonados após crash/redeploy.
-- [ ] Criar dead-letter/revisão manual para falhas permanentes.
+- [x] Criar dead-letter/revisão manual para falhas permanentes.
 - [ ] Implementar quotas de CPU, memória, processos, disco e duração.
 - [ ] Remover storage, containers e redes órfãos com segurança.
 - [ ] Coletar métricas de profundidade, latência, retry e falha das filas.
@@ -879,8 +879,12 @@ classificadas como permanentes e normaliza qualquer texto inseguro para um códi
 permite a `ADMIN` listar, resolver ou reprocessar; o fluxo de requeue persiste a identidade do novo
 trabalho antes de tocar no Redis e usa CAS para que concorrência ou retomada não dupliquem o efeito.
 Localmente, schema Prisma, typecheck dos 26 workspaces, lint (0 erros/19 avisos legados), diff-check e
-testes direcionados **24/24** passaram. Foram adicionadas regressões reais para PostgreSQL/Redis;
-como a infraestrutura local não está configurada, a conclusão aguarda o CI.
+testes direcionados **24/24** passaram. No commit `4cf4b6f`, os CIs Linux/PostgreSQL/Redis
+`31768871870`/`31768875046` aplicaram a migration e aprovaram a captura real sanitizada, a listagem
+restrita a `ADMIN`, resolução concorrente e requeue concorrente com um único `SetupJob`/evento de
+auditoria. A suíte completa terminou com **37 arquivos, 306 aprovados e 2 ignorados**, seguida de
+build e audit sem vulnerabilidades. O smoke de host limpo `31768875002` também passou. Quinto item
+da Fase 7 concluído.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1094,6 +1098,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — recovery de jobs, CI e encerramento | `CONCLUÍDA` | Commit `b6ad202`; CIs `31766839389`/`31766841828` aprovaram 4/4 regressões PostgreSQL de recovery, suíte total 297 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades; smoke limpo `31766841763` aprovado. Quarto item do checklist concluído | Criar dead-letter/revisão manual para falhas permanentes |
 | 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, início | `EM ANDAMENTO` | Inventário confirmou que BullMQ retém até 500 falhas no Redis e SetupJob possui retry isolado, mas não há registro durável unificado, revisão administrativa ou sanitização comum. Decisão: DLQ PostgreSQL por organização, payload somente com IDs, escrita idempotente e reprocessamento protegido por CAS/ADMIN | Modelar DLQ, captura do worker e API de listar/reprocessar/resolver com regressões reais |
 | 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, validação local | `EM ANDAMENTO` | Migration/modelo por tenant, captura idempotente aguardada pelo worker e API `ADMIN` de listar/resolver/reprocessar implementados. Requeue usa `OPEN → REQUEUEING → REQUEUED` e identidade persistida antes do Redis. Schema válido; direcionados 24/24; lint 0 erros/19 avisos legados; typecheck dos 26 workspaces e diff-check verdes. Regressões PostgreSQL/Redis reais adicionadas; infraestrutura local indisponível | Commitar/push e exigir CI Linux/PostgreSQL/Redis verde para captura sanitizada e corrida de reprocessamento |
+| 2026-08-14 | Codex | Fase 7 — dead-letter/revisão manual, CI e encerramento | `CONCLUÍDA` | Commit `4cf4b6f`; CIs `31768871870`/`31768875046` aplicaram migration e aprovaram persistência PostgreSQL sanitizada, RBAC, resolução/requeue concorrentes, suíte total 306 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31768875002` verde. Quinto item concluído | Implementar quotas de CPU, memória, processos, disco e duração para workspaces e jobs |
 
 ### Modelo para futuras entradas
 
