@@ -43,9 +43,13 @@ export function readyStepKeys(steps: Array<{key:string; status:string; dependsOn
 export const ORCHESTRATION_TICK_JOB_OPTIONS = {
   attempts: 5,
   backoff: { type: 'exponential', delay: 1_000, jitter: 0.25 },
-  removeOnComplete: true,
+  // Keep a bounded window so the host-admin metrics endpoint can calculate queue wait/runtime and
+  // retry samples. Payload contains only orchestrationId; no prompt or source is stored in BullMQ.
+  removeOnComplete: 500,
   removeOnFail: 500
 } satisfies JobsOptions;
+
+export const QUEUE_METRICS_OPTIONS = { maxDataPoints: 1_440 } as const;
 
 export const orchestrationTickDeduplicationId = (orchestrationId: string) => `tick-${orchestrationId}`;
 

@@ -104,6 +104,17 @@ compare-and-swap para preservar estados terminais e propaga a falha de quota na 
 orchestration. Comandos do broker são envolvidos pelo `timeout` do próprio container; assim, expirar
 uma operação encerra o processo real, e não apenas a Promise no processo Node.js.
 
+### Observabilidade das filas
+
+Os dois workers BullMQ mantêm 1.440 pontos nativos de conclusão/falha com granularidade de um
+minuto. A fila de orquestração também passou a reter somente os 500 jobs concluídos mais recentes
+(setup retém 100), sempre com payload restrito a IDs, para calcular latência e retries sem guardar
+prompts. O endpoint host-admin `/api/v1/system/metrics-summary` agrega, por fila: profundidade por
+estado, throughput acumulado e da última hora, espera/processamento em média/p95/máximo e tentativas
+extras numa amostra dos 100 jobs finais mais recentes. Indisponibilidade do Redis degrada essa seção
+para `QUEUE_METRICS_UNAVAILABLE` sem ocultar as métricas do host; as conexões são fechadas junto com o
+Fastify.
+
 
 ## Terminal Plane (v0.4)
 

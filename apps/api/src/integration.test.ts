@@ -432,6 +432,11 @@ describe('host metrics — platform-operator-only routes (real Postgres)', () =>
       const summary = await app.inject({ method: 'GET', url: '/api/v1/system/metrics-summary', headers: { cookie: operator.sessionCookie } });
       expect(summary.statusCode).toBe(200);
       expect(summary.json()).toHaveProperty('host.cpus');
+      expect(summary.json()).toHaveProperty('queues.status', 'ok');
+      expect(summary.json().queues.queues.map((queue: { name: string }) => queue.name)).toEqual([
+        'oliveira-orchestrations',
+        'oliveira-setup'
+      ]);
     } finally {
       if (previous === undefined) delete process.env.HOST_ADMIN_EMAILS;
       else process.env.HOST_ADMIN_EMAILS = previous;

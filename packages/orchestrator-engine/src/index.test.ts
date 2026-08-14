@@ -2,14 +2,14 @@ import crypto from 'node:crypto';
 import { QueueEvents, UnrecoverableError, Worker } from 'bullmq';
 import { Redis as IORedis } from 'ioredis';
 import { describe, expect, it } from 'vitest';
-import { ORCHESTRATION_TICK_JOB_OPTIONS, OrchestrationQueue, orchestrationTickDeduplicationId, readyStepKeys, validateDag } from './index.js';
+import { ORCHESTRATION_TICK_JOB_OPTIONS, QUEUE_METRICS_OPTIONS, OrchestrationQueue, orchestrationTickDeduplicationId, readyStepKeys, validateDag } from './index.js';
 
 describe('orchestration tick retry policy', () => {
   it('uses a short exponential backoff with jitter and a bounded attempt count', () => {
     expect(ORCHESTRATION_TICK_JOB_OPTIONS).toMatchObject({
       attempts: 5,
       backoff: { type: 'exponential', delay: 1_000, jitter: 0.25 },
-      removeOnComplete: true,
+      removeOnComplete: 500,
       removeOnFail: 500
     });
   });
@@ -18,6 +18,10 @@ describe('orchestration tick retry policy', () => {
     expect(orchestrationTickDeduplicationId('orch-123')).toBe('tick-orch-123');
     expect(orchestrationTickDeduplicationId('orch-123')).toBe(orchestrationTickDeduplicationId('orch-123'));
     expect(orchestrationTickDeduplicationId('orch-456')).not.toBe(orchestrationTickDeduplicationId('orch-123'));
+  });
+
+  it('retains one day of native one-minute queue metrics', () => {
+    expect(QUEUE_METRICS_OPTIONS).toEqual({ maxDataPoints: 1_440 });
   });
 });
 

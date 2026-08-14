@@ -10,7 +10,7 @@ import { prisma, SetupStage, SetupJobStatus, SecretKind } from '@oliveira/databa
 import { DockerAgentEngine } from '@oliveira/agent-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
 import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
-import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine';
+import { readyStepKeys, OrchestrationQueue, QUEUE_METRICS_OPTIONS } from '@oliveira/orchestrator-engine';
 import { asBullMqJobError, isPermanentJobError } from './lib/jobErrors.js';
 import { refreshRuntimeHeartbeats } from './lib/heartbeats.js';
 import { recoverInterruptedRuntimeJobs } from './lib/recovery.js';
@@ -169,7 +169,7 @@ const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{
     throw jobError;
   }
   finally { activeOrchestrationIds.delete(orchestrationId); }
-}, {connection,concurrency:4});
+}, {connection,concurrency:4,metrics:QUEUE_METRICS_OPTIONS});
 console.log('Oliveira DevCloud orchestration worker online');
 
 // v1.4 resilient asynchronous workspace provisioning
@@ -220,7 +220,7 @@ const setupWorker = new Worker('oliveira-setup',async job=>{
     throw jobError;
   }
   finally { activeSetupJobIds.delete(setupJobId); }
-},{connection,concurrency:2});
+},{connection,concurrency:2,metrics:QUEUE_METRICS_OPTIONS});
 console.log('Oliveira DevCloud setup worker v1.4 online');
 
 // Recover jobs that were RUNNING when a worker/process stopped unexpectedly.
