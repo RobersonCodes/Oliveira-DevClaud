@@ -51,6 +51,79 @@ wait_for_ready() {
   return 1
 }
 
+service_started_at() {
+  local service="$1"
+  local container
+  container="$("${compose[@]}" ps -q "$service")"
+  test -n "$container"
+  docker inspect "$container" --format '{{.State.StartedAt}}'
+}
+
+wait_for_redis() {
+  local attempt
+  for attempt in $(seq 1 60); do
+    if "${compose[@]}" exec -T redis redis-cli ping 2>/dev/null | grep -Fx PONG >/dev/null; then
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Redis did not become ready within 120 seconds." >&2
+  "${compose[@]}" logs --no-color redis >&2
+  return 1
+}
+
+wait_for_setup_stage() {
+  local job_id="$1"
+  local expected_stage="$2"
+  local attempt response status stage
+  for attempt in $(seq 1 120); do
+    response="$(curl --max-time 5 --silent --show-error -H "Cookie: $cookie" \
+      "$api_url/api/v1/setup/jobs/$job_id" 2>/dev/null || true)"
+    status="$(jq -r '.status // empty' <<<"$response")"
+    stage="$(jq -r '.stage // empty' <<<"$response")"
+    if [[ "$status" == "RUNNING" && "$stage" == "$expected_stage" ]]; then
+      return 0
+    fi
+    if [[ "$status" == "CANCELLED" ]]; then
+      echo "Setup job $job_id was cancelled before reaching $expected_stage." >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Setup job $job_id did not reach RUNNING/$expected_stage within 120 seconds." >&2
+  "${compose[@]}" logs --no-color worker runtime-broker >&2
+  return 1
+}
+
+wait_for_setup_ready() {
+  local job_id="$1"
+  local attempt response status
+  for attempt in $(seq 1 180); do
+    response="$(curl --max-time 5 --silent --show-error -H "Cookie: $cookie" \
+      "$api_url/api/v1/setup/jobs/$job_id" 2>/dev/null || true)"
+    status="$(jq -r '.status // empty' <<<"$response")"
+    if [[ "$status" == "READY" ]]; then
+      return 0
+    fi
+    if [[ "$status" == "CANCELLED" ]]; then
+      echo "Setup job $job_id was cancelled instead of recovering." >&2
+      return 1
+    fi
+    sleep 1
+  done
+  echo "Setup job $job_id did not recover to READY within 180 seconds." >&2
+  curl --silent --show-error -H "Cookie: $cookie" "$api_url/api/v1/setup/jobs/$job_id" >&2 || true
+  "${compose[@]}" logs --no-color worker runtime-broker redis >&2
+  return 1
+}
+
+enqueue_setup() {
+  local payload="$1"
+  curl --fail-with-body --silent --show-error -H "Cookie: $cookie" \
+    -H 'content-type: application/json' -X POST -d "$payload" \
+    "$api_url/api/v1/setup/$workspace_id/provision" | jq -er '.id'
+}
+
 mkdir -p "$evidence_root"
 sudo install -d -o 10001 -g 10001 -m 0750 "$workspace_root"
 
@@ -161,6 +234,84 @@ curl --fail-with-body --silent --show-error -H "Cookie: $cookie" -X POST \
   "$api_url/api/v1/workspaces/$workspace_id/restart" | jq -e '.status == "RUNNING"' >/dev/null
 test "$(docker exec "$container_id" sha256sum /workspace/.odc-persistence-smoke | awk '{print $1}')" = "$marker_checksum"
 
+# Fault injection 1/4: keep authenticated reads in flight while the API process restarts. The
+# container start timestamp proves that a restart happened; a post-restart read with the original
+# cookie proves that session and tenant state survived it.
+api_started_before="$(service_started_at api)"
+api_probe_file="$(mktemp)"
+(
+  for attempt in $(seq 1 120); do
+    curl --max-time 2 --silent --output /dev/null --write-out '%{http_code}\n' \
+      -H "Cookie: $cookie" "$api_url/api/v1/projects/$project_id" || printf '000\n'
+    sleep 0.25
+  done
+) >"$api_probe_file" &
+api_probe_pid=$!
+"${compose[@]}" restart api
+wait_for_ready
+curl --fail-with-body --silent --show-error -H "Cookie: $cookie" \
+  "$api_url/api/v1/projects/$project_id" | jq -e --arg id "$project_id" '.id == $id' >/dev/null
+kill "$api_probe_pid" 2>/dev/null || true
+wait "$api_probe_pid" 2>/dev/null || true
+api_started_after="$(service_started_at api)"
+test "$api_started_before" != "$api_started_after"
+grep -Fx 200 "$api_probe_file" >/dev/null
+rm -f "$api_probe_file"
+
+# Fault injection 2/4: enqueue real work with the worker stopped, restart Redis while the BullMQ
+# job is waiting, then start the worker and require the persisted job to reach READY.
+"${compose[@]}" stop worker
+redis_setup_id="$(enqueue_setup '{"clone":false,"install":false,"startIde":false,"registerPorts":false,"maxDurationSeconds":300}')"
+curl --fail-with-body --silent --show-error -H "Cookie: $cookie" \
+  "$api_url/api/v1/setup/jobs/$redis_setup_id" | jq -e '.status == "QUEUED"' >/dev/null
+redis_started_before="$(service_started_at redis)"
+"${compose[@]}" restart redis
+wait_for_redis
+redis_started_after="$(service_started_at redis)"
+test "$redis_started_before" != "$redis_started_after"
+"${compose[@]}" start worker
+wait_for_ready
+wait_for_setup_ready "$redis_setup_id"
+
+# Give the next two jobs a deterministic blocking install stage. Removing the hold file makes the
+# same operation immediately retryable without an external repository or package registry.
+docker exec "$container_id" sh -lc \
+  'printf %s '\''{"name":"odc-fault-injection","version":"1.0.0","scripts":{"preinstall":"while [ -f .odc-hold-setup ]; do sleep 1; done"}}'\'' > /workspace/repository/package.json'
+
+# Fault injection 3/4: restart the Runtime Broker while it owns an exec request. Docker keeps the
+# workspace itself alive; the setup retry must reconnect to the broker and finish after recovery.
+docker exec "$container_id" touch /workspace/repository/.odc-hold-setup
+broker_setup_id="$(enqueue_setup '{"clone":false,"install":true,"startIde":false,"registerPorts":false,"maxDurationSeconds":300}')"
+wait_for_setup_stage "$broker_setup_id" INSTALLING_DEPS
+broker_started_before="$(service_started_at runtime-broker)"
+"${compose[@]}" restart runtime-broker
+docker exec "$container_id" rm -f /workspace/repository/.odc-hold-setup
+wait_for_ready
+broker_started_after="$(service_started_at runtime-broker)"
+test "$broker_started_before" != "$broker_started_after"
+test "$(docker inspect "$container_id" --format '{{.State.Running}}')" = "true"
+wait_for_setup_ready "$broker_setup_id"
+
+# Fault injection 4/4: SIGKILL the worker in the middle of an install, age the persisted heartbeat
+# to model the documented 60-second stale lease, and prove startup recovery reclaims the real job.
+docker exec "$container_id" touch /workspace/repository/.odc-hold-setup
+worker_setup_id="$(enqueue_setup '{"clone":false,"install":true,"startIde":false,"registerPorts":false,"maxDurationSeconds":300}')"
+wait_for_setup_stage "$worker_setup_id" INSTALLING_DEPS
+worker_started_before="$(service_started_at worker)"
+"${compose[@]}" kill -s SIGKILL worker
+test "$(docker inspect "$("${compose[@]}" ps -a -q worker)" --format '{{.State.Running}}')" = "false"
+docker exec "$container_id" rm -f /workspace/repository/.odc-hold-setup
+updated_setup_jobs="$("${compose[@]}" exec -T postgres psql -U oliveira -d devcloud -tAc \
+  "WITH updated AS (UPDATE \"SetupJob\" SET \"heartbeatAt\" = NOW() - INTERVAL '2 minutes' WHERE id = '$worker_setup_id' AND status = 'RUNNING' RETURNING id) SELECT count(*) FROM updated")"
+test "$(tr -d '[:space:]' <<<"$updated_setup_jobs")" = "1"
+"${compose[@]}" start worker
+worker_started_after="$(service_started_at worker)"
+test "$worker_started_before" != "$worker_started_after"
+wait_for_setup_ready "$worker_setup_id"
+"${compose[@]}" exec -T postgres psql -U oliveira -d devcloud -tAc \
+  "SELECT count(*) FROM \"SetupJobLog\" WHERE \"setupJobId\" = '$worker_setup_id' AND message LIKE 'Worker detectou execu%job reenfileirado'" \
+  | tr -d '[:space:]' | grep -Fx 1 >/dev/null
+
 "${compose[@]}" exec -T postgres pg_dump -U oliveira -d devcloud -Fc > "$backup_root/devcloud.dump"
 sudo tar -C /var/lib/oliveira-devcloud -czf - workspaces > "$backup_root/workspaces.tar.gz"
 sha256sum "$backup_root/devcloud.dump" "$backup_root/workspaces.tar.gz" | tee "$evidence_root/backup-sha256.txt"
@@ -195,6 +346,10 @@ user_project_workspace_terminal=passed
 postgres_restart=passed
 redis_aof_restart=passed
 workspace_bind_restart=passed
+api_restart_during_authenticated_reads=passed
+redis_restart_with_queued_setup=passed
+runtime_broker_restart_during_setup=passed
+worker_sigkill_setup_recovery=passed
 postgres_isolated_restore=passed
 workspace_isolated_restore=passed
 marker_checksum=$marker_checksum
