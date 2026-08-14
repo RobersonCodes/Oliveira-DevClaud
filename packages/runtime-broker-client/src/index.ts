@@ -4,6 +4,8 @@ import type {
   ContainerInspectResult,
   ExecRequestInput,
   ExecResult,
+  PruneWorkspaceResourcesInput,
+  PruneWorkspaceResourcesResult,
   WorkspaceContainerResult
 } from './contract.js';
 
@@ -129,6 +131,10 @@ export class RuntimeBrokerClient {
 
   async pruneNetworks(): Promise<{ removed: string[] }> {
     return this.request('POST', '/v1/maintenance/prune-networks');
+  }
+
+  async pruneWorkspaceResources(input: PruneWorkspaceResourcesInput): Promise<PruneWorkspaceResourcesResult> {
+    return this.request('POST', '/v1/maintenance/prune-workspace-resources', input);
   }
 
   execTty(containerId: string, opts: { cmd: string[]; workingDir?: string; cols: number; rows: number }): TtyExecSession {

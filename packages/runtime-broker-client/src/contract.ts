@@ -79,3 +79,19 @@ export type ContainerInspectResult = {
 };
 
 export type WorkspaceContainerResult = { containerId: string; name: string; status: string };
+
+export const PruneWorkspaceResourcesSchema = z.object({
+  // This is a snapshot of the PostgreSQL source of truth, supplied by the API. The broker still
+  // applies its own exact-label and age checks before deleting anything.
+  activeWorkspaceIds: z.array(z.string().cuid()).max(10_000),
+  orphanedBefore: z.string().datetime()
+});
+export type PruneWorkspaceResourcesInput = z.infer<typeof PruneWorkspaceResourcesSchema>;
+export type PruneWorkspaceResourcesResult = {
+  removedContainers: string[];
+  removedNetworks: string[];
+  retainedWorkspaceIds: string[];
+  skippedRecent: number;
+  skippedAttachedNetworks: number;
+  failures: number;
+};

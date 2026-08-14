@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `fd955a8` (`fix(fase7): normalize busybox timeout exits`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com seis itens concluídos: quotas de CPU, memória, PIDs, disco e duração foram validadas nos CIs Linux/PostgreSQL/Docker `31773353483`/`31773355663`, inclusive timeout real portátil `504`/`124`, e no smoke limpo `31773355668` |
-| Etapa ativa | Etapa 7 — quotas de recursos e duração |
+| Commit de referência | `f7d3bf5` (`docs(fase7): record quota validation evidence`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com seis itens concluídos; o sétimo (reaper seguro de storage/container/rede) está implementado e validado localmente sem Docker, aguardando a regressão real no CI Linux/Docker |
+| Etapa ativa | Etapa 7 — remoção segura de recursos órfãos |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Remover storage, containers e redes órfãos com segurança |
+| Próxima ação única | Validar o reaper no CI Linux/Docker real e só então concluir o sétimo item |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -901,6 +901,15 @@ lint e prova negativa, typecheck, as regressões reais de encerramento e a suít
 arquivos, 317 aprovados e 2 ignorados**), build e audit sem vulnerabilidades. O smoke limpo
 `31773355668` também passou. Sexto item da Fase 7 concluído.
 
+O reaper de recursos órfãos foi implementado em duas fronteiras: a API obtém dois snapshots dos
+workspaces persistidos e coordena o storage; o Runtime Broker, único detentor do Docker socket,
+remove somente containers/redes com labels exatos, ID ausente e criação anterior à carência. A API
+só apaga um diretório filho CUID depois do retorno Docker, preserva IDs retidos e refaz a consulta ao
+banco imediatamente antes da remoção. Falhas são isoladas e ficam para retry; symlinks, recursos
+recentes e redes com endpoints desconhecidos não são forçados. Localmente, testes puros **2/2**,
+typecheck dos 26 workspaces, lint com 0 erros/19 avisos legados e diff-check passaram. A regressão
+Docker real foi adicionada, mas o daemon local está parado; o item continua aberto até o CI Linux.
+
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
 **Status:** `CONCLUÍDA`. Esta rodada interrompeu temporariamente a próxima ação ordinária da Fase 7
@@ -1119,6 +1128,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, primeira validação CI | `EM ANDAMENTO` | Commit `d8354f4`; smoke limpo `31771915719` verde. CIs `31771912825`/`31771915723`: migrations, imagem, lint/prova negativa e typecheck verdes; testes 314 aprovados, 2 ignorados e 2 falhos. Logs provam que Alpine/BusyBox encerra os processos no prazo com exit `143`, mas broker e Agent Engine ainda não o normalizam para `EXEC_TIMEOUT`/`124` | Obter aprovação explícita para a correção focada exigida pelo fluxo `gh-fix-ci` e revalidar no CI |
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, correção BusyBox | `EM ANDAMENTO` | Correção aprovada pelo usuário: broker classifica `143` como timeout somente após consumir o watchdog e preserva `143` imediato; Agent Engine normaliza os sinais do timeout para `124`. Nova regressão Docker cobre o exit imediato. Typecheck de broker/agente, testes puros 11/11, lint 0 erros/19 avisos e diff-check verdes; Docker local segue indisponível | Commitar/push e revalidar encerramento real e semântica `504`/`124` no CI Linux |
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, CI e encerramento | `CONCLUÍDA` | Commits `d8354f4`/`fd955a8`; CIs `31773353483`/`31773355663` aplicaram migration e aprovaram cgroups, persistência PostgreSQL, quota de disco no filesystem real, deadlines e timeout portátil com processo encerrado, além da suíte total 317 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31773355668` verde. Sexto item concluído | Remover storage, containers e redes órfãos com segurança |
+| 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `f7d3bf5`; escopo confirmado: remover storage, containers e redes órfãos somente com identidade controlada e prova de ausência na fonte persistente, preservando recursos ativos e falhas parciais para nova tentativa | Inventariar labels, ciclo de destruição e endpoint de manutenção antes de definir o plano seguro de coleta |
+| 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, validação local | `EM ANDAMENTO` | Reaper periódico fail-closed implementado entre API/PostgreSQL, Runtime Broker/Docker e storage: snapshots duplos, labels exatos, carência, diretório CUID direto, rejeição de symlink, rechecagem no instante da remoção e retry de falhas parciais. Exclusão explícita também remove storage depois do Docker. Testes puros 2/2; typecheck dos 26 workspaces, lint 0 erros/19 avisos e diff-check verdes. Docker local indisponível (`docker_engine` inexistente) | Commitar/push e exigir CI Linux/Docker verde para preservação do workspace ativo e coleta do órfão real |
 
 ### Modelo para futuras entradas
 

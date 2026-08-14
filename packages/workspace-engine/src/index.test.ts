@@ -144,8 +144,10 @@ describe('DockerWorkspaceEngine — real broker, real Docker container lifecycle
   }, 20_000);
 
   it('destroy() removes the container entirely, even while running', async () => {
-    const runtime = await engine.create(workspaceInput());
-    await engine.destroy(runtime.containerId);
+    const input = workspaceInput();
+    const runtime = await engine.create(input);
+    await engine.destroy(runtime.containerId, input.workspaceId);
     await expect(docker.getContainer(runtime.containerId).inspect()).rejects.toMatchObject({ statusCode: 404 });
+    await expect(fs.stat(runtime.workspacePath)).rejects.toMatchObject({ code: 'ENOENT' });
   }, 20_000);
 });

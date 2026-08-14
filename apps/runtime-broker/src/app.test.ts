@@ -288,6 +288,37 @@ describe('Runtime Broker — interactive exec-tty (terminal-engine)', () => {
 });
 
 describe('Runtime Broker — maintenance', () => {
+  it('prunes only old labeled resources absent from the PostgreSQL workspace snapshot', async () => {
+    await withBroker(async client => {
+      const activeWorkspaceId = 'cm12345678901234567890123';
+      const orphanWorkspaceId = 'cm22345678901234567890123';
+      const input = { projectId: crypto.randomUUID(), limits: { cpuLimit: 1, memoryMb: 512 } };
+      const active = await client.createWorkspaceContainer(activeWorkspaceId, input);
+      const orphan = await client.createWorkspaceContainer(orphanWorkspaceId, input);
+      containerIds.push(active.containerId, orphan.containerId);
+      const orphanNetwork = Object.keys((await client.inspect(orphan.containerId)).networks)[0]!;
+
+      const recent = await client.pruneWorkspaceResources({
+        activeWorkspaceIds: [],
+        orphanedBefore: new Date(0).toISOString()
+      });
+      expect(recent.retainedWorkspaceIds).toEqual(expect.arrayContaining([activeWorkspaceId, orphanWorkspaceId]));
+      await expect(client.inspect(orphan.containerId)).resolves.toMatchObject({ running: true });
+
+      const result = await client.pruneWorkspaceResources({
+        activeWorkspaceIds: [activeWorkspaceId],
+        orphanedBefore: new Date(Date.now() + 60_000).toISOString()
+      });
+
+      expect(result.removedContainers).toContain(orphan.containerId);
+      expect(result.retainedWorkspaceIds).not.toContain(activeWorkspaceId);
+      await expect(client.inspect(orphan.containerId)).rejects.toMatchObject({ statusCode: 404 });
+      await expect(client.inspect(active.containerId)).resolves.toMatchObject({ running: true });
+      await expect(docker.getNetwork(orphanNetwork).inspect()).rejects.toMatchObject({ statusCode: 404 });
+      containerIds.splice(containerIds.indexOf(orphan.containerId), 1);
+    });
+  }, 45_000);
+
   it('prune-networks removes only orphaned workspace networks', async () => {
     await withBroker(async client => {
       const workspaceId = crypto.randomUUID();

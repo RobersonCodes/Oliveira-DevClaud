@@ -68,7 +68,17 @@ export class DockerWorkspaceEngine implements WorkspaceEngine {
   async start(id: string) { await this.broker.start(id); }
   async stop(id: string) { await this.broker.stop(id, 10); }
   async restart(id: string) { await this.broker.restart(id, 10); }
-  async destroy(id: string, workspaceId?: string) { await this.broker.destroy(id, workspaceId); }
+  async destroy(id: string, workspaceId?: string) {
+    await this.broker.destroy(id, workspaceId);
+    if (!workspaceId) return;
+    const workspacePath = path.join(this.root, safeId(workspaceId));
+    // The broker/container must be gone before its bind mount is reclaimed. Resolve only one
+    // direct child of the configured workspace root; never follow a caller-controlled path.
+    if (path.dirname(workspacePath) !== this.root || path.basename(workspacePath) !== safeId(workspaceId)) {
+      throw new Error('INVALID_WORKSPACE_STORAGE_PATH');
+    }
+    await fs.rm(workspacePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
 
   async inspect(id: string) {
     const info = await this.broker.inspect(id);

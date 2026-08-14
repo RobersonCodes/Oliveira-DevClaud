@@ -138,13 +138,17 @@ dev/CI, onde o broker roda direto no host (não containerizado), essa conexão �
 acontece — o host já enxerga qualquer rede bridge do Docker sem precisar se juntar a ela
 explicitamente.
 
-`destroy()` remove o container e, em seguida, desconecta o relay e remove a rede — nunca por nome
-adivinhado, sempre pelo nome derivado deterministicamente do `workspaceId`, então jamais afeta a rede
-de outro workspace. Se a rede ainda tiver algum endpoint preso (ex.: uma falha de desconexão), a
-remoção é deixada para `pruneOrphanedNetworks()` (mesmo módulo, exposta via
-`POST /v1/maintenance/prune-networks`), que remove apenas redes com o label acima e zero containers
-conectados; hoje é invocável sob demanda e pensada para ser agendada periodicamente pelo reaper da
-Fase 7 (ainda não implementada como job agendado — ver `docs/HARDENING-ROADMAP.md`).
+`destroy()` remove o container, desconecta o relay, remove a rede e só então apaga o diretório do
+bind mount. Falhas parciais continuam recuperáveis pelo reaper da Fase 7, iniciado pela API e
+executado a cada cinco minutos com uma hora de carência por padrão. O PostgreSQL fornece dois
+snapshots dos IDs ativos; o broker só remove containers/redes com labels DevCloud exatos, ID ausente
+dos snapshots e criação anterior ao cutoff. Redes com endpoints desconhecidos nunca são forçadas.
+Somente depois dessa etapa Docker a API considera storage: aceita exclusivamente um filho direto do
+`WORKSPACE_ROOT` cujo nome seja CUID, rejeita symlinks/entradas recentes, preserva IDs que o broker
+reteve e consulta o PostgreSQL novamente imediatamente antes de `rm`. Indisponibilidade do banco ou
+broker falha fechado e deixa o recurso para a próxima rodada. O contrato interno é
+`POST /v1/maintenance/prune-workspace-resources`; o antigo `prune-networks` permanece para manutenção
+compatível e testes isolados.
 
 ## Hardening Fase 4 — Runtime Broker (P1-5)
 
@@ -157,7 +161,7 @@ reiniciar/destruir o container de um workspace, um `exec` genérico de um-tiro (
 `git-engine`, `setup-engine`, `review-engine`, `repository-intelligence`, `code-intelligence`,
 `contract-intelligence`, `agent-engine`, `repository-bootstrap` e `ide-engine`), um `exec` TTY
 interativo via WebSocket (só para `terminal-engine` — o único caso genuinamente bidirecional/
-streaming) e uma rota de manutenção para varrer redes órfãs. A imagem do container, o caminho de
+streaming) e rotas internas de manutenção para varrer redes e o conjunto container/rede órfão. A imagem do container, o caminho de
 bind e o nome da rede nunca vêm do chamador — são sempre derivados internamente pelo próprio broker a
 partir do `workspaceId`; `Privileged`, `CapAdd` e mounts arbitrários não têm campo nenhum no schema
 de request, então não podem ser pedidos, nem por um chamador comprometido. O broker nunca publica

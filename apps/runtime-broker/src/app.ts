@@ -5,6 +5,7 @@ import { ZodError } from 'zod';
 import {
   CreateWorkspaceContainerSchema,
   ExecRequestSchema,
+  PruneWorkspaceResourcesSchema,
   StopOrRestartSchema
 } from '@oliveira/runtime-broker-client';
 import { requireBrokerAuth } from './auth.js';
@@ -12,6 +13,7 @@ import { withAudit } from './audit.js';
 import { execInContainer } from './exec.js';
 import { handleExecTtySocket } from './execTty.js';
 import { pruneOrphanedNetworks } from './network.js';
+import { pruneOrphanedWorkspaceResources } from './orphanReaper.js';
 import {
   createWorkspaceContainer,
   destroyContainer,
@@ -118,6 +120,17 @@ export async function buildBrokerApp(opts: BuildBrokerAppOptions = {}) {
   app.post('/v1/maintenance/prune-networks', async () => {
     const removed = await withAudit('prune-networks', {}, () => pruneOrphanedNetworks(docker));
     return { removed };
+  });
+
+  app.post('/v1/maintenance/prune-workspace-resources', async request => {
+    const input = PruneWorkspaceResourcesSchema.parse(request.body);
+    const activeWorkspaceIds = new Set(input.activeWorkspaceIds);
+    return withAudit('prune-workspace-resources', {}, () => pruneOrphanedWorkspaceResources(
+      docker,
+      config,
+      activeWorkspaceIds,
+      new Date(input.orphanedBefore)
+    ));
   });
 
   app.get('/v1/containers/:id/exec-tty', { websocket: true }, (socket, request) => {

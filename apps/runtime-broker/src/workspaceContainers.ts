@@ -6,6 +6,9 @@ import { connectRelayToWorkspaceNetwork, disconnectRelayFromWorkspaceNetwork, en
 
 const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 64);
 const isDockerNotFound = (err: unknown) => typeof err === 'object' && err !== null && 'statusCode' in err && (err as { statusCode: unknown }).statusCode === 404;
+export const WORKSPACE_CONTAINER_LABEL = 'dev.oliveira.devcloud';
+export const WORKSPACE_CONTAINER_ID_LABEL = 'dev.oliveira.workspace-id';
+export const WORKSPACE_CONTAINER_VALUE = 'workspace';
 
 export type BrokerConfig = {
   image: string;
@@ -44,8 +47,8 @@ export async function createWorkspaceContainer(docker: Docker, config: BrokerCon
     Tty: true,
     OpenStdin: true,
     Labels: {
-      'dev.oliveira.devcloud': 'workspace',
-      'dev.oliveira.workspace-id': workspaceId,
+      [WORKSPACE_CONTAINER_LABEL]: WORKSPACE_CONTAINER_VALUE,
+      [WORKSPACE_CONTAINER_ID_LABEL]: workspaceId,
       'dev.oliveira.project-id': input.projectId,
       'dev.oliveira.disk-mb': String(input.limits.diskMb),
       'dev.oliveira.max-runtime-minutes': String(input.limits.maxRuntimeMinutes),
