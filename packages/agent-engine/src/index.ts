@@ -51,7 +51,9 @@ export class DockerAgentEngine {
     const command = [binary, ...args].join(' ');
     const maxDurationSeconds = Math.max(1, Math.min(input.maxDurationSeconds ?? 3600, 14_400));
     const agentCommand = `${command} 2>&1 | tee "$ODC_LOG_FILE"; exit \${PIPESTATUS[0]}`;
-    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; timeout -s TERM -k 10s ${maxDurationSeconds}s bash -lc "$ODC_AGENT_COMMAND"; code=$?; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
+    // GNU timeout returns 124 after its TERM deadline; BusyBox returns the child's 143 instead.
+    // This wrapper owns that TERM, so normalize both implementations to the persisted quota code.
+    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; timeout -s TERM -k 10s ${maxDurationSeconds}s bash -lc "$ODC_AGENT_COMMAND"; code=$?; if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then code=124; fi; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
 
     const result = await this.exec(input.containerId, [
       'tmux', 'new-session', '-d', '-s', sessionName, '-c', input.workingDirectory ?? '/workspace/repository',

@@ -31,6 +31,7 @@ export async function execInContainer(docker: Docker, containerId: string, input
     AttachStdout: true,
     AttachStderr: true
   });
+  const watchdogStartedAt = Date.now();
   const stream = await exec.start({ hijack: true, stdin: false });
 
   let output = '';
@@ -57,7 +58,12 @@ export async function execInContainer(docker: Docker, containerId: string, input
   }
 
   const result = await exec.inspect();
-  if (result.ExitCode === 124 || result.ExitCode === 137) {
+  const watchdogElapsedMs = Date.now() - watchdogStartedAt;
+  // GNU coreutils reports an expired TERM watchdog as 124, while Alpine/BusyBox reports the
+  // terminated child's 143. Only classify BusyBox's 143 after the rounded watchdog duration has
+  // actually elapsed so a command that deliberately exits 143 immediately keeps its real status.
+  const busyBoxTimeout = result.ExitCode === 143 && watchdogElapsedMs + 50 >= timeoutSeconds * 1000;
+  if (result.ExitCode === 124 || result.ExitCode === 137 || busyBoxTimeout) {
     throw Object.assign(new Error('EXEC_TIMEOUT'), { statusCode: 504 });
   }
   return { exitCode: result.ExitCode ?? 1, output };

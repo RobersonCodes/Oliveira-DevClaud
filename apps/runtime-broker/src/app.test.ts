@@ -199,6 +199,16 @@ describe('Runtime Broker — exec allowlist', () => {
     });
   }, 30_000);
 
+  it('preserves an immediate exit 143 that did not consume the watchdog duration', async () => {
+    await withBroker(async client => {
+      const workspaceId = crypto.randomUUID();
+      const created = await client.createWorkspaceContainer(workspaceId, { projectId: crypto.randomUUID(), limits: { cpuLimit: 1, memoryMb: 512 } });
+      containerIds.push(created.containerId);
+      const result = await client.exec(created.containerId, { cmd: ['sh', '-c', 'exit 143'], timeoutMs: 2_000 });
+      expect(result).toMatchObject({ exitCode: 143 });
+    });
+  }, 30_000);
+
   it('rejects an exec `user` outside the allowlist before ever touching Docker', async () => {
     await withBroker(async (client, broker) => {
       const workspaceId = crypto.randomUUID();
