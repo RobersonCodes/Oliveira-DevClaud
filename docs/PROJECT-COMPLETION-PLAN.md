@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `3e6a856` (`docs(readme): document hardening validation gates`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento após retry/backoff, CAS/idempotência e heartbeat persistente validados em CI. Recovery periódico de AgentTask/Orchestration foi implementado localmente com lease/CAS e regressões puras; as provas PostgreSQL de posse, corrida e terminal aguardam CI |
-| Etapa ativa | Etapa 7 — recuperação de jobs abandonados após crash/redeploy |
+| Commit de referência | `b6ad202` (`feat(fase7): recover interrupted runtime jobs`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` com imagem `1.1.0` publicada no GHCR e ensaio automatizado integral aprovado em `ubuntu-latest` (pull por digest, Compose, migrations, usuário/projeto/workspace/terminal, restart, persistência e restore isolado); execução autenticada de agente ainda depende de credencial do usuário. A Fase 7 permanece em andamento com retries/backoff, CAS/idempotência, heartbeat persistente e recovery periódico de AgentTask/Orchestration validados em CI Linux/PostgreSQL. Posse única, retomada, runtime perdido e cancelamento concorrente passaram em PostgreSQL real |
+| Etapa ativa | Etapa 7 — dead-letter e revisão manual para falhas permanentes |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Publicar o recovery e exigir CI Linux/PostgreSQL verde para posse única, runtime perdido, retomada e cancelamento concorrente |
+| Próxima ação única | Criar dead-letter/revisão manual para falhas permanentes, preservando payload sanitizado e reprocessamento idempotente |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -802,7 +802,7 @@ da Fase 6 estão atendidos.
 - [x] Configurar retries e backoff por tipo de job BullMQ.
 - [x] Definir idempotency keys e compare-and-swap nas transições críticas.
 - [x] Implementar heartbeat de agent tasks, orquestrações e workspaces.
-- [ ] Recuperar jobs abandonados após crash/redeploy.
+- [x] Recuperar jobs abandonados após crash/redeploy.
 - [ ] Criar dead-letter/revisão manual para falhas permanentes.
 - [ ] Implementar quotas de CPU, memória, processos, disco e duração.
 - [ ] Remover storage, containers e redes órfãos com segurança.
@@ -865,9 +865,12 @@ OrchestrationStep; runtime ausente falha a cadeia. Orchestration stale em `RUNNI
 uma lease por CAS antes de ser reenfileirada. Todas as gravações preservam a ordem task → step →
 orchestration e perdem silenciosamente a corrida para cancelamento/conclusão terminal. Localmente,
 testes puros de recovery + heartbeat passaram **6/6**; lint terminou com 0 erros/19 avisos legados,
-typecheck dos 26 workspaces e `git diff --check` passaram. Quatro regressões com o adaptador Prisma
-real cobrem conclusão retomada, runtime perdido, dois workers disputando a mesma posse e cancelamento
-concorrente; a evidência PostgreSQL aguarda CI porque este host não possui banco de teste configurado.
+typecheck dos 26 workspaces e `git diff --check` passaram. No commit `b6ad202`, os CIs
+`31766839389`/`31766841828` aprovaram as quatro regressões PostgreSQL do adaptador real — conclusão
+retomada, runtime perdido, dois workers disputando a mesma posse e cancelamento concorrente — dentro
+da suíte completa (**35 arquivos, 297 aprovados e 2 ignorados**), além de lint/prova negativa,
+typecheck, build e audit sem vulnerabilidades. O smoke limpo `31766841763` também passou. Quarto item
+da Fase 7 concluído.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1078,6 +1081,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-13 | Codex | Fase 7 — encerramento da documentação pós-remediação | `CONCLUÍDA` | Commit `3e6a856`; README explicita ESLint TS/React, `permissions: contents: read`, prova negativa `no-debugger` e resposta anti-enumeração do login. Local: 25 links relativos sem ausências, `git diff --check` verde e lint com 0 erros/19 avisos legados. CIs `31764930855`/`31764934304` aprovaram migrations, imagem, lint/prova negativa, typecheck, testes, build e audit; smoke limpo `31764934319` aprovado | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
 | 2026-08-14 | Codex | Fase 7 — recovery de jobs, início | `EM ANDAMENTO` | Retomada da próxima ação única em árvore limpa no commit `d056677`; escopo e aceite confirmados: heartbeat + recovery para AgentTask/Orchestration, com CAS de posse, corrida e preservação de estados terminais. Recovery já existente de SetupJob será preservado e usado como referência, não como substituto do aceite | Inventariar estados/transições e extrair recovery testável antes de integrar ao startup do worker |
 | 2026-08-14 | Codex | Fase 7 — recovery de jobs, validação local | `EM ANDAMENTO` | Sweep periódico 30s/cutoff 60s integrado; AgentTask viva/terminal/perdida e Orchestration stale usam lease/CAS, dedupe e ordem task → step → orchestration. Testes puros recovery+heartbeat 6/6; typecheck dos 26 workspaces, lint 0 erros/19 avisos e diff-check verdes. Quatro regressões Prisma reais adicionadas; PostgreSQL local indisponível | Commitar/push e validar posse, corrida e estados terminais no CI Linux/PostgreSQL |
+| 2026-08-14 | Codex | Fase 7 — recovery de jobs, CI e encerramento | `CONCLUÍDA` | Commit `b6ad202`; CIs `31766839389`/`31766841828` aprovaram 4/4 regressões PostgreSQL de recovery, suíte total 297 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades; smoke limpo `31766841763` aprovado. Quarto item do checklist concluído | Criar dead-letter/revisão manual para falhas permanentes |
 
 ### Modelo para futuras entradas
 
