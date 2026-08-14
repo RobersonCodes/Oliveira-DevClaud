@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from 'next';
 import type { ReactNode } from 'react';
+import { MobileNavigation } from './mobile-navigation';
 import { PwaLifecycle } from './pwa-lifecycle';
 import './styles.css';
 
@@ -28,5 +29,5 @@ export const viewport: Viewport = {
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
-  return <html lang="pt-BR"><body>{children}<PwaLifecycle /></body></html>;
+  return <html lang="pt-BR"><body>{children}<MobileNavigation /><PwaLifecycle /></body></html>;
 }

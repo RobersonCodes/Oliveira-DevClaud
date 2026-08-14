@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `2637473` (`feat(fase8): add network-only PWA shell`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento com manifest/ícones/tema e shell PWA network-only aprovados nos CIs `31830093847`/`31830096715` e smoke `31830096679`; P1-16 permanece parcial até navegação mobile, 320px/safe areas, touch targets e testes físicos |
+| Commit de referência | `973e21d` (`docs(fase8): record PWA shell evidence`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA network-only, navegação mobile persistente e layout 320px/safe areas estão implementados e validados localmente; P1-16 permanece parcial até concluir todos os touch targets, toolbar/fluxos touch, retomada e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Implementar navegação mobile persistente, layout funcional a partir de 320 CSS px e safe areas em todas as rotas principais |
+| Próxima ação única | Auditar e normalizar para pelo menos 44 × 44 px todos os alvos de toque das ações essenciais nas rotas mobile |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -1003,8 +1003,8 @@ interface desktop reduzida.
 
 - [x] Criar manifest, ícones PWA/Apple, tema e service worker.
 - [x] Implementar instalação e shell de reconexão, sem prometer execução offline.
-- [ ] Garantir layout funcional a partir de 320 CSS px e safe areas.
-- [ ] Criar navegação mobile persistente como substituta da navegação desktop.
+- [x] Garantir layout funcional a partir de 320 CSS px e safe areas.
+- [x] Criar navegação mobile persistente como substituta da navegação desktop.
 - [ ] Usar alvo interno de toque de pelo menos 44 × 44 px.
 - [ ] Criar toolbar de terminal com Esc, Ctrl, Tab, setas e símbolos úteis.
 - [ ] Adaptar command palette, diffs, logs e aprovação para toque.
@@ -1033,6 +1033,20 @@ permanecem pendentes conforme os itens ainda abertos. No commit `2637473`, os CI
 `31830093847`/`31830096715` aprovaram **43 arquivos, 327 testes e 2 ignorados**, lint/prova negativa,
 typecheck, build e audit sem vulnerabilidades; o smoke Ubuntu `31830096679` também passou, inclusive
 fault injection, restore isolado e cleanup.
+
+O corte seguinte adicionou `MobileNavigation` ao layout raiz: quatro destinos primários permanecem
+visíveis no bottom bar e os outros onze ficam em um `<dialog>` nativo, rolável, com estado ativo por
+`usePathname`; o login não recebe a navegação autenticada. CSS global reserva a home indicator,
+aplica safe areas nos quatro lados, mantém o banner de conexão acima da barra e elimina overflow
+estrutural a partir de 320 CSS px. A revisão React moveu `showModal()`/`close()` do efeito para os
+handlers que originam a interação. Testes direcionados PWA/mobile **6/6**, typecheck web, lint (0
+erros/19 avisos legados), build Next 16 com 20 páginas e `git diff --check` passaram. Playwright real
+em Chromium confirmou **15/15 rotas** com viewport/scroll width `320/320`, sem overlay, barra visível,
+cinco alvos persistentes de `61×48`, onze links no dialog, grupo secundário ativo após navegação,
+login sem barra e desktop com barra oculta/sidebar preservado. O único console `500` foi a chamada
+esperada de métricas ao rodar `next start` sem o nginx/API; a renderização permaneceu íntegra. Safe
+areas foram verificadas por CSS/teste automatizado; notch e home indicator reais continuam pendentes
+da matriz física.
 
 ---
 
@@ -1178,6 +1192,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 8 — PWA/mobile-first, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `2de7068`; P1-16 confirmado como primeiro escopo. Decisões iniciais: manifest pela convenção App Router, viewport/theme separados e registro do service worker em componente Client; conteúdo autenticado não será prometido nem armazenado para execução offline | Inventariar layout/assets/config e implementar o shell PWA instalável com testes |
 | 2026-08-14 | Codex | Fase 8 — shell PWA, validação local | `EM ANDAMENTO` | Manifest/ícone PWA+Apple/tema, worker network-only e indicador de reconexão implementados; revisão React corrigiu corrida de timer após nova queda. Testes PWA 3/3, typecheck web, lint 0 erros/19 avisos legados, build Next 16 e diff-check verdes. `next start` real confirmou home/manifest/sw `200`, instalação `standalone`, metadata e headers anti-cache/scope; processo temporário removido. Testes físicos não executados nesta etapa | Commitar/push, validar CI e seguir para navegação mobile persistente + 320px/safe areas |
 | 2026-08-14 | Codex | Fase 8 — shell PWA, CI e encerramento do corte | `EM ANDAMENTO` | Commit `2637473`; CIs `31830093847`/`31830096715` aprovaram 43 arquivos, 327 testes + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31830096679` verde com fault injection, restore e cleanup. Primeiros dois itens da Fase 8 concluídos; P1-16 permanece parcial pelos itens mobile ainda abertos | Implementar navegação mobile persistente, layout a partir de 320px e safe areas |
+| 2026-08-14 | Codex | Fase 8 — navegação mobile, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `973e21d`; escopo restrito aos dois itens ativos: navegação persistente substituta do sidebar, layout desde 320 CSS px e safe areas nas rotas principais. Next 16 confirmou `next/link` para transições e `usePathname` em Client Component isolado para estado ativo | Implementar e testar o shell de navegação mobile global |
+| 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, validação local | `EM ANDAMENTO` | Bottom bar global com quatro destinos + dialog de onze ferramentas, estado ativo, login excluído e safe areas implementados. Testes PWA/mobile 6/6, typecheck, lint 0 erros/19 avisos, build Next 16 e diff-check verdes; Chromium validou 15/15 rotas em 320px sem overflow/overlay, alvos 61×48, menu e fallback desktop. Testes físicos não executados e permanecem pendentes | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
 
 ### Modelo para futuras entradas
 
