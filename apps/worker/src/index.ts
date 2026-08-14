@@ -10,10 +10,11 @@ import { DockerAgentEngine } from '@oliveira/agent-engine';
 import { DockerGitIsolationEngine } from '@oliveira/git-engine';
 import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
 import { readyStepKeys, OrchestrationQueue } from '@oliveira/orchestrator-engine';
-import { asBullMqJobError } from './lib/jobErrors.js';
+import { asBullMqJobError, isPermanentJobError } from './lib/jobErrors.js';
 import { refreshRuntimeHeartbeats } from './lib/heartbeats.js';
 import { recoverInterruptedRuntimeJobs } from './lib/recovery.js';
 import { createPrismaRuntimeRecoveryDependencies } from './lib/recoveryStore.js';
+import { recordPermanentJobFailure } from './lib/deadLetters.js';
 
 const connection = new IORedis(process.env.REDIS_URL ?? 'redis://localhost:6379', { maxRetriesPerRequest:null });
 const queue = new OrchestrationQueue(); const agents = new DockerAgentEngine(); const git = new DockerGitIsolationEngine(); const heartbeatWorkspaces = new DockerWorkspaceEngine();
@@ -24,6 +25,22 @@ const safeAgentStartErrorCode = (error: unknown) => {
   const message = error instanceof Error ? error.message : '';
   return /^[A-Z][A-Z0-9_]{2,79}$/.test(message) ? message : 'AGENT_START_FAILED';
 };
+
+async function captureOrchestrationDeadLetter(job: { id?: string; attemptsMade: number; data: { orchestrationId?: string } }, error: unknown) {
+  const orchestrationId = job.data.orchestrationId;
+  if (!orchestrationId || job.id === undefined) return;
+  const source = await prisma.orchestration.findUnique({ where: { id: orchestrationId }, select: { workspaceId: true, workspace: { select: { project: { select: { organizationId: true } } } } } });
+  if (!source) return;
+  await recordPermanentJobFailure({ database: prisma, queue: 'ORCHESTRATION', organizationId: source.workspace.project.organizationId, workspaceId: source.workspaceId, sourceId: orchestrationId, sourceJobId: String(job.id), payload: { orchestrationId }, attempts: job.attemptsMade + 1, error });
+}
+
+async function captureSetupDeadLetter(job: { id?: string; attemptsMade: number; data: { setupJobId?: string } }, error: unknown) {
+  const setupJobId = job.data.setupJobId;
+  if (!setupJobId || job.id === undefined) return;
+  const source = await prisma.setupJob.findUnique({ where: { id: setupJobId }, select: { organizationId: true, workspaceId: true } });
+  if (!source) return;
+  await recordPermanentJobFailure({ database: prisma, queue: 'SETUP', organizationId: source.organizationId, workspaceId: source.workspaceId, sourceId: setupJobId, sourceJobId: String(job.id), payload: { setupJobId }, attempts: job.attemptsMade + 1, error });
+}
 
 async function tick(orchestrationId:string){
   const o=await prisma.orchestration.findUnique({where:{id:orchestrationId},include:{workspace:true,steps:{include:{agentTask:{select:{status:true}}}}}}); if(!o||!['QUEUED','RUNNING'].includes(o.status)) return;
@@ -140,7 +157,11 @@ const orchestrationWorker = new Worker('oliveira-orchestrations', async job=>{
   const orchestrationId=job.data.orchestrationId as string;
   activeOrchestrationIds.add(orchestrationId);
   try { if(job.name==='tick') await tick(orchestrationId); }
-  catch(error) { throw asBullMqJobError(error); }
+  catch(error) {
+    const jobError = asBullMqJobError(error);
+    if (isPermanentJobError(jobError)) await captureOrchestrationDeadLetter(job, jobError);
+    throw jobError;
+  }
   finally { activeOrchestrationIds.delete(orchestrationId); }
 }, {connection,concurrency:4});
 console.log('Oliveira DevCloud orchestration worker online');
@@ -183,7 +204,11 @@ const setupWorker = new Worker('oliveira-setup',async job=>{
   const setupJobId=job.data.setupJobId as string;
   activeSetupJobIds.add(setupJobId);
   try { if(job.name==='provision')await provision(setupJobId); }
-  catch(error) { throw asBullMqJobError(error); }
+  catch(error) {
+    const jobError = asBullMqJobError(error);
+    if (isPermanentJobError(jobError)) await captureSetupDeadLetter(job, jobError);
+    throw jobError;
+  }
   finally { activeSetupJobIds.delete(setupJobId); }
 },{connection,concurrency:2});
 console.log('Oliveira DevCloud setup worker v1.4 online');

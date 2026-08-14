@@ -25,6 +25,7 @@ import { repositoryIntelligenceRoutes } from './routes/repository-intelligence.j
 import { codeIntelligenceRoutes } from './routes/code-intelligence.js';
 import { contextIntelligenceRoutes } from './routes/context-intelligence.js';
 import { contractIntelligenceRoutes } from './routes/contract-intelligence.js';
+import { deadLetterRoutes } from './routes/dead-letters.js';
 import { registerRuntimeProxy } from './lib/runtimeProxy.js';
 import { registerRuntimeGateway, registerRuntimeTicketRoute } from './lib/runtimeGateway.js';
 import { requireHostAdmin } from './lib/auth.js';
@@ -156,6 +157,7 @@ export async function buildApp(opts: { logger?: boolean; disableRateLimit?: bool
   await app.register(codeIntelligenceRoutes, { prefix: '/api/v1/code-intelligence' });
   await app.register(contextIntelligenceRoutes, { prefix: '/api/v1/context-intelligence' });
   await app.register(contractIntelligenceRoutes, { prefix: '/api/v1/contract-intelligence' });
+  await app.register(deadLetterRoutes, { prefix: '/api/v1/dead-letters' });
   await registerRuntimeTicketRoute(app);
   registerRuntimeGateway(app);
   // Deprecated: superseded by the Runtime Gateway above (origin-isolated, ticket-authenticated).

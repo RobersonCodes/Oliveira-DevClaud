@@ -76,6 +76,21 @@ Indisponibilidade do probe mantém o heartbeat anterior deliberadamente stale, p
 recuperação diferencie “vivo confirmado” de “não foi possível verificar”. O sweep roda a cada 15s,
 sem sobreposição, e é desligado antes do graceful shutdown.
 
+### Dead-letter e revisão manual
+
+Falhas permanentes das filas de setup e orquestração também são projetadas para fora da retenção
+limitada do Redis: o worker cria ou atualiza um `DeadLetterJob` no PostgreSQL usando
+`(organizationId, queue, sourceId, sourceJobId)` como chave única. O registro pertence à organização e contém apenas IDs do
+recurso, código de erro normalizado e número de tentativas; prompts, opções, logs e texto livre da
+exceção nunca entram no payload.
+
+A API expõe listagem, resolução e reprocessamento somente a `ADMIN`. A transição manual usa
+`OPEN → REQUEUEING → REQUEUED` com compare-and-swap. Para setup, o novo `SetupJob` é persistido e seu
+ID gravado na dead-letter antes do enqueue; para orquestração, o ID estável é reutilizado. Assim, uma
+falha de Redis ou duas requisições concorrentes retomam o mesmo enqueue em vez de criar trabalho
+duplicado. A resolução sem retry usa `OPEN → RESOLVED`; somente a transição vencedora produz evento
+de auditoria.
+
 
 ## Terminal Plane (v0.4)
 

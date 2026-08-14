@@ -70,6 +70,16 @@ enum OrchestrationReviewStatus {
   REJECTED
   MERGED
 }
+enum DeadLetterQueue {
+  ORCHESTRATION
+  SETUP
+}
+enum DeadLetterStatus {
+  OPEN
+  REQUEUEING
+  REQUEUED
+  RESOLVED
+}
 enum SecretScope {
   ORGANIZATION
   PROJECT
@@ -124,6 +134,7 @@ model Organization {
   auditLogs AuditLog[]
   secrets   Secret[]
   activityLogs ActivityLog[]
+  deadLetters DeadLetterJob[]
 }
 
 model OrganizationMember {
@@ -473,6 +484,30 @@ model SetupJobLog {
   createdAt DateTime @default(now())
   setupJob  SetupJob @relation(fields:[setupJobId], references:[id], onDelete:Cascade)
   @@index([setupJobId, createdAt])
+}
+
+model DeadLetterJob {
+  id                String           @id @default(cuid())
+  organizationId    String
+  workspaceId       String?
+  queue             DeadLetterQueue
+  sourceId          String
+  sourceJobId       String
+  payload           Json
+  errorCode         String
+  attempts          Int              @default(1)
+  status            DeadLetterStatus @default(OPEN)
+  resolutionNote    String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  requeuedSourceId  String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, queue, sourceId, sourceJobId])
+  @@index([organizationId, status, createdAt])
+  @@index([sourceId])
 }
 
 

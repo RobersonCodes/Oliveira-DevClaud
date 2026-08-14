@@ -595,6 +595,71 @@ describe('critical transition CAS and idempotency (real Postgres + Redis)', () =
   });
 });
 
+describe('dead-letter review and manual reprocessing (real Postgres + Redis)', () => {
+  async function createDeadLetterFixture() {
+    const owner = await registerUser();
+    const project = await prisma.project.create({ data: { organizationId: owner.organizationId, name: 'DLQ project', slug: `dlq-${crypto.randomUUID()}` } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id } });
+    const setup = await prisma.setupJob.create({ data: { workspaceId: workspace.id, organizationId: owner.organizationId, status: 'FAILED', stage: 'FAILED', errorCode: 'WORKSPACE_HAS_NO_CONTAINER', finishedAt: new Date() } });
+    const deadLetter = await prisma.deadLetterJob.create({ data: { organizationId: owner.organizationId, workspaceId: workspace.id, queue: 'SETUP', sourceId: setup.id, sourceJobId: `setup-${crypto.randomUUID()}`, payload: { setupJobId: setup.id }, errorCode: 'WORKSPACE_HAS_NO_CONTAINER', attempts: 1 } });
+    return { owner, project, workspace, setup, deadLetter };
+  }
+
+  it('lists only an organization administrator\'s sanitized dead letters', async () => {
+    const fixture = await createDeadLetterFixture();
+    const otherOwner = await registerUser();
+    const allowed = await app.inject({ method: 'GET', url: `/api/v1/dead-letters?organizationId=${fixture.owner.organizationId}`, headers: { cookie: fixture.owner.sessionCookie } });
+    const denied = await app.inject({ method: 'GET', url: `/api/v1/dead-letters?organizationId=${fixture.owner.organizationId}`, headers: { cookie: otherOwner.sessionCookie } });
+
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toEqual([expect.objectContaining({ id: fixture.deadLetter.id, payload: { setupJobId: fixture.setup.id }, errorCode: 'WORKSPACE_HAS_NO_CONTAINER' })]);
+    expect(JSON.stringify(allowed.json())).not.toContain('errorMessage');
+    expect(denied.statusCode).toBe(403);
+  });
+
+  it('resolves an open dead letter idempotently and audits only the winning transition', async () => {
+    const fixture = await createDeadLetterFixture();
+    const url = `/api/v1/dead-letters/${fixture.deadLetter.id}/resolve`;
+    const [first, second] = await Promise.all([
+      app.inject({ method: 'POST', url, headers: { cookie: fixture.owner.sessionCookie }, payload: { note: 'Reviewed; no retry required' } }),
+      app.inject({ method: 'POST', url, headers: { cookie: fixture.owner.sessionCookie }, payload: { note: 'Reviewed concurrently' } })
+    ]);
+
+    expect([first.json(), second.json()]).toEqual(expect.arrayContaining([
+      { ok: true, alreadyResolved: false },
+      { ok: true, alreadyResolved: true }
+    ]));
+    expect((await prisma.deadLetterJob.findUniqueOrThrow({ where: { id: fixture.deadLetter.id } })).status).toBe('RESOLVED');
+    expect(await prisma.auditLog.count({ where: { action: 'DEAD_LETTER_RESOLVED', resourceId: fixture.deadLetter.id } })).toBe(1);
+  });
+
+  it('serializes concurrent requeue requests into one child SetupJob and one audit event', async () => {
+    const fixture = await createDeadLetterFixture();
+    const url = `/api/v1/dead-letters/${fixture.deadLetter.id}/requeue`;
+    const [first, second] = await Promise.all([
+      app.inject({ method: 'POST', url, headers: { cookie: fixture.owner.sessionCookie } }),
+      app.inject({ method: 'POST', url, headers: { cookie: fixture.owner.sessionCookie } })
+    ]);
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const deadLetter = await prisma.deadLetterJob.findUniqueOrThrow({ where: { id: fixture.deadLetter.id } });
+    const children = await prisma.setupJob.findMany({ where: { parentJobId: fixture.setup.id } });
+    expect(deadLetter.status).toBe('REQUEUED');
+    expect(children).toHaveLength(1);
+    expect(deadLetter.requeuedSourceId).toBe(children[0]!.id);
+    expect(await prisma.auditLog.count({ where: { action: 'DEAD_LETTER_REQUEUED', resourceId: fixture.deadLetter.id } })).toBe(1);
+  });
+
+  it('does not requeue a manually resolved dead letter', async () => {
+    const fixture = await createDeadLetterFixture();
+    await prisma.deadLetterJob.update({ where: { id: fixture.deadLetter.id }, data: { status: 'RESOLVED', resolutionNote: 'closed' } });
+    const response = await app.inject({ method: 'POST', url: `/api/v1/dead-letters/${fixture.deadLetter.id}/requeue`, headers: { cookie: fixture.owner.sessionCookie } });
+    expect(response.statusCode).toBe(409);
+    expect(await prisma.setupJob.count({ where: { parentJobId: fixture.setup.id } })).toBe(0);
+  });
+});
+
 describe('rate limiting — the /register route\'s stricter per-route limit actually engages', () => {
   let limitedApp: FastifyInstance;
   const limitedUserIds: string[] = [];

@@ -1,6 +1,6 @@
 # Matriz de autorização HTTP e WebSocket
 
-Revisada em 2026-08-12 na Fase 6. Esta matriz é a referência para manter rotas equivalentes sob a
+Revisada em 2026-08-14 na Fase 7. Esta matriz é a referência para manter rotas equivalentes sob a
 mesma política. No teste, **membro** significa uma conta autenticada sem vínculo com a organização
 alvo; `HOST_ADMIN` é uma permissão global explícita e não concede acesso implícito a nenhum tenant.
 
@@ -38,6 +38,7 @@ PostgreSQL. Os handshakes reais e a paridade HTTP/WS ficam em `apps/api/src/ws-s
 | `ADMIN` | `POST /api/v1/agents/:taskId/merge`; `POST /api/v1/agents/:taskId/reject`; `POST /api/v1/orchestrations/:id/review/approve`; `POST /api/v1/orchestrations/:id/review/reject` |
 | `ADMIN` | `GET/POST /api/v1/secrets`; `DELETE /api/v1/secrets/:id`; `POST /api/v1/repositories/:workspaceId/bootstrap`; `DELETE /api/v1/repository-intelligence/:workspaceId/cache` |
 | `ADMIN` | `GET /api/v1/setup/:workspaceId/detect`; `POST /api/v1/setup/:workspaceId/provision`; `GET /api/v1/setup/:workspaceId/jobs/latest`; `POST /api/v1/setup/jobs/:jobId/cancel`; `POST /api/v1/setup/jobs/:jobId/retry`; `POST /api/v1/setup/quickstart` |
+| `ADMIN` | `GET /api/v1/dead-letters`; `POST /api/v1/dead-letters/:id/resolve`; `POST /api/v1/dead-letters/:id/requeue` |
 | `OWNER` | `DELETE /api/v1/projects/:projectId` |
 | `HOST_ADMIN` | `GET /api/v1/system`; `GET /api/v1/system/metrics-summary` |
 
