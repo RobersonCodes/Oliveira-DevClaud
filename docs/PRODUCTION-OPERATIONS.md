@@ -244,13 +244,23 @@ Este ensaio precisa permanecer reproduzível numa VM Linux limpa:
 3. registrar o identificador do workspace, sem credenciais;
 4. reiniciar PostgreSQL, Redis, API, worker, broker e web com `docker compose restart` — nunca usar
    `down -v`;
-5. aguardar `/ready`, reabrir o workspace e comparar o checksum;
-6. realizar backup, restaurar em ambiente isolado e repetir a comparação;
-7. anexar comandos, saídas sanitizadas e resultado ao plano operacional.
+5. injetar restart durante operações: API sob leituras autenticadas, Redis com job enfileirado,
+   Runtime Broker durante exec e worker sob `SIGKILL` com recovery de lease stale;
+6. aguardar `/ready`, reabrir o workspace e comparar o checksum;
+7. realizar backup, restaurar em ambiente isolado e repetir a comparação;
+8. anexar comandos, saídas sanitizadas e resultado ao plano operacional.
 
-O workflow `.github/workflows/production-smoke.yml` automatiza os itens 1–6 em um runner
+O workflow `.github/workflows/production-smoke.yml` automatiza os itens 1–7 em um runner
 `ubuntu-latest`; o smoke autenticado de agente e a navegação IDE pelo domínio TLS real permanecem
 validações externas, respectivamente por credencial do usuário e pela Fase 2.
+
+### Evidência de fault injection — 2026-08-14
+
+O run [31815417716](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31815417716)
+aprovou os quatro cenários durante operações e publicou evidência sanitizada
+`api_restart_during_authenticated_reads=passed`, `redis_restart_with_queued_setup=passed`,
+`runtime_broker_restart_during_setup=passed` e `worker_sigkill_setup_recovery=passed`. A mesma
+jornada concluiu o backup/restore isolado e o cleanup da stack descartável.
 
 ### Evidência Linux limpa — 2026-08-11
 

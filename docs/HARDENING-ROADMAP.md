@@ -12,10 +12,10 @@ do host; a aplicação real dos server blocks, os certificados TLS e a validaç�
 pendentes no servidor real (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker (Fase 4,
 P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema — api e worker não têm
 mais acesso direto ao daemon. A Fase 1 está concluída; a Fase 5 passou no smoke Linux limpo e resta
-parcial somente por credencial externa de agente; a Fase 6 foi concluída. A Fase 7 está em andamento
-com oito itens concluídos: retries/backoff, CAS/idempotência, heartbeat, recovery, dead-letter,
-quotas, reaper de recursos órfãos e métricas de filas passaram no CI Linux e smoke de host limpo;
-falta somente fault injection de restart. As Fases 8-9 seguem pendentes — ver Seção 7.
+parcial somente por credencial externa de agente; as Fases 6 e 7 foram concluídas. A Fase 7 fechou
+retries/backoff, CAS/idempotência, heartbeat, recovery, dead-letter, quotas, reaper de recursos
+órfãos, métricas de filas e fault injection real de restart no CI/smoke Linux. As Fases 8-9 seguem
+pendentes — ver Seção 7.
 Uma rodada extraordinária de auditoria `main…HEAD` foi concluída em 2026-08-13: eliminou o
 oráculo de lockout no login, tornou o lint efetivo e restringiu as permissões do CI. P1-14 foi
 reclassificado com a evidência já existente e P1-15 teve seu risco residual corrigido no inventário.
@@ -164,6 +164,7 @@ Pontos-chave já confirmados no código:
 | F7-REC | ✅ **Corrigido (Fase 7, 2026-08-14; commit `b6ad202`).** Recovery periódico usa `heartbeatAt` stale como lease e CAS para AgentTask/Orchestration. Runtime vivo retoma o tick; concluído/falho reconcilia task/run/step; ausente falha a cadeia. Orquestração sem posse ativa é reenfileirada uma única vez, e cancelamento/conclusão concorrente nunca é sobrescrito. CIs Linux/PostgreSQL `31766839389`/`31766841828` aprovaram 4/4 regressões reais e a suíte completa; smoke `31766841763` verde. | `apps/worker/src/{index.ts,lib/recovery.ts,lib/recoveryStore.ts,lib/recovery.test.ts,lib/recovery.integration.test.ts}` |
 | F7-DLQ | ✅ **Corrigido (Fase 7, 2026-08-14; commit `4cf4b6f`).** Falhas permanentes de setup/orquestração ganham registro PostgreSQL durável por organização, payload restrito a IDs e código sanitizado. Revisão manual `ADMIN` pode resolver ou reprocessar; CAS e `requeuedSourceId` persistido tornam requisições concorrentes e retomadas idempotentes. CIs `31768871870`/`31768875046` aprovaram migration, persistência real e corridas PostgreSQL/Redis; smoke `31768875002` verde. | `apps/worker/src/{index.ts,lib/deadLetters.ts,lib/deadLetters.test.ts,lib/deadLetters.integration.test.ts}`; `apps/api/src/{routes/dead-letters.ts,integration.test.ts}`; migration `20260814034000_fase7_dead_letter_jobs` |
 | F7-QUOTA | ✅ **Corrigido (Fase 7, 2026-08-14; commits `d8354f4` e `fd955a8`).** Limites persistidos de CPU, memória e PIDs são aplicados como cgroups; disco é medido no bind mount real sem seguir symlinks e duração usa deadlines persistentes para workspace, agente, orquestração e setup. O reconciliador para o runtime e fecha a cadeia por CAS; comandos expirados encerram o processo real. A regressão distingue exit `143` imediato do `143` produzido pelo BusyBox no watchdog e normaliza timeout para `504`/`124`. CIs Linux/PostgreSQL/Docker `31773353483`/`31773355663` aprovaram 39 arquivos/317 testes, build e audit; smoke `31773355668` verde. | `apps/worker/src/{index.ts,lib/quotas.ts,lib/quotas.test.ts,lib/quotas.integration.test.ts}`; `apps/runtime-broker/src/{exec.ts,app.test.ts}`; `packages/{runtime-broker-client,workspace-engine,agent-engine,setup-engine}/src/`; migration `20260814050000_fase7_resource_quotas` |
+| F7-FAULT | ✅ **Corrigido (Fase 7, 2026-08-14; commit `4474778`).** O smoke Linux injeta restart da API durante leituras autenticadas, restart do Redis com job BullMQ em espera, restart do Runtime Broker durante exec de instalação e `SIGKILL` do worker durante a mesma operação. Sessão/tenant, job persistido, workspace e recovery por lease stale foram preservados; os quatro sinais ficaram `passed`, seguidos de backup/restore e cleanup. Smoke `31815417716` e CIs `31815401603`/`31815417747` verdes; suíte completa 324 aprovados + 2 ignorados, build e audit sem vulnerabilidades. | `scripts/production-clean-host-smoke.sh`; `.github/workflows/production-smoke.yml` |
 | P1-18 | **Achado durante validação real da Fase 1 (2026-08-10), pré-existente e não relacionado à mudança same-origin.** O handler WS de terminal decide entre payload binário e JSON com `Buffer.isBuffer(raw)`, mas a lib `ws` entrega `data` como `Buffer` tanto para frames de texto quanto binários (`isBinary` vem separado, ignorado aqui) — então o branch `Buffer.isBuffer(raw)` é sempre verdadeiro e o parse de `{"type":"input"\|"resize",...}` (o mesmo protocolo que `apps/web/app/terminal/page.tsx` envia em todo keystroke/resize) nunca roda. Cada tecla digitada no terminal real hoje escreve o envelope JSON literal no pty em vez do caractere, e `resize` nunca é aplicado. Confirmado com um servidor `ws` mínimo isolado (`isBinary:false`, `Buffer.isBuffer(data)===true`) e reproduzido fim a fim via WebSocket real através do proxy Next.js contra um container/tmux real. Correção sugerida: usar o segundo argumento `isBinary` do evento `message` (ou `typeof raw === 'string'` se o cliente/servidor forem ajustados para não forçar Buffer) em vez de `Buffer.isBuffer`. Ainda não corrigido — fora do escopo da Fase 1, registrado aqui para tratamento em fase própria. | `apps/api/src/routes/terminals.ts:102-117`; `apps/web/app/terminal/page.tsx:54,68,71` |
 | P1-19 | ✅ **Corrigido (auditoria `main…HEAD`, 2026-08-13; commits `6bfcdf7` e `358818b`).** O login retornava `423 ACCOUNT_LOCKED` apenas para contas reais bloqueadas, enquanto e-mails inexistentes recebiam `401 INVALID_CREDENTIALS`, formando um oráculo de enumeração. A implementação sempre executa bcrypt (hash real ou sentinela) e responde `401 INVALID_CREDENTIALS` para conta existente com senha errada, inexistente ou bloqueada; o lockout continua persistido internamente. A regressão PostgreSQL real compara status, headers estáveis e corpo dos três casos. CIs Linux/PostgreSQL `31763253499`/`31763255649` aprovaram 33 arquivos/289 testes, lint real e sua prova negativa, typecheck, build e audit; smoke limpo `31763255656` verde. | `apps/api/src/routes/auth.ts`; `apps/api/src/integration.test.ts`; `.github/workflows/ci.yml`; `eslint.config.mjs` |
 
@@ -392,9 +393,7 @@ cookie do painel nunca é enviado ao domínio de runtime e vice-versa, e que o T
 funcionando normalmente durante e depois da mudança.
 
 **Pendente no roadmap geral:** nenhum P0 aberto (todos os 15 corrigidos). A Fase 5 permanece parcial
-somente pelo smoke autenticado de agente com credencial externa; a Fase 6 está em andamento e
-P1-1/P1-2/P1-3, o rate limit por identidade, P1-4/RBAC, auditoria e revisão cross-tenant foram fechados;
-a Fase 6 está concluída.
+somente pelo smoke autenticado de agente com credencial externa; as Fases 6 e 7 estão concluídas.
 Permanecem P1/P2 de identidade, sessão, resiliência e produto,
 além das Fases 7-9. Dentro da Fase 3, o agendamento
 periódico do reaper de redes órfãs (`pruneOrphanedNetworks`), deliberadamente adiado para a Fase 7
@@ -403,7 +402,8 @@ na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também fo
 adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
 A sequência vigente é a do plano operacional: preservar os bloqueios externos das Fases 2/5 e
-concluir a Fase 7 com fault injection de restart de API, worker, Redis e Runtime Broker.
+iniciar a Fase 8 pelo shell PWA/mobile-first, mantendo testes físicos Android/iPhone como bloqueio
+explícito do aceite final.
 
 **Marco de CI (Fase 4, 2026-08-10):** run
 [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do

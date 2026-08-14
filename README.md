@@ -308,7 +308,9 @@ continuar construindo a mesma versão localmente pelo passo acima.
 
 O workflow [`production-smoke.yml`](.github/workflows/production-smoke.yml) valida a instalação em
 um runner Linux limpo: Compose, migrations, readiness, workspace/terminal reais, reinício,
-persistência e restauração isolada de PostgreSQL e arquivos de workspace.
+persistência e restauração isolada de PostgreSQL e arquivos de workspace. Ele também injeta restart
+durante operações reais de API, Redis/BullMQ, Runtime Broker e worker, exigindo recuperação sem perda
+de sessão, job ou workspace.
 
 ## Interface
 

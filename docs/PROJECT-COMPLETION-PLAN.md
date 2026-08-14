@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `7438bc4` (`feat(fase7): expose BullMQ operational metrics`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com oito itens concluídos; métricas operacionais BullMQ foram aprovadas nos CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` e no smoke limpo `31811463376` |
-| Etapa ativa | Etapa 7 — fault injection de restart |
+| Commit de referência | `4474778` (`test(fase7): inject service restarts during work`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 encerrou os nove itens após fault injection real no smoke Ubuntu `31815417716`; CIs `31815401603`/`31815417747` também verdes |
+| Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
-| Status | `EM ANDAMENTO` |
-| Próxima ação única | Testar restart de API, worker, Redis e Runtime Broker durante operações |
+| Status | `PENDENTE` |
+| Próxima ação única | Iniciar a Fase 8 inventariando P1-16 e implementar manifest, ícones, tema e service worker sem prometer execução offline |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -793,7 +793,7 @@ da Fase 6 estão atendidos.
 
 ### Fase 7 — resiliência, concorrência e ciclo de vida
 
-**Status:** `EM ANDAMENTO`
+**Status:** `CONCLUÍDA`
 
 **Execução:** Codex — Etapa 7.
 
@@ -807,7 +807,7 @@ da Fase 6 estão atendidos.
 - [x] Implementar quotas de CPU, memória, processos, disco e duração.
 - [x] Remover storage, containers e redes órfãos com segurança.
 - [x] Coletar métricas de profundidade, latência, retry e falha das filas.
-- [ ] Testar restart de API, worker, Redis e broker durante operações.
+- [x] Testar restart de API, worker, Redis e broker durante operações.
 
 **Critérios de aceite:** nenhum tick duplica efeitos; cancelamento não sobrescreve conclusão; jobs
 transitórios recuperam; jobs permanentes ficam visíveis; restart não perde estado; recursos órfãos
@@ -924,6 +924,17 @@ passaram. Os CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` aprovaram a 
 o retry real, a falha retida e a suíte completa (**42 arquivos, 324 testes aprovados e 2
 ignorados**), seguida de build e audit sem vulnerabilidades. O smoke limpo `31811463376` também
 passou. Oitavo item da Fase 7 concluído.
+
+Fault injection foi incorporada ao smoke de host limpo com operações reais e assertions de
+recuperação: leituras autenticadas continuaram válidas após restart da API; um job BullMQ permaneceu
+`QUEUED` através do restart do Redis/AOF e chegou a `READY`; uma instalação bloqueada sobreviveu ao
+restart do Runtime Broker sem perder o workspace e concluiu por retry; e um worker recebeu
+`SIGKILL` durante a instalação, teve o heartbeat envelhecido para representar a lease stale de 60s,
+foi retomado pelo recovery de startup e registrou o reenfileiramento antes de chegar a `READY`. O
+smoke Ubuntu `31815417716` publicou as quatro evidências como `passed`, preservou o restore isolado e
+limpou a stack. Os CIs `31815401603`/`31815417747` aprovaram lint/prova negativa, typecheck, suíte
+completa (**42 arquivos, 324 testes aprovados e 2 ignorados**), build e audit sem vulnerabilidades.
+Todos os critérios de aceite e a validação mínima da Fase 7 estão atendidos.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1151,6 +1162,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — métricas operacionais das filas, CI e encerramento | `CONCLUÍDA` | Commit `7438bc4`; CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` aprovaram endpoint host-admin, retry/falha reais, suíte total 324 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31811463376` verde. P2-6 e o oitavo item concluídos | Testar restart de API, worker, Redis e Runtime Broker durante operações |
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `ba716b7`; escopo limitado ao último item: provar recuperação e preservação de estado ao reiniciar API, worker, Redis e Runtime Broker durante operações no smoke Linux real | Inventariar o fluxo do smoke de produção e implementar cenários determinísticos de restart |
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart, validação local | `EM ANDAMENTO` | Smoke ampliado com quatro cenários determinísticos: leituras autenticadas durante restart da API; job BullMQ em espera durante restart do Redis; instalação em curso durante restart do Runtime Broker; e `SIGKILL` do worker com lease stale/recovery persistente. `bash -n`, parse YAML com `js-yaml`, lint (0 erros/19 avisos legados) e `git diff --check` aprovados. Docker local indisponível por acesso negado ao daemon; execução integral depende do runner Linux | Commitar/push e exigir smoke Ubuntu verde com as quatro evidências antes de concluir a Fase 7 |
+| 2026-08-14 | Codex | Fase 7 — fault injection de restart e encerramento | `CONCLUÍDA` | Commit `4474778`; smoke Ubuntu `31815417716` aprovou API sob leituras autenticadas, Redis com job BullMQ enfileirado, Runtime Broker durante instalação e worker sob `SIGKILL`/recovery stale; backup/restore e cleanup também verdes. CIs `31815401603`/`31815417747`: 42 arquivos, 324 testes aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Nono item e todos os critérios da Fase 7 concluídos | Iniciar Fase 8 pelo inventário P1-16 e pelo shell PWA instalável |
 
 ### Modelo para futuras entradas
 
