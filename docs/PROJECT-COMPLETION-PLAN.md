@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `f7d3bf5` (`docs(fase7): record quota validation evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com seis itens concluídos; o sétimo (reaper seguro de storage/container/rede) está implementado e validado localmente sem Docker, aguardando a regressão real no CI Linux/Docker |
-| Etapa ativa | Etapa 7 — remoção segura de recursos órfãos |
+| Commit de referência | `9c7f39b` (`feat(fase7): reap orphaned workspace resources`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com sete itens concluídos; o reaper seguro de storage/container/rede foi aprovado nos CIs Linux/Docker `31808586839`/`31808590976` e no smoke limpo `31808591049` |
+| Etapa ativa | Etapa 7 — métricas operacionais das filas |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar o reaper no CI Linux/Docker real e só então concluir o sétimo item |
+| Próxima ação única | Coletar métricas de profundidade, latência, retry e falha das filas |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -805,7 +805,7 @@ da Fase 6 estão atendidos.
 - [x] Recuperar jobs abandonados após crash/redeploy.
 - [x] Criar dead-letter/revisão manual para falhas permanentes.
 - [x] Implementar quotas de CPU, memória, processos, disco e duração.
-- [ ] Remover storage, containers e redes órfãos com segurança.
+- [x] Remover storage, containers e redes órfãos com segurança.
 - [ ] Coletar métricas de profundidade, latência, retry e falha das filas.
 - [ ] Testar restart de API, worker, Redis e broker durante operações.
 
@@ -908,7 +908,11 @@ só apaga um diretório filho CUID depois do retorno Docker, preserva IDs retido
 banco imediatamente antes da remoção. Falhas são isoladas e ficam para retry; symlinks, recursos
 recentes e redes com endpoints desconhecidos não são forçados. Localmente, testes puros **2/2**,
 typecheck dos 26 workspaces, lint com 0 erros/19 avisos legados e diff-check passaram. A regressão
-Docker real foi adicionada, mas o daemon local está parado; o item continua aberto até o CI Linux.
+Docker real foi adicionada, mas o daemon local estava parado. Os CIs Linux/Docker
+`31808586839`/`31808590976` aprovaram o caso real: workspace ativo preservado, container órfão
+removido e rede dedicada órfã ausente ao final. A suíte completa terminou com **40 arquivos, 320
+testes aprovados e 2 ignorados**, seguida de build e audit sem vulnerabilidades. O smoke de host
+limpo `31808591049` também passou. Sétimo item da Fase 7 concluído.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1130,6 +1134,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — quotas de recursos e duração, CI e encerramento | `CONCLUÍDA` | Commits `d8354f4`/`fd955a8`; CIs `31773353483`/`31773355663` aplicaram migration e aprovaram cgroups, persistência PostgreSQL, quota de disco no filesystem real, deadlines e timeout portátil com processo encerrado, além da suíte total 317 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31773355668` verde. Sexto item concluído | Remover storage, containers e redes órfãos com segurança |
 | 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `f7d3bf5`; escopo confirmado: remover storage, containers e redes órfãos somente com identidade controlada e prova de ausência na fonte persistente, preservando recursos ativos e falhas parciais para nova tentativa | Inventariar labels, ciclo de destruição e endpoint de manutenção antes de definir o plano seguro de coleta |
 | 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, validação local | `EM ANDAMENTO` | Reaper periódico fail-closed implementado entre API/PostgreSQL, Runtime Broker/Docker e storage: snapshots duplos, labels exatos, carência, diretório CUID direto, rejeição de symlink, rechecagem no instante da remoção e retry de falhas parciais. Exclusão explícita também remove storage depois do Docker. Testes puros 2/2; typecheck dos 26 workspaces, lint 0 erros/19 avisos e diff-check verdes. Docker local indisponível (`docker_engine` inexistente) | Commitar/push e exigir CI Linux/Docker verde para preservação do workspace ativo e coleta do órfão real |
+| 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, CI e encerramento | `CONCLUÍDA` | Commit `9c7f39b`; CIs Linux/Docker `31808586839`/`31808590976` aprovaram preservação do workspace ativo, remoção do container/rede órfãos, exclusão explícita do storage, suíte total 320 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31808591049` verde. P1-11 e o sétimo item concluídos | Coletar métricas de profundidade, latência, retry e falha das filas |
 
 ### Modelo para futuras entradas
 
