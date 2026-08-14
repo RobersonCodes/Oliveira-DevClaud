@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `9c7f39b` (`feat(fase7): reap orphaned workspace resources`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com sete itens concluídos; o reaper seguro de storage/container/rede foi aprovado nos CIs Linux/Docker `31808586839`/`31808590976` e no smoke limpo `31808591049` |
-| Etapa ativa | Etapa 7 — métricas operacionais das filas |
+| Commit de referência | `7438bc4` (`feat(fase7): expose BullMQ operational metrics`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4 e 6 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 permanece em andamento com oito itens concluídos; métricas operacionais BullMQ foram aprovadas nos CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` e no smoke limpo `31811463376` |
+| Etapa ativa | Etapa 7 — fault injection de restart |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Validar as métricas no CI Linux/PostgreSQL/Redis antes de concluir o oitavo item |
+| Próxima ação única | Testar restart de API, worker, Redis e Runtime Broker durante operações |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -806,7 +806,7 @@ da Fase 6 estão atendidos.
 - [x] Criar dead-letter/revisão manual para falhas permanentes.
 - [x] Implementar quotas de CPU, memória, processos, disco e duração.
 - [x] Remover storage, containers e redes órfãos com segurança.
-- [ ] Coletar métricas de profundidade, latência, retry e falha das filas.
+- [x] Coletar métricas de profundidade, latência, retry e falha das filas.
 - [ ] Testar restart de API, worker, Redis e broker durante operações.
 
 **Critérios de aceite:** nenhum tick duplica efeitos; cancelamento não sobrescreve conclusão; jobs
@@ -920,7 +920,10 @@ profundidade, throughput acumulado/última hora, espera e processamento (média/
 numa amostra dos 100 jobs finais mais recentes. Redis indisponível retorna estado sanitizado sem
 derrubar as métricas de host. Localmente, teste puro + integração Redis e políticas passaram
 **18/18**; typecheck dos 26 workspaces, lint com 0 erros/19 avisos, build completo e diff-check
-passaram. A integração protegida com PostgreSQL/Redis aguarda CI; o oitavo item permanece aberto.
+passaram. Os CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` aprovaram a integração protegida,
+o retry real, a falha retida e a suíte completa (**42 arquivos, 324 testes aprovados e 2
+ignorados**), seguida de build e audit sem vulnerabilidades. O smoke limpo `31811463376` também
+passou. Oitavo item da Fase 7 concluído.
 
 #### Rodada extraordinária — auditoria `main…HEAD` (2026-08-13)
 
@@ -1145,6 +1148,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — reaper de recursos órfãos, CI e encerramento | `CONCLUÍDA` | Commit `9c7f39b`; CIs Linux/Docker `31808586839`/`31808590976` aprovaram preservação do workspace ativo, remoção do container/rede órfãos, exclusão explícita do storage, suíte total 320 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31808591049` verde. P1-11 e o sétimo item concluídos | Coletar métricas de profundidade, latência, retry e falha das filas |
 | 2026-08-14 | Codex | Fase 7 — métricas operacionais das filas, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `582a6ba`. Inventário: `/metrics-summary` expõe apenas host/plataforma; workers BullMQ não habilitam séries nativas e ticks concluídos são removidos, impedindo medir throughput, latência e retries com fidelidade | Habilitar métricas nativas, retenção limitada e coletor testável para as filas de orquestração/setup |
 | 2026-08-14 | Codex | Fase 7 — métricas operacionais das filas, validação local | `EM ANDAMENTO` | BullMQ retém 1.440 pontos/minuto e jobs finais limitados a IDs; endpoint host-admin agrega profundidade, throughput, latência média/p95/máxima e retries, com fallback sanitizado. Testes puros + Redis real 18/18; typecheck dos 26 workspaces, lint 0 erros/19 avisos, build completo e diff-check verdes. Integração PostgreSQL/Redis adicionada | Commitar/push e exigir CI Linux/PostgreSQL/Redis verde antes de concluir P2-6 e o oitavo item |
+| 2026-08-14 | Codex | Fase 7 — métricas operacionais das filas, CI e encerramento | `CONCLUÍDA` | Commit `7438bc4`; CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` aprovaram endpoint host-admin, retry/falha reais, suíte total 324 aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31811463376` verde. P2-6 e o oitavo item concluídos | Testar restart de API, worker, Redis e Runtime Broker durante operações |
 
 ### Modelo para futuras entradas
 

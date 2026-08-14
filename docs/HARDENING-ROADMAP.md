@@ -13,9 +13,9 @@ pendentes no servidor real (`docs/RUNTIME-GATEWAY-DEPLOY.md`). O Runtime Broker 
 P1-5) foi implementado e é agora o único detentor de `docker.sock` no sistema — api e worker não têm
 mais acesso direto ao daemon. A Fase 1 está concluída; a Fase 5 passou no smoke Linux limpo e resta
 parcial somente por credencial externa de agente; a Fase 6 foi concluída. A Fase 7 está em andamento
-com sete itens concluídos: retries/backoff, CAS/idempotência, heartbeat, recovery, dead-letter,
-quotas e reaper de recursos órfãos passaram no CI Linux e smoke de host limpo; faltam métricas de
-filas e fault injection de restart. As Fases 8-9 seguem pendentes — ver Seção 7.
+com oito itens concluídos: retries/backoff, CAS/idempotência, heartbeat, recovery, dead-letter,
+quotas, reaper de recursos órfãos e métricas de filas passaram no CI Linux e smoke de host limpo;
+falta somente fault injection de restart. As Fases 8-9 seguem pendentes — ver Seção 7.
 Uma rodada extraordinária de auditoria `main…HEAD` foi concluída em 2026-08-13: eliminou o
 oráculo de lockout no login, tornou o lint efetivo e restringiu as permissões do CI. P1-14 foi
 reclassificado com a evidência já existente e P1-15 teve seu risco residual corrigido no inventário.
@@ -176,7 +176,7 @@ Pontos-chave já confirmados no código:
 | P2-3 | ✅ **Corrigido (Fase 5, 2026-08-10).** Removido `curl \| sh`: o Dockerfile baixa o tarball oficial do code-server `4.121.0` por arquitetura, valida SHA-256 fixado com `sha256sum --check --strict` e aborta o build em divergência. Build real confirmou o checksum e `code-server --version`. |
 | P2-4 | ✅ **Corrigido (Fase 5, 2026-08-10).** Fastify define explicitamente `bodyLimit=1 MiB`, `requestTimeout=30s` (tempo para receber a requisição completa) e `keepAliveTimeout=72s`; o nginx do painel usa o mesmo `client_max_body_size 1m`, `client_header_timeout 10s` e `client_body_timeout 30s`. `connectionTimeout` continua em zero por decisão explícita para não encerrar WebSockets ociosos válidos. O runtime mantém `25m` no nginx por transportar IDE/preview, separado do JSON do control plane. Teste verifica opções reais do servidor e resposta 413 acima de 1 MiB. |
 | P2-5 | 🟡 **Parcialmente corrigido (Fase 6, 2026-08-12; commit `d1c07a9`).** Gestão de sessões/dispositivos implementada: listagem segura, sessão atual, revogação individual/da atual/das demais, isolamento por usuário e auditoria. Ticket/cookie de runtime é vinculado à sessão de origem e perde validade na próxima requisição/WS após revogação. CIs `31642920258`/`31642923785` e smoke `31642923772` verdes. MFA/passkeys, recuperação de conta e verificação de e-mail permanecem não implementados, mas têm ordem, schema, endpoints, invariantes, rollout e validação definidos em `docs/ACCOUNT-SECURITY-PLAN.md`. | `apps/api/src/{routes/auth.ts,lib/runtimeTicket.ts,lib/runtimeGateway.ts,integration.test.ts,runtimeGateway.test.ts}`; `apps/web/app/settings/sessions/page.tsx`; `docs/ACCOUNT-SECURITY-PLAN.md` |
-| P2-6 | 🟡 **Implementado localmente; CI pendente (Fase 7, 2026-08-14).** Workers habilitam séries nativas de conclusão/falha por um dia; `/metrics-summary` protegido por host-admin agrega profundidade, throughput, latência média/p95/máxima e retries das filas de orquestração/setup, com degradação sanitizada se Redis falhar. Retenção limitada contém apenas IDs. Testes puros + Redis real passaram 18/18; integração do endpoint com PostgreSQL/Redis aguarda CI. | `apps/api/src/lib/{queueMetrics.ts,queueMetrics.test.ts,queueMetrics.integration.test.ts}`; `apps/api/src/routes/system.ts`; `apps/worker/src/index.ts` |
+| P2-6 | ✅ **Corrigido (Fase 7, 2026-08-14; commit `7438bc4`).** Workers mantêm um dia de séries nativas; `/metrics-summary` host-admin agrega profundidade, throughput, latência média/p95/máxima e retries das filas de orquestração/setup, com degradação sanitizada se Redis falhar. Retenção limitada contém apenas IDs. CIs Linux/PostgreSQL/Redis `31811459149`/`31811463320` aprovaram endpoint protegido, retry/falha reais e suíte completa (324 aprovados, 2 ignorados); smoke `31811463376` verde. | `apps/api/src/lib/{queueMetrics.ts,queueMetrics.test.ts,queueMetrics.integration.test.ts}`; `apps/api/src/routes/system.ts`; `apps/worker/src/index.ts` |
 | P2-7 | 3 padrões de navegação divergentes coexistindo no frontend (dívida de consistência de UI, não é bug de segurança). |
 | P2-8 | Sem Playwright/teste de browser algum; sem teste de acessibilidade (axe). |
 
@@ -403,7 +403,7 @@ na Fase 7"); dentro da Fase 4, o teste de indisponibilidade do broker também fo
 adiado para a Fase 7 pelo mesmo motivo (já listado no próprio checklist dela).
 
 A sequência vigente é a do plano operacional: preservar os bloqueios externos das Fases 2/5 e
-avançar a Fase 7 por métricas operacionais das filas, seguida do fault injection de restart.
+concluir a Fase 7 com fault injection de restart de API, worker, Redis e Runtime Broker.
 
 **Marco de CI (Fase 4, 2026-08-10):** run
 [31394449630](https://github.com/RobersonCodes/Oliveira-DevCloud/actions/runs/31394449630) do
