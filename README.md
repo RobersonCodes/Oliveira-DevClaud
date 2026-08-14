@@ -224,7 +224,7 @@ As variáveis disponíveis e seus valores de desenvolvimento estão documentados
 | `npm run dev` | Inicia web, API, worker e Runtime Broker em modo de desenvolvimento |
 | `npm run build` | Compila todos os workspaces que expõem script de build |
 | `npm run typecheck` | Executa o TypeScript em todos os workspaces |
-| `npm run lint` | Executa os linters configurados |
+| `npm run lint` | Executa ESLint sobre TypeScript/React em `apps/*` e `packages/*` |
 | `npm test` | Executa a suíte completa uma vez |
 | `npm run test:watch` | Executa os testes em modo interativo |
 | `npm run test:browser` | Valida Runtime Gateway em Chromium real |
@@ -257,6 +257,7 @@ A segurança é tratada como fronteira arquitetural, não apenas como validaçã
 | Controle | Garantia |
 | --- | --- |
 | Autorização | RBAC por organização (`OWNER` > `ADMIN` > `DEVELOPER`) em rotas sensíveis |
+| Autenticação | Login inválido responde `401 INVALID_CREDENTIALS` sem distinguir conta inexistente, senha errada ou lockout |
 | Sessão | Cookie `__Host-`, `HttpOnly`, `Secure` e `SameSite=Lax` em produção |
 | Runtime Gateway | Site separado, cookies `__Host-`, tickets HMAC de 60s e autorização revalidada |
 | Conteúdo não confiável | CSP/Permissions/Referrer impostos pelo gateway; `Domain` removido de cookies upstream |
@@ -283,12 +284,18 @@ Cada push e pull request executa o workflow [`.github/workflows/ci.yml`](.github
 flowchart LR
   install["npm ci"] --> prisma["Prisma generate + migrate"]
   prisma --> image["Build da imagem de workspace"]
-  image --> lint["Lint"]
-  lint --> types["Typecheck"]
+  image --> lint["ESLint · TypeScript/React"]
+  lint --> lintProbe["Prova negativa · no-debugger"]
+  lintProbe --> types["Typecheck"]
   types --> tests["Tests"]
   tests --> build["Build"]
   build --> audit["npm audit · high"]
 ```
+
+O workflow usa `permissions: contents: read`. O gate de lint cobre `apps/**/*.{ts,tsx}` e
+`packages/**/*.{ts,tsx}`; em seguida, cria temporariamente uma violação `debugger`, exige que o ESLint
+falhe com `no-debugger` e remove o arquivo de prova. Assim, o CI comprova tanto a execução bem-sucedida
+quanto a capacidade real de rejeitar uma infração.
 
 O pipeline provisiona PostgreSQL e constrói a imagem real de workspace antes dos testes. Assim, o gate
 de integração valida o mesmo tipo de runtime usado pela plataforma. O workflow separado
