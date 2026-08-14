@@ -1,5 +1,19 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  async headers() {
+    return [
+      {
+        source: '/sw.js',
+        headers: [
+          { key: 'Content-Type', value: 'application/javascript; charset=utf-8' },
+          { key: 'Cache-Control', value: 'no-cache, no-store, must-revalidate' },
+          { key: 'Content-Security-Policy', value: "default-src 'self'; script-src 'self'" },
+          { key: 'Service-Worker-Allowed', value: '/' },
+          { key: 'X-Content-Type-Options', value: 'nosniff' }
+        ]
+      }
+    ];
+  },
   async rewrites() {
     // Fase 1 hardening: the browser only ever talks to this app's own origin — no
     // NEXT_PUBLIC_API_URL, no hardcoded localhost:4000 fallback anywhere in the client bundle. In

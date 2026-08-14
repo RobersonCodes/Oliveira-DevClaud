@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `4474778` (`test(fase7): inject service restarts during work`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 7 encerrou os nove itens após fault injection real no smoke Ubuntu `31815417716`; CIs `31815401603`/`31815417747` também verdes |
+| Commit de referência | `2de7068` (`docs(fase7): record restart fault evidence`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento com manifest/ícones/tema e shell PWA network-only implementados localmente; P1-16 permanece parcial até navegação mobile, 320px/safe areas, touch targets e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
-| Status | `PENDENTE` |
-| Próxima ação única | Iniciar a Fase 8 inventariando P1-16 e implementar manifest, ícones, tema e service worker sem prometer execução offline |
+| Status | `EM ANDAMENTO` |
+| Próxima ação única | Implementar navegação mobile persistente, layout funcional a partir de 320 CSS px e safe areas em todas as rotas principais |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -992,7 +992,7 @@ após crash/redeploy, com testes de posse, corrida e estado terminal.
 
 ### Fase 8 — produto mobile-first e PWA
 
-**Status:** `PENDENTE`
+**Status:** `EM ANDAMENTO`
 
 **Execução:** Codex — Etapa 8.
 
@@ -1001,8 +1001,8 @@ interface desktop reduzida.
 
 **Implementação:**
 
-- [ ] Criar manifest, ícones PWA/Apple, tema e service worker.
-- [ ] Implementar instalação e shell de reconexão, sem prometer execução offline.
+- [x] Criar manifest, ícones PWA/Apple, tema e service worker.
+- [x] Implementar instalação e shell de reconexão, sem prometer execução offline.
 - [ ] Garantir layout funcional a partir de 320 CSS px e safe areas.
 - [ ] Criar navegação mobile persistente como substituta da navegação desktop.
 - [ ] Usar alvo interno de toque de pelo menos 44 × 44 px.
@@ -1020,7 +1020,16 @@ o fluxo principal completo funciona em celular real.
 **Validação mínima:** Lighthouse como sinal auxiliar, Playwright em viewports mobile, axe e matriz
 manual de dispositivos físicos.
 
-**Evidências:** _preencher durante a execução._
+**Evidências:** manifest tipado em `app/manifest.ts`, metadados Apple/tema no layout Server e
+registro do worker no componente Client global. `/sw.js` não possui handler `fetch` nem usa Cache
+Storage; headers impedem cache do próprio worker e limitam scripts à mesma origem. O indicador de
+conexão preserva a tela atual e diferencia offline/restaurada, incluindo cleanup de timers/listeners.
+O ícone quadrado existente (1254×1254) é reutilizado sem degradação nos papéis PWA e Apple. Testes
+direcionados **3/3**, typecheck web, lint (0 erros/19 avisos legados), build Next 16 e `git diff
+--check` passaram. No `next start` real: home/manifest/worker `200`, `display=standalone`, metadados
+manifest/Apple/tema presentes, worker com `Cache-Control: no-cache, no-store, must-revalidate`,
+`Service-Worker-Allowed: /` e sem interceptação de fetch. Testes físicos e de navegação mobile
+permanecem pendentes conforme os itens ainda abertos.
 
 ---
 
@@ -1163,6 +1172,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `ba716b7`; escopo limitado ao último item: provar recuperação e preservação de estado ao reiniciar API, worker, Redis e Runtime Broker durante operações no smoke Linux real | Inventariar o fluxo do smoke de produção e implementar cenários determinísticos de restart |
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart, validação local | `EM ANDAMENTO` | Smoke ampliado com quatro cenários determinísticos: leituras autenticadas durante restart da API; job BullMQ em espera durante restart do Redis; instalação em curso durante restart do Runtime Broker; e `SIGKILL` do worker com lease stale/recovery persistente. `bash -n`, parse YAML com `js-yaml`, lint (0 erros/19 avisos legados) e `git diff --check` aprovados. Docker local indisponível por acesso negado ao daemon; execução integral depende do runner Linux | Commitar/push e exigir smoke Ubuntu verde com as quatro evidências antes de concluir a Fase 7 |
 | 2026-08-14 | Codex | Fase 7 — fault injection de restart e encerramento | `CONCLUÍDA` | Commit `4474778`; smoke Ubuntu `31815417716` aprovou API sob leituras autenticadas, Redis com job BullMQ enfileirado, Runtime Broker durante instalação e worker sob `SIGKILL`/recovery stale; backup/restore e cleanup também verdes. CIs `31815401603`/`31815417747`: 42 arquivos, 324 testes aprovados + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Nono item e todos os critérios da Fase 7 concluídos | Iniciar Fase 8 pelo inventário P1-16 e pelo shell PWA instalável |
+| 2026-08-14 | Codex | Fase 8 — PWA/mobile-first, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `2de7068`; P1-16 confirmado como primeiro escopo. Decisões iniciais: manifest pela convenção App Router, viewport/theme separados e registro do service worker em componente Client; conteúdo autenticado não será prometido nem armazenado para execução offline | Inventariar layout/assets/config e implementar o shell PWA instalável com testes |
+| 2026-08-14 | Codex | Fase 8 — shell PWA, validação local | `EM ANDAMENTO` | Manifest/ícone PWA+Apple/tema, worker network-only e indicador de reconexão implementados; revisão React corrigiu corrida de timer após nova queda. Testes PWA 3/3, typecheck web, lint 0 erros/19 avisos legados, build Next 16 e diff-check verdes. `next start` real confirmou home/manifest/sw `200`, instalação `standalone`, metadata e headers anti-cache/scope; processo temporário removido. Testes físicos não executados nesta etapa | Commitar/push, validar CI e seguir para navegação mobile persistente + 320px/safe areas |
 
 ### Modelo para futuras entradas
 

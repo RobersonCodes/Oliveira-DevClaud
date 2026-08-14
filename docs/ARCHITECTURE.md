@@ -13,6 +13,15 @@ Remote, browser-accessible development control plane with persistent workspaces,
 - **redis**: queues, ephemeral state and realtime coordination.
 - **workspace runtime**: Docker-managed isolated project containers (phase 2).
 
+## PWA shell e fronteira de cache
+
+O `web` publica manifest App Router, metadados Apple/tema e registra `/sw.js` somente no cliente em
+build de produção. O service worker participa apenas do lifecycle de instalação/atualização: não
+possui handler `fetch`, não abre Cache Storage e não intercepta páginas, API, cookies, terminal ou
+conteúdo de workspace. Todo dado autenticado permanece network-only e sob as mesmas fronteiras
+same-origin/nginx da aplicação web. Um componente client global observa `online`/`offline`, preserva
+a rota renderizada e informa quando a conexão pode ser retomada, sem afirmar execução offline.
+
 ## Security boundaries
 1. Browser never receives host Docker socket access — nor, as of Fase 4, do api/worker themselves;
    only `runtime-broker` holds it.
