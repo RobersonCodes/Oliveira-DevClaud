@@ -74,11 +74,11 @@ describe('auth flow — register / login / session / logout (real Postgres)', ()
     await prisma.user.update({ where: { id: (await prisma.user.findUniqueOrThrow({ where: { email: body.email } })).id }, data: { failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 15 * 60_000) } });
     const lockedOut = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: body.email, password: body.password } });
 
-    const fingerprint = (response: typeof existing) => ({
-      statusCode: response.statusCode,
-      headers: response.headers,
-      body: response.body
-    });
+    const fingerprint = (response: typeof existing) => {
+      const headers = { ...response.headers };
+      delete headers.date;
+      return { statusCode: response.statusCode, headers, body: response.body };
+    };
     expect(fingerprint(existing)).toEqual(fingerprint(unknown));
     expect(fingerprint(lockedOut)).toEqual(fingerprint(existing));
     expect(fingerprint(existing)).toMatchObject({ statusCode: 401, body: JSON.stringify({ error: 'INVALID_CREDENTIALS' }) });

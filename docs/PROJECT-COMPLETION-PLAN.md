@@ -50,7 +50,7 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 | Etapa ativa | Etapa 7 — rodada extraordinária de remediação da auditoria `main…HEAD`; recovery de jobs fica preservado como retomada |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Commitar e enviar a remediação para validar no CI Linux/PostgreSQL a regressão de login, o lint real e sua prova negativa |
+| Próxima ação única | Revalidar localmente a fingerprint sem `Date`, commitar o ajuste aprovado e exigir CI Linux integral verde |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -885,6 +885,18 @@ passaram (`auth.test.ts`, `audit-coverage.test.ts`, `productionConfig.test.ts`);
 passou. A regressão nova de login depende de PostgreSQL real; `DATABASE_URL` está ausente e o Docker
 Desktop local está parado, portanto sua evidência conclusiva será obrigatoriamente o CI Linux.
 
+**Primeira validação CI:** no commit `6bfcdf7`, os runs `31760123297` (push) e `31760125893` (PR)
+aprovaram instalação, migrations, imagem real, lint, prova negativa `no-debugger`, preparação de
+declarações e typecheck. A etapa `Test` teve 288 aprovados, 1 falha e 2 ignorados; a única falha foi
+na nova regressão, porque a fingerprint comparou o header HTTP volátil `Date` e as respostas cruzaram
+um segundo (`01:21:09` versus `01:21:10`). Status `401`, corpo e headers estáveis coincidiram. Build e
+audit foram ignorados após a falha. O smoke de host limpo `31760125899` passou. Ajuste focado aguarda
+aprovação explícita conforme o fluxo `gh-fix-ci`.
+
+**Aprovação do ajuste CI:** o usuário aprovou explicitamente remover somente `Date` da fingerprint.
+Status, corpo e todos os demais headers permanecem comparados; nenhuma mudança adicional no login ou
+no escopo da rodada foi autorizada ou necessária.
+
 **Próxima retomada após a rodada:** usar os timestamps de heartbeat para recuperar jobs abandonados
 após crash/redeploy, com testes de posse, corrida e estado terminal.
 
@@ -1038,6 +1050,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-12 | Codex | Fase 7 (Etapa 7) — heartbeat CI e checkpoint | `EM ANDAMENTO` | Commit `6bb9022`; CIs `31660067591`/`31660064853` e smoke limpo `31660067592` verdes. Migration, PostgreSQL/Redis/Docker, monitor de liveness, lint, typecheck, suíte completa, build e audit aprovados. Terceiro item concluído; árvore limpa antes do checkpoint | Recuperar jobs abandonados após crash/redeploy usando os timestamps de heartbeat |
 | 2026-08-13 | Codex | Fase 7 — remediação extraordinária da auditoria `main…HEAD` | `EM ANDAMENTO` | Árvore limpa em `4fb9c1a`; quatro itens aceitos no escopo: login sem enumeração, `permissions` mínimo no CI, ESLint real e atualização P1-14/P1-15. Riscos explicitamente fora de escopo preservados | Corrigir primeiro o oráculo de enumeração do login e adicionar regressão PostgreSQL real |
 | 2026-08-13 | Codex | Fase 7 — remediação da auditoria, validação local | `EM ANDAMENTO` | Login uniformizado em `401 INVALID_CREDENTIALS` com bcrypt sentinela; regressão compara status/headers/corpo; CI limitado a `contents: read`; ESLint flat cobre TS/React. Local: lint 0 erros/19 avisos; prova negativa `no-debugger` exit 1 e arquivo revertido; typecheck de 26 workspaces; 48/48 testes sem infraestrutura; diff-check limpo. PostgreSQL/Docker locais indisponíveis | Commitar/push e exigir CI Linux/PostgreSQL verde, inclusive a prova negativa do lint |
+| 2026-08-13 | Codex | Fase 7 — remediação da auditoria, primeira CI | `EM ANDAMENTO` | Commit `6bfcdf7`; CIs `31760123297`/`31760125893`: migrations, lint real, prova negativa e typecheck verdes; Test 288 aprovados/1 falha/2 ignorados. Única falha: fingerprint incluiu header volátil `Date` (`01:21:09` vs `01:21:10`); build/audit não rodaram. Smoke `31760125899` verde | Obter aprovação explícita e excluir apenas `Date` da fingerprint; revalidar CI integral |
+| 2026-08-13 | Codex | Fase 7 — ajuste aprovado da regressão CI | `EM ANDAMENTO` | Usuário aprovou explicitamente o plano focado; somente `Date` foi removido da fingerprint, preservando status/corpo/demais headers. `npm.cmd run lint`: 0 erros/19 avisos; `npm.cmd run typecheck`: 26 workspaces aprovados | Commitar/push e validar novamente PostgreSQL, suíte integral, build e audit no CI |
 
 ### Modelo para futuras entradas
 
