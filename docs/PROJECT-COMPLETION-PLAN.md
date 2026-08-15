@@ -43,10 +43,10 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 
 | Campo | Valor |
 |---|---|
-| Atualizado em | 2026-08-14 |
+| Atualizado em | 2026-08-15 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `bfdde72` (`docs(fase8): record mobile navigation evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA, navegação, 320px/safe areas e touch targets essenciais estão aprovados localmente. P1-16 permanece parcial até concluir toolbar/fluxos touch, retomada e testes físicos |
+| Commit de referência | `e6a0645` (`fix(fase8): enforce mobile touch targets`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA, navegação, 320px/safe areas e touch targets essenciais estão aprovados nos CIs `31860098544`/`31860101934` e smoke `31860101978`. P1-16 permanece parcial até concluir toolbar/fluxos touch, retomada e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
@@ -1062,6 +1062,11 @@ confirmou `320/320`, sem overlay nem erro de página. Testes PWA/mobile **7/7**,
 condicionais não carregaram sem API, mas a regra estrutural cobre os mesmos elementos quando surgem;
 validação física permanece pendente.
 
+No commit `e6a0645`, os CIs Linux/Docker `31860098544`/`31860101934` aprovaram **44 arquivos,
+331 testes e 2 ignorados**, lint/prova negativa, typecheck, build das 20 páginas e audit com zero
+vulnerabilidades. O smoke de host limpo `31860101978` aprovou os 12 sinais de migrations/readiness,
+fluxo funcional, persistência/restarts, fault injection e restores isolados.
+
 ---
 
 ### Fase 9 — regressão, CI e evidência de lançamento
@@ -1211,6 +1216,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, CI | `EM ANDAMENTO` | Commit `3925c51`; CIs `31839461813`/`31839464758` verdes com 44 arquivos, 330 testes + 2 ignorados, build e audit zero. Smoke `31839464854` aprovou host limpo, restarts/fault injection, restores e cleanup. Itens de layout 320px/safe areas e navegação mobile marcados; fase não concluída | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
 | 2026-08-14 | Codex | Fase 8 — touch targets, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `bfdde72`; escopo restrito à auditoria e normalização dos controles essenciais menores que 44×44px nas rotas mobile, preservando links inline não acionáveis como blocos | Medir controles reais em 320px e corrigir somente os alvos insuficientes |
 | 2026-08-14 | Codex | Fase 8 — touch targets, validação local | `EM ANDAMENTO` | Baseline Chromium: 33 controles insuficientes em 13 rotas. Após política mobile, 118 controles medidos em 16 rotas e zero abaixo de 44×44; gut-check corrigiu herança indevida do grid em wizard/repository map. Testes PWA/mobile 7/7, typecheck, lint 0 erros/19 avisos, build 20 páginas e diff-check verdes; API/dados condicionais e dispositivos físicos não executados | Implementar toolbar mobile do terminal com teclas especiais e símbolos úteis |
+| 2026-08-15 | Codex | Fase 8 — touch targets, CI | `EM ANDAMENTO` | Commit `e6a0645`; CIs `31860098544`/`31860101934` verdes com 44 arquivos, 331 testes + 2 ignorados, build e audit zero. Smoke `31860101978` aprovou migrations/readiness, fluxo, restarts/fault injection e restores. Item de touch targets marcado; fase não concluída | Implementar toolbar mobile do terminal com Esc, Ctrl, Tab, setas e símbolos úteis |
 
 ### Modelo para futuras entradas
 
