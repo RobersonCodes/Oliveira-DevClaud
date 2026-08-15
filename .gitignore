@@ -4,12 +4,20 @@ dist/
 coverage/
 .turbo/
 *.tsbuildinfo
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
 
 # Never commit runtime credentials. Keep templates only.
 .env
 .env.*
 !.env.example
 !.env.*.example
+
+# TLS private keys/certs for the production nginx deploy (docs/RUNTIME-GATEWAY-DEPLOY.md) — real
+# key material only ever belongs on the deploy server, never in git.
+infra/production/certs/
 
 # Runtime and local tooling
 *.log

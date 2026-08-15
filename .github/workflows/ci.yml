@@ -2,6 +2,8 @@ name: CI
 on:
   push:
   pull_request:
+permissions:
+  contents: read
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -9,6 +11,7 @@ jobs:
       # Real database — the database package's integration tests (packages/database/src/index.test.ts)
       # run real Prisma queries, not mocks, against this service container.
       DATABASE_URL: postgresql://oliveira:oliveira@localhost:5432/devcloud?schema=public
+      REDIS_URL: redis://localhost:6379
       # Real workspace containers (workspace-engine/git-engine tests, and the minimal E2E journey)
       # bind-mount this path from the host; the runner's default WORKSPACE_ROOT isn't writable.
       WORKSPACE_ROOT: /tmp/odc-workspaces
@@ -22,6 +25,12 @@ jobs:
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U oliveira -d devcloud"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
           --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
@@ -39,9 +48,25 @@ jobs:
       # not a lightweight stand-in — to exercise the actual login -> project -> workspace ->
       # terminal -> run a command -> stop journey end to end.
       - name: Build workspace image
-        run: docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node
+        run: docker build -t oliveira-devcloud/workspace-node:1.1.0 infra/workspace-images/node
+      - name: Verify workspace image tools and non-root user
+        run: |
+          docker run --rm oliveira-devcloud/workspace-node:1.1.0 sh -lc 'test "$(id -u)" = 10001 && code-server --version | grep -E "^4\\.121\\.0( |$)" && pnpm --version | grep -Fx 11.21.0 && codex --version | grep -Fx "codex-cli 0.147.0" && claude --version | grep -Fx "2.1.226 (Claude Code)"'
       - name: Lint
         run: npm run lint
+      - name: Prove lint rejects an intentional error
+        shell: bash
+        run: |
+          probe=apps/api/src/lint-gate-probe.ts
+          trap 'rm -f "$probe"' EXIT
+          printf 'debugger;\n' > "$probe"
+          set +e
+          output="$(npx eslint "$probe" 2>&1)"
+          status=$?
+          set -e
+          printf '%s\n' "$output"
+          test "$status" -ne 0
+          grep -q 'no-debugger' <<< "$output"
       # `npm run typecheck --workspaces` executes each workspace independently and does not
       # respect the internal @oliveira/* dependency graph, so a package's .d.ts output may not
       # exist yet when a downstream workspace is type-checked. Two best-effort build passes

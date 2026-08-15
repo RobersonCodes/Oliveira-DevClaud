@@ -1,10 +1,10 @@
 'use client';
 import { FormEvent, useEffect, useState } from 'react';
-const API=process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { apiFetch } from '../../../lib/apiClient';
 export default function SecretsPage(){
  const [org,setOrg]=useState(''); const [items,setItems]=useState<any[]>([]); const [name,setName]=useState('GITHUB_TOKEN'); const [kind,setKind]=useState('GITHUB_TOKEN'); const [value,setValue]=useState(''); const [message,setMessage]=useState('');
- async function load(){ if(!org)return; const r=await fetch(`${API}/api/v1/secrets?organizationId=${org}`,{credentials:'include'}); if(r.ok)setItems(await r.json()); }
+ async function load(){ if(!org)return; const r=await apiFetch(`/api/v1/secrets?organizationId=${org}`); if(r.ok)setItems(await r.json()); }
  useEffect(()=>{load()},[org]);
- async function save(e:FormEvent){e.preventDefault();setMessage('');const r=await fetch(`${API}/api/v1/secrets`,{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({organizationId:org,scope:'ORGANIZATION',kind,name,value})});setMessage(r.ok?'Secret salvo com criptografia AES-256-GCM.':'Falha ao salvar secret.');if(r.ok){setValue('');load();}}
+ async function save(e:FormEvent){e.preventDefault();setMessage('');const r=await apiFetch('/api/v1/secrets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({organizationId:org,scope:'ORGANIZATION',kind,name,value})});setMessage(r.ok?'Secret salvo com criptografia AES-256-GCM.':'Falha ao salvar secret.');if(r.ok){setValue('');load();}}
  return <main className="page"><div className="hero"><p className="eyebrow">Security</p><h1>Secret Manager</h1><p>Credenciais criptografadas em repouso. O valor completo nunca volta para o navegador.</p></div><section className="panel"><label>Organization ID<input value={org} onChange={e=>setOrg(e.target.value)} placeholder="cuid da organização"/></label><form onSubmit={save} className="stack"><label>Tipo<select value={kind} onChange={e=>{setKind(e.target.value);setName(e.target.value)}}><option>GITHUB_TOKEN</option><option>OPENAI_API_KEY</option><option>ANTHROPIC_API_KEY</option><option>GENERIC</option></select></label><label>Nome<input value={name} onChange={e=>setName(e.target.value.toUpperCase())}/></label><label>Valor<input type="password" value={value} onChange={e=>setValue(e.target.value)} required/></label><button disabled={!org}>Salvar secret</button></form>{message&&<p>{message}</p>}</section><section className="panel"><h2>Secrets</h2>{items.map(x=><div className="row" key={x.id}><strong>{x.name}</strong><span>{x.kind}</span><code>{x.maskedValue}</code></div>)}</section></main>
 }

@@ -34,6 +34,7 @@ enum AgentTaskStatus {
 enum AgentReviewStatus {
   PENDING
   READY
+  MERGING
   MERGED
   REJECTED
 }
@@ -68,6 +69,16 @@ enum OrchestrationReviewStatus {
   APPROVED
   REJECTED
   MERGED
+}
+enum DeadLetterQueue {
+  ORCHESTRATION
+  SETUP
+}
+enum DeadLetterStatus {
+  OPEN
+  REQUEUEING
+  REQUEUED
+  RESOLVED
 }
 enum SecretScope {
   ORGANIZATION
@@ -123,6 +134,7 @@ model Organization {
   auditLogs AuditLog[]
   secrets   Secret[]
   activityLogs ActivityLog[]
+  deadLetters DeadLetterJob[]
 }
 
 model OrganizationMember {
@@ -185,9 +197,16 @@ model Workspace {
   status       WorkspaceStatus @default(CREATING)
   cpuLimit     Float @default(1)
   memoryMb     Int @default(2048)
+  pidsLimit    Int @default(512)
+  diskMb       Int @default(10240)
+  maxRuntimeMinutes Int @default(480)
+  runtimeStartedAt DateTime?
+  quotaViolation String?
+  quotaExceededAt DateTime?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   lastActiveAt DateTime @default(now())
+  heartbeatAt  DateTime?
   project      Project @relation(fields:[projectId], references:[id], onDelete:Cascade)
   terminals    TerminalSession[]
   ports        WorkspacePort[]
@@ -203,6 +222,7 @@ model Workspace {
   contractIntelligenceSnapshots ContractIntelligenceSnapshot[]
   activityLogs ActivityLog[]
   @@index([projectId])
+  @@index([status, heartbeatAt])
 }
 
 model TerminalSession {
@@ -251,6 +271,8 @@ model AgentTask {
   status      AgentTaskStatus @default(QUEUED)
   startedAt   DateTime?
   finishedAt  DateTime?
+  heartbeatAt DateTime?
+  maxDurationSeconds Int @default(3600)
   exitCode    Int?
   metadata    Json?
   branchName  String?
@@ -264,6 +286,7 @@ model AgentTask {
   runs        AgentRun[]
   orchestrationStep OrchestrationStep?
   @@index([workspaceId, status])
+  @@index([status, heartbeatAt])
 }
 
 model AgentRun {
@@ -292,6 +315,8 @@ model Orchestration {
   createdAt   DateTime @default(now())
   startedAt   DateTime?
   finishedAt  DateTime?
+  heartbeatAt DateTime?
+  maxDurationSeconds Int @default(7200)
   reviewStatus OrchestrationReviewStatus @default(NOT_READY)
   reviewBranch String?
   reviewWorktreePath String?
@@ -306,6 +331,7 @@ model Orchestration {
   steps       OrchestrationStep[]
   commandRuns CommandRun[]
   @@index([workspaceId, status])
+  @@index([status, heartbeatAt])
 }
 
 model OrchestrationStep {
@@ -449,6 +475,7 @@ model SetupJob {
   finishedAt     DateTime?
   updatedAt      DateTime       @updatedAt
   heartbeatAt    DateTime?
+  maxDurationSeconds Int @default(1800)
   attempt        Int            @default(1)
   parentJobId    String?
   logs           SetupJobLog[]
@@ -466,6 +493,30 @@ model SetupJobLog {
   createdAt DateTime @default(now())
   setupJob  SetupJob @relation(fields:[setupJobId], references:[id], onDelete:Cascade)
   @@index([setupJobId, createdAt])
+}
+
+model DeadLetterJob {
+  id                String           @id @default(cuid())
+  organizationId    String
+  workspaceId       String?
+  queue             DeadLetterQueue
+  sourceId          String
+  sourceJobId       String
+  payload           Json
+  errorCode         String
+  attempts          Int              @default(1)
+  status            DeadLetterStatus @default(OPEN)
+  resolutionNote    String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  requeuedSourceId  String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  organization      Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, queue, sourceId, sourceJobId])
+  @@index([organizationId, status, createdAt])
+  @@index([sourceId])
 }
 
 

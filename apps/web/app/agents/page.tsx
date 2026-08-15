@@ -1,14 +1,13 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { apiFetch } from '../../lib/apiClient';
 type Agent = 'CODEX' | 'CLAUDE';
 type Task = {
   id:string; workspaceId:string; agent:Agent; title:string; prompt:string; status:string;
   startedAt?:string|null; finishedAt?:string|null; exitCode?:number|null;
   branchName?:string|null; worktreePath?:string|null; baseCommit?:string|null;
-  reviewStatus?:'PENDING'|'READY'|'MERGED'|'REJECTED'; mergeCommit?:string|null;
+  reviewStatus?:'PENDING'|'READY'|'MERGING'|'MERGED'|'REJECTED'; mergeCommit?:string|null;
 };
 type Changes = { branchName:string; baseCommit:string; status:string; files:string; committedStat:string; committedDiff:string; workingStat:string; workingDiff:string };
 
@@ -26,23 +25,23 @@ export default function AgentsPage() {
   const selectedTask=useMemo(()=>tasks.find(t=>t.id===selected),[tasks,selected]);
 
   useEffect(()=>{ setWorkspaceId(new URLSearchParams(window.location.search).get('workspaceId') ?? ''); },[]);
-  async function load(){ if(!workspaceId)return; const r=await fetch(`${API}/api/v1/agents?workspaceId=${encodeURIComponent(workspaceId)}`,{credentials:'include'}); if(r.ok)setTasks(await r.json()); }
+  async function load(){ if(!workspaceId)return; const r=await apiFetch(`/api/v1/agents?workspaceId=${encodeURIComponent(workspaceId)}`); if(r.ok)setTasks(await r.json()); }
   useEffect(()=>{ load(); },[workspaceId]);
   useEffect(()=>{ setChanges(null); },[selected]);
-  useEffect(()=>{ if(!workspaceId)return; const timer=setInterval(async()=>{ await load(); if(selected){ const s=await fetch(`${API}/api/v1/agents/${selected}/status`,{credentials:'include'}); if(s.ok){ const updated=await s.json(); setTasks(current=>current.map(t=>t.id===selected?{...t,...updated}:t)); } const l=await fetch(`${API}/api/v1/agents/${selected}/logs?lines=500`,{credentials:'include'}); if(l.ok)setLogs((await l.json()).logs ?? ''); } },3000); return()=>clearInterval(timer); },[workspaceId,selected]);
+  useEffect(()=>{ if(!workspaceId)return; const timer=setInterval(async()=>{ await load(); if(selected){ const s=await apiFetch(`/api/v1/agents/${selected}/status`); if(s.ok){ const updated=await s.json(); setTasks(current=>current.map(t=>t.id===selected?{...t,...updated}:t)); } const l=await apiFetch(`/api/v1/agents/${selected}/logs?lines=500`); if(l.ok)setLogs((await l.json()).logs ?? ''); } },3000); return()=>clearInterval(timer); },[workspaceId,selected]);
 
   async function create(){
     if(!workspaceId){setMessage('Abra /agents?workspaceId=...');return;}
     setMessage('Criando Git Worktree e iniciando agente...');
-    const r=await fetch(`${API}/api/v1/agents`,{method:'POST',credentials:'include',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId,agent,title,prompt,startNow:true})});
+    const r=await apiFetch('/api/v1/agents',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({workspaceId,agent,title,prompt,startNow:true})});
     const body=await r.json().catch(()=>({}));
     if(!r.ok){setMessage(body.error ?? 'Falha ao iniciar agente.');return;}
     setTasks(c=>[body,...c]); setSelected(body.id); setMessage(`Agente iniciado isoladamente em ${body.branchName ?? 'worktree próprio'}.`);
   }
-  async function cancel(id:string){ await fetch(`${API}/api/v1/agents/${id}/cancel`,{method:'POST',credentials:'include'}); await load(); }
+  async function cancel(id:string){ await apiFetch(`/api/v1/agents/${id}/cancel`,{method:'POST'}); await load(); }
   async function viewChanges(){
     if(!selected)return; setReviewBusy(true);
-    const r=await fetch(`${API}/api/v1/agents/${selected}/changes`,{credentials:'include'});
+    const r=await apiFetch(`/api/v1/agents/${selected}/changes`);
     const body=await r.json().catch(()=>({}));
     if(r.ok)setChanges(body); else setMessage(body.error ?? 'Não foi possível carregar o diff.');
     setReviewBusy(false);
@@ -52,7 +51,7 @@ export default function AgentsPage() {
     const text=action==='merge'?'Mesclar as alterações deste agente na branch principal?':'Rejeitar e remover o worktree/branch deste agente?';
     if(!window.confirm(text))return;
     setReviewBusy(true); setMessage(action==='merge'?'Realizando merge controlado...':'Descartando worktree isolado...');
-    const r=await fetch(`${API}/api/v1/agents/${selectedTask.id}/${action}`,{method:'POST',credentials:'include'});
+    const r=await apiFetch(`/api/v1/agents/${selectedTask.id}/${action}`,{method:'POST'});
     const body=await r.json().catch(()=>({}));
     setMessage(r.ok ? (action==='merge'?`Merge concluído: ${body.mergeCommit?.slice(0,10) ?? 'OK'}`:'Alterações rejeitadas e isolamento removido.') : (body.error ?? `Falha ao ${action}.`));
     setChanges(null); await load(); setReviewBusy(false);

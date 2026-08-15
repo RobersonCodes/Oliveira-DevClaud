@@ -1,0 +1,53 @@
+# FASE 1/2 do bootstrap de TLS — config TEMPORÁRIA, só HTTP, sem nenhuma referência a certificado.
+# Existe para resolver o ciclo: o certbot HTTP-01 do painel precisa que o nginx já sirva
+# /.well-known/acme-challenge/ em texto plano, mas a config HTTPS final
+# (nginx-devcloud.host.conf.example) referencia certificados que só existem DEPOIS da emissão — se
+# você aplicar a config final antes de ter os certificados, `nginx -t` falha e nem esta parte HTTP
+# consegue ficar no ar. Este arquivo quebra esse ciclo.
+#
+# Sequência completa (rode tudo isso no servidor, nunca a partir deste repositório):
+#
+#   1. sudo mkdir -p /var/www/certbot
+#   2. Copie ESTE arquivo (bootstrap) para o nginx do host, SEM copiar ainda o arquivo final:
+#        sudo cp infra/production/nginx-devcloud.host.bootstrap.conf.example /etc/nginx/sites-available/devcloud.conf
+#        sudo ln -s /etc/nginx/sites-available/devcloud.conf /etc/nginx/sites-enabled/devcloud.conf
+#      (ou conf.d/, conforme o layout do host — mesma ressalva do arquivo final sobre conferir com
+#      `sudo nginx -T` antes para não duplicar nada do Tiremax.)
+#   3. sudo nginx -t                 # deve passar limpo — este arquivo não referencia certificado algum
+#   4. sudo systemctl reload nginx
+#   5. Emita o certificado do painel (HTTP-01 via webroot, agora que a location está servindo):
+#        sudo certbot certonly --webroot -w /var/www/certbot -d app.aifunnelpro.com.br
+#   6. Emita o certificado wildcard do runtime (DNS-01 — não depende do nginx nem da porta 80 en
+#      absoluto, pode ser feito antes, depois ou em paralelo ao passo 5):
+#        sudo certbot certonly --dns-... -d runtime.tiremax.shop -d "*.runtime.tiremax.shop"
+#      (comandos completos com plugin DNS ou modo manual: docs/RUNTIME-GATEWAY-DEPLOY.md §3.2)
+#   7. Com os dois certificados emitidos, SUBSTITUA este bootstrap pela config final — remova o
+#      symlink/arquivo deste bootstrap antes de ativar o final, para nunca ter os dois ao mesmo tempo
+#      (isso causaria dois server blocks `listen 80; server_name app.aifunnelpro.com.br` conflitantes):
+#        sudo rm /etc/nginx/sites-enabled/devcloud.conf
+#        sudo cp infra/production/nginx-devcloud.host.conf.example /etc/nginx/sites-available/devcloud.conf
+#        sudo ln -s /etc/nginx/sites-available/devcloud.conf /etc/nginx/sites-enabled/devcloud.conf
+#   8. sudo nginx -t                 # agora deve passar limpo referenciando os certificados reais
+#   9. sudo systemctl reload nginx
+#
+# Depois do passo 9 este arquivo de bootstrap não é mais necessário ficar instalado no host (a config
+# final já cobre o redirect HTTP->HTTPS e o próprio ACME webroot, para renovações futuras).
+
+server {
+  listen 80;
+  server_name app.aifunnelpro.com.br;
+
+  location /.well-known/acme-challenge/ {
+    root /var/www/certbot;
+  }
+
+  # Durante o bootstrap, tudo que não for o desafio ACME recebe uma resposta simples em texto
+  # plano — não redireciona para HTTPS ainda (não há certificado para servir do outro lado).
+  location / {
+    return 200 "Oliveira DevCloud: bootstrap de certificado em andamento.\n";
+    add_header Content-Type text/plain;
+  }
+}
+
+# runtime.tiremax.shop não precisa de nenhum server block aqui: o certificado wildcard usa DNS-01,
+# que não depende do nginx nem da porta 80 em nenhum momento. Só o painel precisa deste bootstrap.

@@ -2,8 +2,8 @@
   "name": "@oliveira/secret-manager",
   "version": "1.0.0",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "types": "src/index.ts",
-  "scripts": { "typecheck": "tsc --noEmit" },
+  "scripts": { "build":"tsc -p tsconfig.json --noEmit false --outDir dist --declaration", "typecheck": "tsc --noEmit" },
   "devDependencies": { "@types/node": "^22.10.5", "typescript": "^5.7.3" }
 }

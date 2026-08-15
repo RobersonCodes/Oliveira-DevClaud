@@ -1,5 +1,4 @@
-import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
 export type ReviewBranch = { taskId: string; branchName: string };
 export type GateResult = { command: string; exitCode: number; output: string; ok: boolean };
@@ -18,28 +17,16 @@ const safeId = (value: string) => {
   return value;
 };
 const safeBranch = (value: string) => {
-  if (!/^[a-zA-Z0-9._\/-]{1,220}$/.test(value) || value.includes('..') || value.startsWith('-')) throw new Error('INVALID_BRANCH_NAME');
+  if (!/^[a-zA-Z0-9._/-]{1,220}$/.test(value) || value.includes('..') || value.startsWith('-')) throw new Error('INVALID_BRANCH_NAME');
   return value;
 };
 
 export class DockerReviewEngine {
-  private readonly docker: Docker;
-  constructor(socketPath = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock') { this.docker = new Docker({ socketPath }); }
+  private readonly broker: RuntimeBrokerClient;
+  constructor(opts?: RuntimeBrokerClientOptions) { this.broker = new RuntimeBrokerClient(opts); }
 
   private async exec(containerId: string, cmd: string[], workingDir = '/workspace/repository') {
-    const container = this.docker.getContainer(containerId);
-    const execution = await container.exec({ Cmd: cmd, WorkingDir: workingDir, AttachStdout: true, AttachStderr: true });
-    const stream = await execution.start({ hijack: true });
-    // See DockerGitIsolationEngine.exec() for why this needs demuxing rather than raw concatenation.
-    const chunks: Buffer[] = [];
-    const combined = new PassThrough();
-    combined.on('data', (chunk: Buffer) => chunks.push(chunk));
-    this.docker.modem.demuxStream(stream, combined, combined);
-    await new Promise<void>((resolve, reject) => {
-      stream.on('end', resolve); stream.on('close', resolve); stream.on('error', reject);
-    });
-    const result = await execution.inspect();
-    return { exitCode: result.ExitCode ?? 1, output: Buffer.concat(chunks).toString('utf8') };
+    return this.broker.exec(containerId, { cmd, workingDir });
   }
 
   private ok(result: { exitCode:number; output:string }, code:string) {
@@ -87,14 +74,17 @@ export class DockerReviewEngine {
 
   async approve(containerId:string, orchestrationId:string, expectedBaseCommit:string){
     const id=safeId(orchestrationId), branch=`review/${id}`;
+    const idempotencyKey=`orchestration-merge/${id}`;
+    const previous=this.ok(await this.exec(containerId,['git','log','--format=%H','--grep',`^Oliveira-Idempotency-Key: ${idempotencyKey}$`,'-n','1']),'MERGE_HISTORY_LOOKUP_FAILED');
+    if(previous)return {mergeCommit:previous,alreadyMerged:true};
     const current=this.ok(await this.exec(containerId,['git','rev-parse','HEAD']),'GIT_HEAD_NOT_FOUND');
     if(current!==expectedBaseCommit) throw new Error('MAIN_BRANCH_MOVED_SINCE_REVIEW');
     const dirty=this.ok(await this.exec(containerId,['git','status','--porcelain']),'MAIN_WORKTREE_STATUS_FAILED');
     if(dirty) throw new Error('MAIN_WORKTREE_DIRTY');
-    const merge=await this.exec(containerId,['git','-c','user.name=Oliveira DevCloud','-c','user.email=devcloud@local','merge','--no-ff',branch,'-m',`merge(orchestration): ${id}`]);
+    const merge=await this.exec(containerId,['git','-c','user.name=Oliveira DevCloud','-c','user.email=devcloud@local','merge','--no-ff',branch,'-m',`merge(orchestration): ${id}\n\nOliveira-Idempotency-Key: ${idempotencyKey}`]);
     this.ok(merge,'ORCHESTRATION_MERGE_FAILED');
     const mergeCommit=this.ok(await this.exec(containerId,['git','rev-parse','HEAD']),'MERGE_COMMIT_NOT_FOUND');
     await this.cleanup(containerId,id,true);
-    return {mergeCommit};
+    return {mergeCommit,alreadyMerged:false};
   }
 }

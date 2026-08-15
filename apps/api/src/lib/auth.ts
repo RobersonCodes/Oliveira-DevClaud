@@ -3,10 +3,28 @@ import bcrypt from 'bcryptjs';
 import { prisma, Role } from '@oliveira/database';
 import type { FastifyRequest } from 'fastify';
 
-const SESSION_COOKIE = 'odc_session';
+// In production the __Host- prefix is a browser-enforced security boundary: the cookie must be
+// Secure, have Path=/ and omit Domain. Untrusted runtime subdomains therefore cannot shadow the
+// control-plane session by planting a same-named parent-domain cookie (cookie tossing). Keep the
+// shorter development name because plain HTTP clients outside the browser do not consistently
+// implement localhost's Secure-cookie exception.
+export function sessionCookieName(nodeEnv = process.env.NODE_ENV) {
+  return nodeEnv === 'production' ? '__Host-odc_session' : 'odc_session';
+}
+
+const SESSION_COOKIE = sessionCookieName();
 const SESSION_DAYS = Number(process.env.SESSION_TTL_DAYS ?? 14);
 
 export { SESSION_COOKIE };
+
+export function sessionCookieOptions(cookieName = SESSION_COOKIE) {
+  return {
+    httpOnly: true,
+    sameSite: 'lax' as const,
+    secure: cookieName.startsWith('__Host-'),
+    path: '/'
+  };
+}
 
 export const hashPassword = (password: string) => bcrypt.hash(password, 12);
 export const verifyPassword = (password: string, hash: string) => bcrypt.compare(password, hash);
@@ -43,15 +61,51 @@ export async function getSessionUser(request: FastifyRequest) {
 const rank: Record<Role, number> = { DEVELOPER: 1, ADMIN: 2, OWNER: 3 };
 export function hasRole(actual: Role, required: Role) { return rank[actual] >= rank[required]; }
 
+export type AuthorizationPolicy = 'AUTHENTICATED' | Role | 'HOST_ADMIN';
+export interface AuthorizationActor {
+  authenticated: boolean;
+  organizationRole?: Role;
+  hostAdmin?: boolean;
+}
+
+/** Pure policy decision used by the request guards and the complete role-matrix regression. */
+export function canAccess(actor: AuthorizationActor, policy: AuthorizationPolicy) {
+  if (!actor.authenticated) return false;
+  if (policy === 'AUTHENTICATED') return true;
+  if (policy === 'HOST_ADMIN') return actor.hostAdmin === true;
+  return actor.organizationRole !== undefined && hasRole(actor.organizationRole, policy);
+}
+
 export async function requireUser(request: FastifyRequest) {
   const auth = await getSessionUser(request);
   if (!auth) throw Object.assign(new Error('UNAUTHORIZED'), { statusCode: 401 });
+  await request.enforceIdentityRateLimit?.('user', auth.user.id);
   return auth;
 }
 
 export async function requireOrgRole(request: FastifyRequest, organizationId: string, required: Role = Role.DEVELOPER) {
-  const { user } = await requireUser(request);
+  const { user, session } = await requireUser(request);
   const membership = user.memberships.find(m => m.organizationId === organizationId);
-  if (!membership || !hasRole(membership.role, required)) throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
-  return { user, membership };
+  if (!canAccess({ authenticated: true, organizationRole: membership?.role }, required)) {
+    throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
+  }
+  await request.enforceIdentityRateLimit?.('organization', organizationId);
+  return { user, session, membership: membership! };
+}
+
+// Organization roles are tenant-scoped and cannot authorize host-wide data. Keep the operator
+// allowlist outside tenant membership until the schema gains an explicit global platform role.
+export async function requireHostAdmin(request: FastifyRequest) {
+  const { user } = await requireUser(request);
+  const allowed = new Set(
+    (process.env.HOST_ADMIN_EMAILS ?? '')
+      .split(',')
+      .map(email => email.trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (allowed.size === 0) throw Object.assign(new Error('HOST_ADMIN_NOT_CONFIGURED'), { statusCode: 503 });
+  if (!canAccess({ authenticated: true, hostAdmin: allowed.has(user.email.toLowerCase()) }, 'HOST_ADMIN')) {
+    throw Object.assign(new Error('FORBIDDEN'), { statusCode: 403 });
+  }
+  return user;
 }

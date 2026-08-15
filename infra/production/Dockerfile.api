@@ -1,7 +1,30 @@
-FROM node:22-bookworm-slim AS build
+FROM node:22-bookworm-slim AS base
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends openssl \
+ && rm -rf /var/lib/apt/lists/*
+
+FROM base AS build
 WORKDIR /app
 COPY package*.json tsconfig.base.json ./
 COPY apps ./apps
 COPY packages ./packages
-RUN npm install && npm run db:generate && npm run build -w @oliveira/api
-CMD ["npm","run","start","-w","@oliveira/api"]
+RUN npm ci
+RUN npm run db:generate \
+ && npm run build:runtime-packages \
+ && npm run build -w @oliveira/api \
+ && npm prune --omit=dev
+
+FROM base AS runtime
+ENV NODE_ENV=production \
+    SECURE_CONFIG_REQUIRED=true
+WORKDIR /app
+RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin devcloud
+COPY --from=build --chown=10001:10001 /app/package.json /app/package-lock.json ./
+COPY --from=build --chown=10001:10001 /app/node_modules ./node_modules
+COPY --from=build --chown=10001:10001 /app/apps/api ./apps/api
+COPY --from=build --chown=10001:10001 /app/packages ./packages
+USER 10001:10001
+EXPOSE 4000
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=5 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:4000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+CMD ["node","apps/api/dist/index.js"]

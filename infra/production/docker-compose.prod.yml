@@ -13,33 +13,128 @@ services:
     restart: unless-stopped
     command: ["redis-server","--appendonly","yes"]
     volumes: [redis_data:/data]
-  api:
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  # One-shot: applies Prisma migrations against a possibly-empty database before api/worker start.
+  # Reuses the api image (same deps/schema) rather than a separate Dockerfile to avoid drift.
+  migrate:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
+    restart: "no"
+    env_file: ../../.env.production
+    depends_on: { postgres: { condition: service_healthy } }
+    command: ["npm","run","db:migrate:deploy"]
+  # Sole holder of the Docker socket (Fase 4 / P1-5) — api and worker talk to it over the internal
+  # compose network via @oliveira/runtime-broker-client instead of touching docker.sock directly.
+  # Never publishes a host port: only reachable by other containers on this compose network.
+  runtime-broker:
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.runtime-broker }
     restart: unless-stopped
     env_file: ../../.env.production
-    depends_on: [postgres,redis]
+    environment:
+      # Matches api's `container_name` below. Lets the broker join a workspace's dedicated network
+      # on the relay's behalf so IDE/preview traffic (proxied from inside the api container) can
+      # reach the workspace container by IP — without this, per-workspace networks are unreachable
+      # from api. Unset in dev/CI on purpose: there, api runs directly on the host, which can
+      # already route to any Docker bridge network without joining it explicitly.
+      RELAY_CONTAINER_NAME: odc-api
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - workspace_data:/var/lib/oliveira-devcloud/workspaces
+      # Workspace containers are created as *siblings* of the broker by the host Docker daemon (via
+      # the socket above), not as children of this container — so the daemon resolves Binds paths
+      # against the HOST filesystem regardless of what this container's own filesystem looks like.
+      # The broker therefore does NOT need WORKSPACE_ROOT_HOST bind-mounted into itself; it only
+      # needs to know the *string* (WORKSPACE_ROOT below) to hand the daemon. Compare to api, which
+      # DOES need the real bind mount, because it also `fs.mkdir`/`fs.chown`s that path directly
+      # (see the comment on api's own volumes) before ever asking the broker to create a container.
+    # The broker itself stays non-root. Grant only the host docker.sock group as a supplemental
+    # numeric GID (obtain with `stat -c '%g' /var/run/docker.sock` and set DOCKER_GID).
+    group_add: ["${DOCKER_GID:?set DOCKER_GID to the host docker.sock group id}"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:5001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  api:
+    build: { context: ../.., dockerfile: infra/production/Dockerfile.api }
+    # Fixed name so the broker can connect/disconnect *this* container (see runtime-broker's
+    # RELAY_CONTAINER_NAME above) to each workspace's dedicated network — `docker network connect`
+    # needs a stable container name/ID, and Compose otherwise assigns a fresh one on every recreate.
+    container_name: odc-api
+    restart: unless-stopped
+    env_file: ../../.env.production
+    # Loopback-only: the real edge (TLS termination + routing) is the nginx already running on the
+    # HOST, not this compose — see the note on `web` below and
+    # infra/production/nginx-devcloud.host.conf.example. Never bind 0.0.0.0 here; api must not be
+    # directly reachable from outside this host.
+    ports: ["127.0.0.1:${DEVCLOUD_API_HOST_PORT:-18081}:4000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      runtime-broker: { condition: service_healthy }
+    volumes:
+      # fs.mkdir/fs.chown the workspace's bind-mounted directory directly (workspace-engine's
+      # create()) before ever asking the broker to create the container — needs the same real host
+      # path visible in api's own filesystem. Operator must ensure WORKSPACE_ROOT_HOST exists and is
+      # writable by uid 10001 (the workspace image's non-root user) before first run.
+      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces
   worker:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.worker }
     restart: unless-stopped
     env_file: ../../.env.production
-    depends_on: [postgres,redis]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+      runtime-broker: { condition: service_healthy }
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - workspace_data:/var/lib/oliveira-devcloud/workspaces
+      # Read-only view of the real workspace bind roots. The quota reconciler measures this path
+      # directly; Docker StorageOpt would cover only the container writable layer, not /workspace.
+      - ${WORKSPACE_ROOT_HOST:-/var/lib/oliveira-devcloud/workspaces}:/var/lib/oliveira-devcloud/workspaces:ro
   web:
     build: { context: ../.., dockerfile: infra/production/Dockerfile.web }
     restart: unless-stopped
     env_file: ../../.env.production
-    depends_on: [api]
+    # Loopback-only, same reasoning as api above. By DEFAULT this compose has no nginx service
+    # running: on a shared host (this VPS also serves another site) 80/443 belong to that host's
+    # existing nginx, which this repo cannot own. That host nginx gets two extra server blocks
+    # (never touching its existing ones) proxying to these 127.0.0.1 ports — template and full
+    # instructions in infra/production/nginx-devcloud.host.conf.example and
+    # docs/RUNTIME-GATEWAY-DEPLOY.md. Confirm both DEVCLOUD_*_HOST_PORT values are actually free on
+    # the host (`sudo ss -lntp`) before the first `docker compose up` — adjust in .env.production if
+    # they collide with something already running. For a VPS *exclusiva* (no other site), see the
+    # `nginx` service below (profile-gated, off by default).
+    ports: ["127.0.0.1:${DEVCLOUD_WEB_HOST_PORT:-18080}:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+  # Optional, off by default: full standalone nginx for a VPS EXCLUSIVA (no other site sharing
+  # 80/443). Activate explicitly with `docker compose --profile standalone-nginx up -d` — never on a
+  # host that already runs another nginx/site on 80/443 (that's exactly the shared-host scenario
+  # this compose avoids by default; see nginx-devcloud.host.conf.example / .bootstrap.conf.example
+  # for that path instead, which is what's actually in use for this deployment).
   nginx:
+    profiles: ["standalone-nginx"]
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports: ["80:80","443:443"]
+    environment:
+      DEV_CLOUD_HOST: ${DEV_CLOUD_HOST:?set DEV_CLOUD_HOST}
+      RUNTIME_BASE_DOMAIN: ${RUNTIME_BASE_DOMAIN:?set RUNTIME_BASE_DOMAIN}
     volumes:
-      - ./nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      # Mounted under /etc/nginx/templates/ (not conf.d/ directly) so the official nginx image's
+      # docker-entrypoint.sh runs envsubst on it at container start, substituting ${DEV_CLOUD_HOST}
+      # and ${RUNTIME_BASE_DOMAIN} from the environment above before writing the result to
+      # conf.d/default.conf. Mounting straight into conf.d/ (the previous setup) never triggers
+      # envsubst — server_name would be the literal, unexpanded string "${DEV_CLOUD_HOST}".
+      - ./nginx.prod.conf:/etc/nginx/templates/default.conf.template:ro
+      # Two independent certificates, one per origin (panel vs runtime — see nginx.prod.conf):
+      #   certs/panel/{fullchain.pem,privkey.pem}     — single-host cert for DEV_CLOUD_HOST
+      #   certs/runtime/{fullchain.pem,privkey.pem}   — WILDCARD cert for *.RUNTIME_BASE_DOMAIN
+      # Neither is provisioned by this repo — see docs/RUNTIME-GATEWAY-DEPLOY.md for how to obtain
+      # both with certbot before the first `docker compose up`.
       - ./certs:/etc/nginx/certs:ro
     depends_on: [web,api]
-volumes: { postgres_data: {}, redis_data: {}, workspace_data: {} }
+volumes: { postgres_data: {}, redis_data: {} }

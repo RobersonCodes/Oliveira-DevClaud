@@ -3,26 +3,39 @@ import WebSocket from 'ws';
 import type { FastifyInstance } from 'fastify';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { prisma } from '@oliveira/database';
-import { DockerWorkspaceEngine } from '@oliveira/workspace-engine';
-import { buildApp } from './app.js';
+import { startTestBroker } from '@oliveira/runtime-broker/src/testHelpers.js';
 
 /**
  * Minimal end-to-end test: login → create project → start a REAL workspace container (the actual
  * `oliveira-devcloud/workspace-node:1.0` image, not a lightweight stand-in) → open a real terminal
  * session over a real WebSocket → run a real shell command and read its real output → stop the
- * workspace. Every layer is real: Postgres, Docker, tmux, the WebSocket transport. No mocks.
+ * workspace. Every layer is real: Postgres, Docker, tmux, the WebSocket transport, and — since the
+ * Fase 4 Runtime Broker migration — a real broker in front of Docker too. No mocks.
  *
  * Requires: DATABASE_URL, DOCKER_SOCKET, and the workspace image already built
  * (`docker build -t oliveira-devcloud/workspace-node:1.0 infra/workspace-images/node`).
+ *
+ * RUNTIME_BROKER_URL/TOKEN must be set (to a *running* broker) before `./app.js` is ever imported —
+ * apps/api/src/routes/{workspaces,terminals,ide}.ts construct their engine clients once, at module
+ * load time, so this test starts its own broker and only then dynamically imports buildApp/
+ * DockerWorkspaceEngine, rather than statically importing them at the top of the file.
  */
 let app: FastifyInstance;
 let baseUrl: string;
 let wsBaseUrl: string;
+let broker: Awaited<ReturnType<typeof startTestBroker>>;
+let DockerWorkspaceEngine: typeof import('@oliveira/workspace-engine').DockerWorkspaceEngine;
 const createdUserIds: string[] = [];
 const createdOrgIds: string[] = [];
 const createdWorkspaceIds: string[] = [];
 
 beforeAll(async () => {
+  broker = await startTestBroker();
+  process.env.RUNTIME_BROKER_URL = broker.url;
+  process.env.RUNTIME_BROKER_TOKEN = broker.token;
+
+  ({ DockerWorkspaceEngine } = await import('@oliveira/workspace-engine'));
+  const { buildApp } = await import('./app.js');
   app = await buildApp({ logger: false, disableRateLimit: true });
   await app.listen({ port: 0, host: '127.0.0.1' });
   const address = app.server.address();
@@ -40,6 +53,7 @@ afterAll(async () => {
   for (const id of createdOrgIds) await prisma.organization.delete({ where: { id } }).catch(() => undefined);
   for (const id of createdUserIds) await prisma.user.delete({ where: { id } }).catch(() => undefined);
   await app.close();
+  await broker?.close();
 }, 60_000);
 
 function extractSessionCookie(response: Response): string {
@@ -76,13 +90,15 @@ describe('E2E — login → project → real workspace → real terminal → run
     // 3. Start a real workspace container from the real image.
     const workspaceRes = await fetch(`${baseUrl}/api/v1/workspaces`, {
       method: 'POST', headers: { 'content-type': 'application/json', cookie: sessionCookie },
-      body: JSON.stringify({ projectId: project.id, cpuLimit: 0.5, memoryMb: 512 })
+      body: JSON.stringify({ projectId: project.id, cpuLimit: 0.5, memoryMb: 512, pidsLimit: 96, diskMb: 512, maxRuntimeMinutes: 15 })
     });
     expect(workspaceRes.status).toBe(201);
     const workspace = await workspaceRes.json();
     createdWorkspaceIds.push(workspace.id);
     expect(workspace.status).toBe('RUNNING');
     expect(workspace.containerId).toBeTruthy();
+    expect(workspace).toMatchObject({ cpuLimit: 0.5, memoryMb: 512, pidsLimit: 96, diskMb: 512, maxRuntimeMinutes: 15 });
+    expect(workspace.runtimeStartedAt).toBeTruthy();
 
     // 4. Open a terminal session (creates a real tmux session inside the real container).
     const terminalRes = await fetch(`${baseUrl}/api/v1/terminals`, {
@@ -95,7 +111,10 @@ describe('E2E — login → project → real workspace → real terminal → run
     // 5. Connect over a real WebSocket and run a real command, reading the real output back.
     const marker = `ODC_E2E_${crypto.randomUUID().replace(/-/g, '')}`;
     const output = await new Promise<string>((resolve, reject) => {
-      const socket = new WebSocket(`${wsBaseUrl}/api/v1/terminals/${terminal.id}/connect`, { headers: { cookie: sessionCookie } });
+      // A real browser always sends Origin on a WebSocket handshake; the server now rejects
+      // handshakes without it (see apps/api/src/lib/wsOrigin.ts), so this has to be set explicitly
+      // for a raw `ws` client to represent what an actual browser connection looks like.
+      const socket = new WebSocket(`${wsBaseUrl}/api/v1/terminals/${terminal.id}/connect`, { headers: { cookie: sessionCookie, Origin: process.env.WEB_ORIGIN ?? 'http://localhost:3000' } });
       let buffer = '';
       let sent = false;
       const timeout = setTimeout(() => { socket.close(); reject(new Error('Timed out waiting for command output over the terminal WebSocket')); }, 20_000);
@@ -109,7 +128,10 @@ describe('E2E — login → project → real workspace → real terminal → run
           // ready. `\r` is a real Enter keypress for a PTY in canonical mode; `\n` alone is not
           // reliably treated as one.
           sent = true;
-          setTimeout(() => socket.send(`echo ${marker}\r`), 500);
+          // Match the browser/xterm protocol exactly. The `ws` server receives this text frame as
+          // a Buffer with `isBinary=false`; the route must decode the JSON envelope before writing
+          // its `data` to the PTY (P1-18 regression).
+          setTimeout(() => socket.send(JSON.stringify({ type: 'input', data: `echo ${marker}\r` })), 500);
           return;
         }
         if (buffer.split(marker).length >= 3) {

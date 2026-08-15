@@ -1,0 +1,5 @@
+23601488fa3f1e711c56a33ef26b6ac5341d3983eafe288d82a3d839d8806348  oliveira-devcloud-v2.5.0-7b80cfa-source.zip
+
+# Git commit: 7b80cfa15f5b84480c9aa5eb4129e94aae43f1d1
+# Git tree: 53d429618cc89481d5b3837c8184f42f3e11de3a
+# Generated: 2026-08-09 (America/Sao_Paulo)

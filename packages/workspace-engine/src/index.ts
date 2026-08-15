@@ -1,9 +1,14 @@
-import Docker from 'dockerode';
-import crypto from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
-export type WorkspaceLimits = { cpuLimit: number; memoryMb: number };
+export type WorkspaceLimits = {
+  cpuLimit: number;
+  memoryMb: number;
+  pidsLimit?: number;
+  diskMb?: number;
+  maxRuntimeMinutes?: number;
+};
 export type CreateWorkspaceInput = {
   workspaceId: string;
   projectId: string;
@@ -24,79 +29,59 @@ export interface WorkspaceEngine {
   start(containerId: string): Promise<void>;
   stop(containerId: string): Promise<void>;
   restart(containerId: string): Promise<void>;
-  destroy(containerId: string): Promise<void>;
+  destroy(containerId: string, workspaceId?: string): Promise<void>;
   inspect(containerId: string): Promise<{ status: string; running: boolean; startedAt?: string; finishedAt?: string }>;
 }
 
 const safeId = (value: string) => value.replace(/[^a-zA-Z0-9_.-]/g, '-').slice(0, 64);
 
+/**
+ * All Docker API access has moved behind the Runtime Broker (apps/runtime-broker) — this class no
+ * longer touches `docker.sock` at all, only the host filesystem (preparing the bind-mounted
+ * workspace directory, which api/worker still need visible in their own container to `fs.mkdir`/
+ * `fs.chown` it — see the comment on `WORKSPACE_ROOT_HOST` in docker-compose.prod.yml) and the
+ * broker's HTTP API for everything container-related.
+ */
 export class DockerWorkspaceEngine implements WorkspaceEngine {
-  private docker: Docker;
-  private image: string;
+  private broker: RuntimeBrokerClient;
   private root: string;
 
-  constructor(opts?: { socketPath?: string; image?: string; workspaceRoot?: string }) {
-    this.docker = new Docker({ socketPath: opts?.socketPath ?? process.env.DOCKER_SOCKET ?? '/var/run/docker.sock' });
-    this.image = opts?.image ?? process.env.WORKSPACE_IMAGE ?? 'oliveira-devcloud/workspace-node:1.0';
+  constructor(opts?: RuntimeBrokerClientOptions & { workspaceRoot?: string }) {
+    this.broker = new RuntimeBrokerClient(opts);
     this.root = path.resolve(opts?.workspaceRoot ?? process.env.WORKSPACE_ROOT ?? '/var/lib/oliveira-devcloud/workspaces');
   }
 
   async create(input: CreateWorkspaceInput): Promise<WorkspaceRuntime> {
-    const name = `odc-${safeId(input.workspaceId)}`;
     const workspacePath = path.join(this.root, safeId(input.workspaceId));
     await fs.mkdir(path.join(workspacePath, 'repository'), { recursive: true, mode: 0o770 });
     await fs.chown(workspacePath, 10001, 10001).catch(() => undefined);
     await fs.chown(path.join(workspacePath, 'repository'), 10001, 10001).catch(() => undefined);
 
-    const nanoCpus = Math.max(0.25, Math.min(input.limits.cpuLimit, 16)) * 1_000_000_000;
-    const memory = Math.max(256, Math.min(input.limits.memoryMb, 32768)) * 1024 * 1024;
-
-    const existing = this.docker.getContainer(name);
-    try {
-      const info = await existing.inspect();
-      return { containerId: info.Id, name, status: info.State.Status, workspacePath };
-    } catch { /* does not exist */ }
-
-    const container = await this.docker.createContainer({
-      Image: this.image,
-      name,
-      WorkingDir: '/workspace/repository',
-      Cmd: ['sleep', 'infinity'],
-      Tty: true,
-      OpenStdin: true,
-      Labels: {
-        'dev.oliveira.devcloud': 'workspace',
-        'dev.oliveira.workspace-id': input.workspaceId,
-        'dev.oliveira.project-id': input.projectId,
-        'dev.oliveira.nonce': crypto.randomBytes(8).toString('hex')
-      },
-      Env: [
-        `ODC_WORKSPACE_ID=${input.workspaceId}`,
-        `ODC_PROJECT_ID=${input.projectId}`,
-        `ODC_DEFAULT_BRANCH=${input.defaultBranch ?? 'main'}`
-      ],
-      HostConfig: {
-        NanoCpus: nanoCpus,
-        Memory: memory,
-        MemorySwap: memory,
-        PidsLimit: 512,
-        AutoRemove: false,
-        NetworkMode: process.env.WORKSPACE_NETWORK ?? 'bridge',
-        Binds: [`${workspacePath}:/workspace`],
-        SecurityOpt: ['no-new-privileges:true'],
-        CapDrop: ['ALL']
-      }
+    const result = await this.broker.createWorkspaceContainer(input.workspaceId, {
+      projectId: input.projectId,
+      defaultBranch: input.defaultBranch,
+      limits: input.limits
     });
-    await container.start();
-    return { containerId: container.id, name, status: 'running', workspacePath };
+    return { ...result, workspacePath };
   }
 
-  async start(id: string) { const c = this.docker.getContainer(id); const i = await c.inspect(); if (!i.State.Running) await c.start(); }
-  async stop(id: string) { const c = this.docker.getContainer(id); const i = await c.inspect(); if (i.State.Running) await c.stop({ t: 10 }); }
-  async restart(id: string) { await this.docker.getContainer(id).restart({ t: 10 }); }
-  async destroy(id: string) { const c = this.docker.getContainer(id); try { const i = await c.inspect(); if (i.State.Running) await c.stop({ t: 10 }); } catch {} await c.remove({ force: true }); }
+  async start(id: string) { await this.broker.start(id); }
+  async stop(id: string) { await this.broker.stop(id, 10); }
+  async restart(id: string) { await this.broker.restart(id, 10); }
+  async destroy(id: string, workspaceId?: string) {
+    await this.broker.destroy(id, workspaceId);
+    if (!workspaceId) return;
+    const workspacePath = path.join(this.root, safeId(workspaceId));
+    // The broker/container must be gone before its bind mount is reclaimed. Resolve only one
+    // direct child of the configured workspace root; never follow a caller-controlled path.
+    if (path.dirname(workspacePath) !== this.root || path.basename(workspacePath) !== safeId(workspaceId)) {
+      throw new Error('INVALID_WORKSPACE_STORAGE_PATH');
+    }
+    await fs.rm(workspacePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+
   async inspect(id: string) {
-    const i = await this.docker.getContainer(id).inspect();
-    return { status: i.State.Status, running: i.State.Running, startedAt: i.State.StartedAt, finishedAt: i.State.FinishedAt };
+    const info = await this.broker.inspect(id);
+    return { status: info.status, running: info.running, startedAt: info.startedAt, finishedAt: info.finishedAt };
   }
 }

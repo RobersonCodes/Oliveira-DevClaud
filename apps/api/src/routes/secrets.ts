@@ -15,9 +15,44 @@ const bodySchema = z.object({
   value: z.string().min(1).max(16384)
 });
 
-function validateScope(input: z.infer<typeof bodySchema>) {
-  if (input.scope === SecretScope.PROJECT && !input.projectId) throw Object.assign(new Error('PROJECT_SCOPE_REQUIRES_PROJECT'), { statusCode: 400 });
-  if (input.scope === SecretScope.WORKSPACE && !input.workspaceId) throw Object.assign(new Error('WORKSPACE_SCOPE_REQUIRES_WORKSPACE'), { statusCode: 400 });
+type SecretScopeInput = Pick<z.infer<typeof bodySchema>, 'scope' | 'projectId' | 'workspaceId'>;
+
+export function validateSecretScopeShape(input: SecretScopeInput) {
+  if (input.scope === SecretScope.ORGANIZATION) {
+    if (input.projectId || input.workspaceId) throw Object.assign(new Error('ORGANIZATION_SCOPE_FORBIDS_RESOURCE'), { statusCode: 400 });
+    return;
+  }
+  if (input.scope === SecretScope.PROJECT) {
+    if (!input.projectId || input.workspaceId) throw Object.assign(new Error('PROJECT_SCOPE_REQUIRES_ONLY_PROJECT'), { statusCode: 400 });
+    return;
+  }
+  if (!input.workspaceId || input.projectId) throw Object.assign(new Error('WORKSPACE_SCOPE_REQUIRES_ONLY_WORKSPACE'), { statusCode: 400 });
+}
+
+async function validateScope(input: z.infer<typeof bodySchema>) {
+  validateSecretScopeShape(input);
+  if (input.scope === SecretScope.ORGANIZATION) return;
+  if (input.scope === SecretScope.PROJECT) {
+    const projectId = input.projectId;
+    if (!projectId) throw Object.assign(new Error('PROJECT_SCOPE_REQUIRES_ONLY_PROJECT'), { statusCode: 400 });
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { organizationId: true } });
+    if (!project || project.organizationId !== input.organizationId) {
+      throw Object.assign(new Error('SCOPE_RESOURCE_NOT_FOUND'), { statusCode: 404 });
+    }
+    return;
+  }
+  const workspaceId = input.workspaceId;
+  if (!workspaceId) throw Object.assign(new Error('WORKSPACE_SCOPE_REQUIRES_ONLY_WORKSPACE'), { statusCode: 400 });
+  const workspace = await prisma.workspace.findUnique({
+    where: { id: workspaceId },
+    select: { projectId: true }
+  });
+  const project = workspace
+    ? await prisma.project.findUnique({ where: { id: workspace.projectId }, select: { organizationId: true } })
+    : null;
+  if (!project || project.organizationId !== input.organizationId) {
+    throw Object.assign(new Error('SCOPE_RESOURCE_NOT_FOUND'), { statusCode: 404 });
+  }
 }
 
 export async function secretRoutes(app: FastifyInstance) {
@@ -28,8 +63,9 @@ export async function secretRoutes(app: FastifyInstance) {
   });
 
   app.post('/', async (request, reply) => {
-    const body = bodySchema.parse(request.body); validateScope(body);
+    const body = bodySchema.parse(request.body);
     const { user } = await requireOrgRole(request, body.organizationId, Role.ADMIN);
+    await validateScope(body);
     const aad = `${body.organizationId}:${body.scope}:${body.name}:${body.projectId ?? ''}:${body.workspaceId ?? ''}`;
     // Prisma's compound-unique lookup rejects null components, and Postgres treats NULL as distinct
     // in unique constraints anyway, so scope/project/workspace identity is resolved via findFirst instead.

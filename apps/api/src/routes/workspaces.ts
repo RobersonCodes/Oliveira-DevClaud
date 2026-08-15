@@ -10,7 +10,10 @@ const engine = new DockerWorkspaceEngine();
 const createSchema = z.object({
   projectId: z.string().cuid(),
   cpuLimit: z.number().min(0.25).max(16).default(1),
-  memoryMb: z.number().int().min(256).max(32768).default(2048)
+  memoryMb: z.number().int().min(256).max(32768).default(2048),
+  pidsLimit: z.number().int().min(64).max(4096).default(512),
+  diskMb: z.number().int().min(512).max(102400).default(10240),
+  maxRuntimeMinutes: z.number().int().min(15).max(10080).default(480)
 });
 
 async function loadWorkspace(request: FastifyRequest, workspaceId: string, required: Role = Role.DEVELOPER) {
@@ -34,11 +37,12 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const project = await prisma.project.findUnique({ where: { id: body.projectId } });
     if (!project) throw Object.assign(new Error('PROJECT_NOT_FOUND'), { statusCode: 404 });
     const { user } = await requireOrgRole(request, project.organizationId, Role.ADMIN);
-    const workspace = await prisma.workspace.create({ data: { projectId: project.id, cpuLimit: body.cpuLimit, memoryMb: body.memoryMb, status: WorkspaceStatus.CREATING } });
+    const workspace = await prisma.workspace.create({ data: { projectId: project.id, cpuLimit: body.cpuLimit, memoryMb: body.memoryMb, pidsLimit: body.pidsLimit, diskMb: body.diskMb, maxRuntimeMinutes: body.maxRuntimeMinutes, status: WorkspaceStatus.CREATING } });
     try {
       const runtime = await engine.create({ workspaceId: workspace.id, projectId: project.id, repositoryUrl: project.repositoryUrl, defaultBranch: project.defaultBranch, limits: body });
-      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { containerId: runtime.containerId, status: WorkspaceStatus.RUNNING, lastActiveAt: new Date() } });
-      await audit({ userId: user.id, organizationId: project.organizationId, action: 'WORKSPACE_CREATED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip, metadata: { cpuLimit: body.cpuLimit, memoryMb: body.memoryMb } });
+      const now = new Date();
+      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { containerId: runtime.containerId, status: WorkspaceStatus.RUNNING, lastActiveAt: now, heartbeatAt: now, runtimeStartedAt: now, quotaViolation: null, quotaExceededAt: null } });
+      await audit({ userId: user.id, organizationId: project.organizationId, action: 'WORKSPACE_CREATED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip, metadata: { cpuLimit: body.cpuLimit, memoryMb: body.memoryMb, pidsLimit: body.pidsLimit, diskMb: body.diskMb, maxRuntimeMinutes: body.maxRuntimeMinutes } });
       await recordActivity({ organizationId: project.organizationId, workspaceId: workspace.id, userId: user.id, type: 'workspace.created', message: `Workspace criado para o projeto ${project.name}` });
       return reply.code(201).send(updated);
     } catch (error) {
@@ -62,7 +66,8 @@ export async function workspaceRoutes(app: FastifyInstance) {
       if (!workspace.containerId) throw Object.assign(new Error('WORKSPACE_HAS_NO_CONTAINER'), { statusCode: 409 });
       await engine[action](workspace.containerId);
       const status = action === 'stop' ? WorkspaceStatus.STOPPED : WorkspaceStatus.RUNNING;
-      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { status, lastActiveAt: new Date() } });
+      const now = new Date();
+      const updated = await prisma.workspace.update({ where: { id: workspace.id }, data: { status, lastActiveAt: now, heartbeatAt: status === WorkspaceStatus.RUNNING ? now : workspace.heartbeatAt, runtimeStartedAt: status === WorkspaceStatus.RUNNING ? now : null, quotaViolation: status === WorkspaceStatus.RUNNING ? null : workspace.quotaViolation, quotaExceededAt: status === WorkspaceStatus.RUNNING ? null : workspace.quotaExceededAt } });
       await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: `WORKSPACE_${action.toUpperCase()}`, resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
       const activityByAction = { start: { type: 'workspace.started', message: 'Workspace iniciado' }, stop: { type: 'workspace.stopped', message: 'Workspace parado' }, restart: { type: 'workspace.restarted', message: 'Workspace reiniciado' } } as const;
       await recordActivity({ organizationId: workspace.project.organizationId, workspaceId: workspace.id, userId: user.id, ...activityByAction[action] });
@@ -74,7 +79,7 @@ export async function workspaceRoutes(app: FastifyInstance) {
     const { workspaceId } = request.params as { workspaceId: string };
     const { workspace, user } = await loadWorkspace(request, workspaceId, Role.ADMIN);
     await prisma.workspace.update({ where: { id: workspace.id }, data: { status: WorkspaceStatus.DESTROYING } });
-    if (workspace.containerId) await engine.destroy(workspace.containerId).catch(error => app.log.warn(error));
+    if (workspace.containerId) await engine.destroy(workspace.containerId, workspace.id).catch(error => app.log.warn(error));
     await prisma.workspace.delete({ where: { id: workspace.id } });
     await audit({ userId: user.id, organizationId: workspace.project.organizationId, action: 'WORKSPACE_DESTROYED', resource: 'Workspace', resourceId: workspace.id, ipAddress: request.ip });
     await recordActivity({ organizationId: workspace.project.organizationId, userId: user.id, type: 'workspace.destroyed', message: 'Workspace removido' });

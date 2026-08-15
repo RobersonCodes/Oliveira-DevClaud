@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-
-const API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000';
+import { apiFetch } from '../../lib/apiClient';
 type Kind = 'source'|'test'|'route'|'manifest'|'config'|'infra'|'other';
 type TreeNode = { name:string; path:string; type:'directory'|'file'; kind?:Kind; children?:TreeNode[] };
 type Intelligence = {
@@ -27,7 +26,7 @@ export default function RepositoryMap(){
   useEffect(()=>setWorkspaceId(new URLSearchParams(location.search).get('workspaceId')??''),[]);
   async function load(refresh=false){
     if(!workspaceId)return; setBusy(true); setError('');
-    const r=await fetch(`${API}/api/v1/repository-intelligence/${workspaceId}${refresh?'?refresh=true':''}`,{credentials:'include'});
+    const r=await apiFetch(`/api/v1/repository-intelligence/${workspaceId}${refresh?'?refresh=true':''}`);
     const body=await r.json().catch(()=>({}));
     if(r.ok)setData(body); else setError(body.error??`HTTP_${r.status}`);
     setBusy(false);

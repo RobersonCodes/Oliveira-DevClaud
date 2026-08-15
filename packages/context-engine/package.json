@@ -3,9 +3,9 @@
   "version":"2.0.0",
   "private":true,
   "type":"module",
-  "main":"src/index.ts",
+  "main":"dist/index.js",
   "types":"src/index.ts",
-  "scripts":{"typecheck":"tsc --noEmit"},
+  "scripts":{"build":"tsc -p tsconfig.json --noEmit false --outDir dist --declaration","typecheck":"tsc --noEmit"},
   "devDependencies":{"typescript":"^5.7.3"},
   "dependencies":{"@oliveira/code-intelligence":"*"}
 }

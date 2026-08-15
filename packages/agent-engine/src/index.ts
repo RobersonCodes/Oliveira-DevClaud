@@ -1,5 +1,4 @@
-import Docker from 'dockerode';
-import { PassThrough } from 'node:stream';
+import { RuntimeBrokerClient, type RuntimeBrokerClientOptions } from '@oliveira/runtime-broker-client';
 
 export type AgentKind = 'CODEX' | 'CLAUDE';
 export type AgentRuntimeStatus = 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'UNKNOWN';
@@ -10,6 +9,7 @@ export type StartAgentInput = {
   agent: AgentKind;
   prompt: string;
   workingDirectory?: string;
+  maxDurationSeconds?: number;
 };
 
 export type AgentRuntime = {
@@ -23,30 +23,14 @@ const safeTaskId = (value: string) => {
 };
 
 export class DockerAgentEngine {
-  private readonly docker: Docker;
+  private readonly broker: RuntimeBrokerClient;
 
-  constructor(socketPath = process.env.DOCKER_SOCKET ?? '/var/run/docker.sock') {
-    this.docker = new Docker({ socketPath });
+  constructor(opts?: RuntimeBrokerClientOptions) {
+    this.broker = new RuntimeBrokerClient(opts);
   }
 
   private async exec(containerId: string, cmd: string[], env?: string[]) {
-    const container = this.docker.getContainer(containerId);
-    const execution = await container.exec({ Cmd: cmd, Env: env, AttachStdout: true, AttachStderr: true });
-    const stream = await execution.start({ hijack: true });
-    // Without a TTY, Docker multiplexes stdout/stderr into one stream, prefixing every frame with
-    // an 8-byte header (stream type + length) — raw `data` events include those header bytes
-    // verbatim, corrupting status codes/log output parsed from it. demuxStream splits the frames.
-    const chunks: Buffer[] = [];
-    const combined = new PassThrough();
-    combined.on('data', (chunk: Buffer) => chunks.push(chunk));
-    this.docker.modem.demuxStream(stream, combined, combined);
-    await new Promise<void>((resolve, reject) => {
-      stream.on('end', resolve);
-      stream.on('close', resolve);
-      stream.on('error', reject);
-    });
-    const result = await execution.inspect();
-    return { exitCode: result.ExitCode ?? 1, output: Buffer.concat(chunks).toString('utf8') };
+    return this.broker.exec(containerId, { cmd, env });
   }
 
   async start(input: StartAgentInput): Promise<AgentRuntime> {
@@ -56,7 +40,7 @@ export class DockerAgentEngine {
     const logFile = `/tmp/odc-agent-${id}.log`;
     const binary = input.agent === 'CODEX' ? 'codex' : 'claude';
     const args = input.agent === 'CODEX'
-      ? ['exec', '--full-auto', '--skip-git-repo-check', '"$ODC_AGENT_PROMPT"']
+      ? ['exec', '--sandbox', 'workspace-write', '--ask-for-approval', 'never', '--skip-git-repo-check', '"$ODC_AGENT_PROMPT"']
       : ['-p', '"$ODC_AGENT_PROMPT"', '--permission-mode', 'acceptEdits'];
 
     const available = await this.exec(input.containerId, ['sh', '-lc', `command -v ${binary} >/dev/null 2>&1`]);
@@ -65,11 +49,15 @@ export class DockerAgentEngine {
     // User input is passed only through an environment variable. The shell program itself is fixed.
     // This avoids concatenating prompts into a command string while still allowing exit-code persistence.
     const command = [binary, ...args].join(' ');
-    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; ${command} 2>&1 | tee "$ODC_LOG_FILE"; code=\${PIPESTATUS[0]}; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
+    const maxDurationSeconds = Math.max(1, Math.min(input.maxDurationSeconds ?? 3600, 14_400));
+    const agentCommand = `${command} 2>&1 | tee "$ODC_LOG_FILE"; exit \${PIPESTATUS[0]}`;
+    // GNU timeout returns 124 after its TERM deadline; BusyBox returns the child's 143 instead.
+    // This wrapper owns that TERM, so normalize both implementations to the persisted quota code.
+    const wrapper = `rm -f "$ODC_STATUS_FILE" "$ODC_LOG_FILE"; timeout -s TERM -k 10s ${maxDurationSeconds}s bash -lc "$ODC_AGENT_COMMAND"; code=$?; if [ "$code" -eq 143 ] || [ "$code" -eq 137 ]; then code=124; fi; printf '%s' "$code" > "$ODC_STATUS_FILE"; exit "$code"`;
 
     const result = await this.exec(input.containerId, [
       'tmux', 'new-session', '-d', '-s', sessionName, '-c', input.workingDirectory ?? '/workspace/repository',
-      'env', `ODC_AGENT_PROMPT=${input.prompt}`, `ODC_STATUS_FILE=${statusFile}`, `ODC_LOG_FILE=${logFile}`,
+      'env', `ODC_AGENT_PROMPT=${input.prompt}`, `ODC_STATUS_FILE=${statusFile}`, `ODC_LOG_FILE=${logFile}`, `ODC_AGENT_COMMAND=${agentCommand}`,
       'bash', '-lc', wrapper
     ]);
     if (result.exitCode !== 0) throw new Error('AGENT_START_FAILED');

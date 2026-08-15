@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma, Role, SecretKind } from '@oliveira/database';
 import { requireOrgRole } from '../lib/auth.js';
 import { resolveSecretByKind } from '../lib/secretResolver.js';
-import { bootstrapRepository } from '../lib/repositoryBootstrap.js';
+import { bootstrapRepository } from '@oliveira/repository-bootstrap';
 import { audit } from '../lib/audit.js';
 
 export async function repositoryRoutes(app:FastifyInstance) {

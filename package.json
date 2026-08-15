@@ -8,19 +8,26 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently -n web,api,worker \"npm run dev -w @oliveira/web\" \"npm run dev -w @oliveira/api\" \"npm run dev -w @oliveira/worker\"",
+    "dev": "concurrently -n web,api,worker,broker \"npm run dev -w @oliveira/web\" \"npm run dev -w @oliveira/api\" \"npm run dev -w @oliveira/worker\" \"npm run dev -w @oliveira/runtime-broker\"",
     "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present",
+    "build:runtime-packages": "npm run build -w @oliveira/runtime-broker-client && npm run build -w @oliveira/database && npm run build -w @oliveira/agent-engine && npm run build -w @oliveira/code-intelligence && npm run build -w @oliveira/command-center-engine && npm run build -w @oliveira/context-engine && npm run build -w @oliveira/contract-intelligence && npm run build -w @oliveira/contract-gate && npm run build -w @oliveira/dependency-router && npm run build -w @oliveira/git-engine && npm run build -w @oliveira/ide-engine && npm run build -w @oliveira/orchestrator-engine && npm run build -w @oliveira/repository-bootstrap && npm run build -w @oliveira/repository-intelligence && npm run build -w @oliveira/review-engine && npm run build -w @oliveira/secret-manager && npm run build -w @oliveira/setup-engine && npm run build -w @oliveira/setup-queue && npm run build -w @oliveira/task-context-router && npm run build -w @oliveira/terminal-engine && npm run build -w @oliveira/workspace-engine && npm run build -w @oliveira/regression-intelligence",
+    "lint": "eslint \"apps/**/*.{ts,tsx}\" \"packages/**/*.{ts,tsx}\"",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
+    "test:browser": "playwright test --config=apps/api/playwright.config.ts",
     "test:watch": "vitest",
     "db:generate": "npm run generate -w @oliveira/database",
     "db:migrate": "npm run migrate -w @oliveira/database",
     "db:migrate:deploy": "npm run migrate:deploy -w @oliveira/database"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "concurrently": "^9.1.2",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "globals": "^16.5.0",
     "typescript": "^5.7.3",
+    "typescript-eslint": "^8.46.4",
     "vitest": "^3.2.7"
   }
 }

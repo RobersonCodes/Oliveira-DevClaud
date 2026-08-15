@@ -1,9 +1,21 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from 'zod';
-import { prisma, Role, WorkspaceStatus } from '@oliveira/database';
+import { prisma, Role, WorkspaceStatus, type Prisma } from '@oliveira/database';
 import { DockerTmuxTerminalEngine } from '@oliveira/terminal-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { parseTerminalClientMessage } from '../lib/terminalMessages.js';
+import { isAllowedWsOrigin } from '../lib/wsOrigin.js';
+
+type LoadedTerminal = Prisma.TerminalSessionGetPayload<{ include: { workspace: { include: { project: true } } } }>;
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    // Populated by requireTerminalAccess (a preHandler, run before @fastify/websocket completes the
+    // WS handshake) so the connect wsHandler below doesn't need to re-authorize.
+    terminalContext?: LoadedTerminal;
+  }
+}
 
 const terminalEngine = new DockerTmuxTerminalEngine();
 const createSchema = z.object({
@@ -61,17 +73,25 @@ export async function terminalRoutes(app: FastifyInstance) {
     return reply.code(204).send();
   });
 
-  app.get('/:terminalId/connect', { websocket: true }, async (socket, request) => {
+  // Origin, session/role and terminal availability are all validated here, in a preHandler — which
+  // for a `{websocket:true}` route runs strictly *before* @fastify/websocket completes the upgrade
+  // (the 101 is only sent once the wsHandler below actually starts). A request that fails any of
+  // these gets a normal HTTP error response and no WebSocket handshake ever happens.
+  async function requireTerminalAccess(request: FastifyRequest) {
+    if (!isAllowedWsOrigin(request.headers.origin)) throw Object.assign(new Error('ORIGIN_NOT_ALLOWED'), { statusCode: 403 });
+    const { terminalId } = request.params as { terminalId: string };
+    const { terminal } = await loadTerminal(request, terminalId);
+    if (!terminal.active || !terminal.workspace.containerId || terminal.workspace.status !== WorkspaceStatus.RUNNING) {
+      throw Object.assign(new Error('TERMINAL_UNAVAILABLE'), { statusCode: 409 });
+    }
+    request.terminalContext = terminal;
+  }
+
+  app.get('/:terminalId/connect', { websocket: true, preHandler: requireTerminalAccess }, async (socket, request) => {
+    const terminal = request.terminalContext!;
     let connection: Awaited<ReturnType<typeof terminalEngine.connect>> | undefined;
     try {
-      const { terminalId } = request.params as { terminalId: string };
-      const { terminal } = await loadTerminal(request, terminalId);
-      if (!terminal.active || !terminal.workspace.containerId || terminal.workspace.status !== WorkspaceStatus.RUNNING) {
-        socket.close(1008, 'TERMINAL_UNAVAILABLE');
-        return;
-      }
-
-      connection = await terminalEngine.connect(terminal.workspace.containerId, terminal.tmuxName, { cols: terminal.cols, rows: terminal.rows });
+      connection = await terminalEngine.connect(terminal.workspace.containerId!, terminal.tmuxName, { cols: terminal.cols, rows: terminal.rows });
       connection.onData(chunk => {
         if (socket.readyState === 1) socket.send(chunk);
       });
@@ -79,21 +99,14 @@ export async function terminalRoutes(app: FastifyInstance) {
         if (socket.readyState === 1) socket.close(1000, 'DETACHED');
       });
 
-      socket.on('message', async (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      socket.on('message', async (raw, isBinary) => {
         try {
-          if (Buffer.isBuffer(raw)) { connection?.write(raw.toString('utf8')); return; }
-          const text = raw.toString();
-          if (text.startsWith('{')) {
-            const event = z.discriminatedUnion('type', [
-              z.object({ type: z.literal('input'), data: z.string().max(65536) }),
-              z.object({ type: z.literal('resize'), cols: z.number().int().min(20).max(300), rows: z.number().int().min(5).max(120) })
-            ]).parse(JSON.parse(text));
-            if (event.type === 'input') connection?.write(event.data);
-            else {
-              await connection?.resize({ cols: event.cols, rows: event.rows });
-              await prisma.terminalSession.update({ where: { id: terminal.id }, data: { cols: event.cols, rows: event.rows, lastActiveAt: new Date() } });
-            }
-          } else connection?.write(text);
+          const event = parseTerminalClientMessage(raw, isBinary);
+          if (event.type === 'input') connection?.write(event.data);
+          else {
+            await connection?.resize({ cols: event.cols, rows: event.rows });
+            await prisma.terminalSession.update({ where: { id: terminal.id }, data: { cols: event.cols, rows: event.rows, lastActiveAt: new Date() } });
+          }
         } catch { socket.send(JSON.stringify({ type: 'error', code: 'INVALID_TERMINAL_EVENT' })); }
       });
 
@@ -102,7 +115,10 @@ export async function terminalRoutes(app: FastifyInstance) {
         await prisma.terminalSession.update({ where: { id: terminal.id }, data: { lastActiveAt: new Date() } }).catch(() => undefined);
       });
     } catch {
-      socket.close(1008, 'UNAUTHORIZED_OR_NOT_FOUND');
+      // Auth/availability failures are already handled by requireTerminalAccess above and never
+      // reach here — anything caught at this point is a real connection/infra failure (e.g. the
+      // container's tmux session couldn't be attached to).
+      if (socket.readyState === 1) socket.close(1011, 'TERMINAL_CONNECT_FAILED');
       await connection?.close().catch(() => undefined);
     }
   });
