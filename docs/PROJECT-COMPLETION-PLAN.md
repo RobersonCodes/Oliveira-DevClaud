@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-15 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `e6a0645` (`fix(fase8): enforce mobile touch targets`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA, navegação, 320px/safe areas e touch targets essenciais estão aprovados nos CIs `31860098544`/`31860101934` e smoke `31860101978`. P1-16 permanece parcial até concluir toolbar/fluxos touch, retomada e testes físicos |
+| Commit de referência | `6e5da58` (`docs(fase8): record touch target evidence`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: toolbar mobile do terminal e correção P1-18 passaram testes unitários, build e Playwright 320px; o E2E Docker do protocolo real aguarda CI Linux. P1-16 permanece parcial pelos demais fluxos touch, retomada e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Implementar e testar a toolbar mobile do terminal com Esc, Ctrl, Tab, setas e símbolos úteis |
+| Próxima ação única | Commitar e exigir CI Linux/Docker verde para o envelope JSON real do terminal antes de iniciar os demais fluxos touch |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -1006,7 +1006,7 @@ interface desktop reduzida.
 - [x] Garantir layout funcional a partir de 320 CSS px e safe areas.
 - [x] Criar navegação mobile persistente como substituta da navegação desktop.
 - [x] Usar alvo interno de toque de pelo menos 44 × 44 px.
-- [ ] Criar toolbar de terminal com Esc, Ctrl, Tab, setas e símbolos úteis.
+- [x] Criar toolbar de terminal com Esc, Ctrl, Tab, setas e símbolos úteis.
 - [ ] Adaptar command palette, diffs, logs e aprovação para toque.
 - [ ] Exibir estado de conexão e retomar sessão/workspace automaticamente.
 - [ ] Priorizar fluxo agente: descrever → executar → acompanhar → revisar → aprovar.
@@ -1066,6 +1066,22 @@ No commit `e6a0645`, os CIs Linux/Docker `31860098544`/`31860101934` aprovaram *
 331 testes e 2 ignorados**, lint/prova negativa, typecheck, build das 20 páginas e audit com zero
 vulnerabilidades. O smoke de host limpo `31860101978` aprovou os 12 sinais de migrations/readiness,
 fluxo funcional, persistência/restarts, fault injection e restores isolados.
+
+A toolbar mobile do terminal adiciona **12 controles** roláveis (`Esc`, `Ctrl`, `Tab`, quatro setas,
+`C`, `/`, `-`, `|` e `~`), todos com 44×44px, nomes acessíveis e bloqueio enquanto o socket não está
+online. `Ctrl` é um modificador de uso único aplicável tanto ao teclado virtual quanto aos botões; o
+gut-check enviou `Esc`, `Ctrl+C`, `Tab`, seta para cima e `|` e observou exatamente `ESC`, `ETX`, `TAB`,
+`ESC [ A` e `|` no WebSocket mockado, mantendo o foco no textarea do xterm. Chromium/Playwright em
+320×844 confirmou 12/12 alvos, viewport/scroll width `320/320`, conteúdo presente, zero overlay e zero
+erro de console; a home também navegou e renderizou com API controlada. A captura foi inspecionada e
+os artefatos/processo temporários foram removidos.
+
+O defeito P1-18 foi corrigido junto porque impedia qualquer tecla do browser: o handler agora usa
+`isBinary` e decodifica o envelope textual antes de escrever no PTY. Regressões puras cobrem input,
+resize fragmentado, binário/plain text e envelopes inválidos; o E2E Docker passou a enviar o mesmo JSON
+do browser. Testes PWA/mobile/protocolo **14/14**, typechecks web/API, lint (0 erros/19 avisos legados),
+build Next 16 com 20 páginas e `git diff --check` passaram. O E2E real não rodou localmente porque o
+daemon `docker_engine` recusou acesso; sua aprovação no CI Linux é obrigatória antes do próximo corte.
 
 ---
 
@@ -1217,6 +1233,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 8 — touch targets, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `bfdde72`; escopo restrito à auditoria e normalização dos controles essenciais menores que 44×44px nas rotas mobile, preservando links inline não acionáveis como blocos | Medir controles reais em 320px e corrigir somente os alvos insuficientes |
 | 2026-08-14 | Codex | Fase 8 — touch targets, validação local | `EM ANDAMENTO` | Baseline Chromium: 33 controles insuficientes em 13 rotas. Após política mobile, 118 controles medidos em 16 rotas e zero abaixo de 44×44; gut-check corrigiu herança indevida do grid em wizard/repository map. Testes PWA/mobile 7/7, typecheck, lint 0 erros/19 avisos, build 20 páginas e diff-check verdes; API/dados condicionais e dispositivos físicos não executados | Implementar toolbar mobile do terminal com teclas especiais e símbolos úteis |
 | 2026-08-15 | Codex | Fase 8 — touch targets, CI | `EM ANDAMENTO` | Commit `e6a0645`; CIs `31860098544`/`31860101934` verdes com 44 arquivos, 331 testes + 2 ignorados, build e audit zero. Smoke `31860101978` aprovou migrations/readiness, fluxo, restarts/fault injection e restores. Item de touch targets marcado; fase não concluída | Implementar toolbar mobile do terminal com Esc, Ctrl, Tab, setas e símbolos úteis |
+| 2026-08-15 | Codex | Fase 8 — toolbar mobile do terminal, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `6e5da58`; escopo restrito à toolbar touch e ao defeito verificável P1-18 que impede o protocolo JSON de input/resize de funcionar. Next 16 e contrato xterm/WS inventariados antes da implementação | Implementar sequências testáveis, controles acessíveis e parser que diferencie frames textuais de binários |
+| 2026-08-15 | Codex | Fase 8 — toolbar mobile do terminal, validação local | `EM ANDAMENTO` | Toolbar com 12 teclas, alvos 44×44, Ctrl one-shot e foco xterm; parser P1-18 usa `isBinary` e E2E passou a usar JSON real do browser. Testes direcionados 14/14, typechecks web/API, lint 0 erros/19 avisos e build 20 páginas verdes. Playwright 320×844 confirmou sequências, foco, zero overflow/overlay/console. E2E Docker local bloqueado por acesso negado ao daemon | Commitar/push e exigir CI Linux/Docker verde para o fluxo terminal real |
 
 ### Modelo para futuras entradas
 

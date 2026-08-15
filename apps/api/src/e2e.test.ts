@@ -128,7 +128,10 @@ describe('E2E — login → project → real workspace → real terminal → run
           // ready. `\r` is a real Enter keypress for a PTY in canonical mode; `\n` alone is not
           // reliably treated as one.
           sent = true;
-          setTimeout(() => socket.send(`echo ${marker}\r`), 500);
+          // Match the browser/xterm protocol exactly. The `ws` server receives this text frame as
+          // a Buffer with `isBinary=false`; the route must decode the JSON envelope before writing
+          // its `data` to the PTY (P1-18 regression).
+          setTimeout(() => socket.send(JSON.stringify({ type: 'input', data: `echo ${marker}\r` })), 500);
           return;
         }
         if (buffer.split(marker).length >= 3) {

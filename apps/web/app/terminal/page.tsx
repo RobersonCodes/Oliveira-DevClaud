@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import '@xterm/xterm/css/xterm.css';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import { apiFetch, apiWebSocket } from '../../lib/apiClient';
+import { applyCtrlModifier, TERMINAL_TOUCH_KEYS } from '../../lib/terminalKeys';
 
 type TerminalSession = {
   id: string;
@@ -20,7 +21,25 @@ function TerminalCanvas({ session }: { session: TerminalSession }) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const socket = useRef<WebSocket | null>(null);
+  const ctrlPending = useRef(false);
   const [state, setState] = useState<'connecting' | 'online' | 'offline'>('connecting');
+  const [ctrlActive, setCtrlActive] = useState(false);
+
+  const setCtrl = useCallback((active: boolean) => {
+    ctrlPending.current = active;
+    setCtrlActive(active);
+    terminal.current?.focus();
+  }, []);
+
+  const sendInput = useCallback((data: string) => {
+    const ws = socket.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const payload = ctrlPending.current ? applyCtrlModifier(data) : data;
+    ws.send(JSON.stringify({ type: 'input', data: payload }));
+    if (ctrlPending.current) setCtrl(false);
+    terminal.current?.focus();
+  }, [setCtrl]);
 
   useEffect(() => {
     if (!host.current) return;
@@ -64,9 +83,7 @@ function TerminalCanvas({ session }: { session: TerminalSession }) {
       };
       ws.onerror = () => setState('offline');
 
-      const input = xterm.onData(data => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'input', data }));
-      });
+      const input = xterm.onData(sendInput);
       const resize = xterm.onResize(size => {
         if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'resize', ...size }));
       });
@@ -88,9 +105,24 @@ function TerminalCanvas({ session }: { session: TerminalSession }) {
       cancelled = true;
       cleanup();
     };
-  }, [session.id]);
+  }, [sendInput, session.id]);
 
-  return <div className="terminal-shell"><div className="terminal-toolbar"><strong>{session.title}</strong><span className={`terminal-status ${state}`}>● {state}</span></div><div ref={host} className="terminal-canvas" /></div>;
+  return <div className="terminal-shell">
+    <div className="terminal-toolbar"><strong>{session.title}</strong><span className={`terminal-status ${state}`}>● {state}</span></div>
+    <div className="terminal-touch-toolbar" role="toolbar" aria-label="Teclas especiais do terminal">
+      {TERMINAL_TOUCH_KEYS.map(key => <button
+        key={key.id}
+        type="button"
+        className={key.modifier === 'ctrl' && ctrlActive ? 'active' : undefined}
+        aria-label={key.ariaLabel}
+        aria-pressed={key.modifier === 'ctrl' ? ctrlActive : undefined}
+        disabled={state !== 'online'}
+        onPointerDown={event => event.preventDefault()}
+        onClick={() => key.modifier === 'ctrl' ? setCtrl(!ctrlPending.current) : sendInput(key.sequence!)}
+      >{key.label}</button>)}
+    </div>
+    <div ref={host} className="terminal-canvas" />
+  </div>;
 }
 
 export default function TerminalPage() {

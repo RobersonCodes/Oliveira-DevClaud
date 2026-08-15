@@ -4,6 +4,7 @@ import { prisma, Role, WorkspaceStatus, type Prisma } from '@oliveira/database';
 import { DockerTmuxTerminalEngine } from '@oliveira/terminal-engine';
 import { requireOrgRole } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
+import { parseTerminalClientMessage } from '../lib/terminalMessages.js';
 import { isAllowedWsOrigin } from '../lib/wsOrigin.js';
 
 type LoadedTerminal = Prisma.TerminalSessionGetPayload<{ include: { workspace: { include: { project: true } } } }>;
@@ -98,21 +99,14 @@ export async function terminalRoutes(app: FastifyInstance) {
         if (socket.readyState === 1) socket.close(1000, 'DETACHED');
       });
 
-      socket.on('message', async (raw: Buffer | ArrayBuffer | Buffer[]) => {
+      socket.on('message', async (raw, isBinary) => {
         try {
-          if (Buffer.isBuffer(raw)) { connection?.write(raw.toString('utf8')); return; }
-          const text = raw.toString();
-          if (text.startsWith('{')) {
-            const event = z.discriminatedUnion('type', [
-              z.object({ type: z.literal('input'), data: z.string().max(65536) }),
-              z.object({ type: z.literal('resize'), cols: z.number().int().min(20).max(300), rows: z.number().int().min(5).max(120) })
-            ]).parse(JSON.parse(text));
-            if (event.type === 'input') connection?.write(event.data);
-            else {
-              await connection?.resize({ cols: event.cols, rows: event.rows });
-              await prisma.terminalSession.update({ where: { id: terminal.id }, data: { cols: event.cols, rows: event.rows, lastActiveAt: new Date() } });
-            }
-          } else connection?.write(text);
+          const event = parseTerminalClientMessage(raw, isBinary);
+          if (event.type === 'input') connection?.write(event.data);
+          else {
+            await connection?.resize({ cols: event.cols, rows: event.rows });
+            await prisma.terminalSession.update({ where: { id: terminal.id }, data: { cols: event.cols, rows: event.rows, lastActiveAt: new Date() } });
+          }
         } catch { socket.send(JSON.stringify({ type: 'error', code: 'INVALID_TERMINAL_EVENT' })); }
       });
 
