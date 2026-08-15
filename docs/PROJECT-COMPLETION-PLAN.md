@@ -45,12 +45,12 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `3925c51` (`feat(fase8): add persistent mobile navigation`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA network-only, navegação mobile persistente e layout 320px/safe areas estão aprovados localmente e nos CIs `31839461813`/`31839464758` e smoke `31839464854`; P1-16 permanece parcial até concluir todos os touch targets, toolbar/fluxos touch, retomada e testes físicos |
+| Commit de referência | `bfdde72` (`docs(fase8): record mobile navigation evidence`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA, navegação, 320px/safe areas e touch targets essenciais estão aprovados localmente. P1-16 permanece parcial até concluir toolbar/fluxos touch, retomada e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
-| Próxima ação única | Auditar e normalizar para pelo menos 44 × 44 px todos os alvos de toque das ações essenciais nas rotas mobile |
+| Próxima ação única | Implementar e testar a toolbar mobile do terminal com Esc, Ctrl, Tab, setas e símbolos úteis |
 | Bloqueios externos | A aplicação real da Etapa 2 depende de a regra SSH restrita a `186.219.142.107/32` estar ativa e de existir autenticação por chave para a VPS. A conclusão integral da Etapa 5 depende de uma credencial Codex ou Claude configurada diretamente pelo usuário no workspace para o smoke autenticado; nenhum secret de provedor está configurado no repositório. Testes físicos finais da Etapa 8 exigirão Android e iPhone reais. |
 
 ### Baseline de validação conhecido
@@ -1005,7 +1005,7 @@ interface desktop reduzida.
 - [x] Implementar instalação e shell de reconexão, sem prometer execução offline.
 - [x] Garantir layout funcional a partir de 320 CSS px e safe areas.
 - [x] Criar navegação mobile persistente como substituta da navegação desktop.
-- [ ] Usar alvo interno de toque de pelo menos 44 × 44 px.
+- [x] Usar alvo interno de toque de pelo menos 44 × 44 px.
 - [ ] Criar toolbar de terminal com Esc, Ctrl, Tab, setas e símbolos úteis.
 - [ ] Adaptar command palette, diffs, logs e aprovação para toque.
 - [ ] Exibir estado de conexão e retomar sessão/workspace automaticamente.
@@ -1050,6 +1050,17 @@ da matriz física. No commit `3925c51`, os CIs Linux/Docker `31839461813`/`31839
 **44 arquivos, 330 testes e 2 ignorados**, lint/prova negativa, typecheck, build das 20 páginas e
 audit com zero vulnerabilidades. O smoke limpo `31839464854` também passou migrations/readiness,
 fluxo usuário→terminal, todos os restarts/fault injection, restores isolados e cleanup.
+
+Na auditoria seguinte, Playwright mediu todos os `a`, `button`, `input`, `select`, `textarea`,
+`summary` e `[role=button]` visíveis em 320px. O baseline encontrou **33 controles menores que
+44×44px em 13 rotas**; a política mobile passou a garantir 44×44 para controles e 44px de altura
+para links somente dentro dos shells de aplicação. A repetição mediu **118 controles em 16 rotas,
+zero insuficientes**. O gut-check visual também revelou que `wizard-page` e `repo-map-page` herdavam
+o grid genérico de `<main>`, esticando o header; ambos agora declaram `display:block`. Chromium
+confirmou `320/320`, sem overlay nem erro de página. Testes PWA/mobile **7/7**, typecheck web, lint
+(0 erros/19 avisos legados), build Next 16 com 20 páginas e `git diff --check` passaram. Dados
+condicionais não carregaram sem API, mas a regra estrutural cobre os mesmos elementos quando surgem;
+validação física permanece pendente.
 
 ---
 
@@ -1198,6 +1209,8 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 8 — navegação mobile, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `973e21d`; escopo restrito aos dois itens ativos: navegação persistente substituta do sidebar, layout desde 320 CSS px e safe areas nas rotas principais. Next 16 confirmou `next/link` para transições e `usePathname` em Client Component isolado para estado ativo | Implementar e testar o shell de navegação mobile global |
 | 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, validação local | `EM ANDAMENTO` | Bottom bar global com quatro destinos + dialog de onze ferramentas, estado ativo, login excluído e safe areas implementados. Testes PWA/mobile 6/6, typecheck, lint 0 erros/19 avisos, build Next 16 e diff-check verdes; Chromium validou 15/15 rotas em 320px sem overflow/overlay, alvos 61×48, menu e fallback desktop. Testes físicos não executados e permanecem pendentes | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
 | 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, CI | `EM ANDAMENTO` | Commit `3925c51`; CIs `31839461813`/`31839464758` verdes com 44 arquivos, 330 testes + 2 ignorados, build e audit zero. Smoke `31839464854` aprovou host limpo, restarts/fault injection, restores e cleanup. Itens de layout 320px/safe areas e navegação mobile marcados; fase não concluída | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
+| 2026-08-14 | Codex | Fase 8 — touch targets, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `bfdde72`; escopo restrito à auditoria e normalização dos controles essenciais menores que 44×44px nas rotas mobile, preservando links inline não acionáveis como blocos | Medir controles reais em 320px e corrigir somente os alvos insuficientes |
+| 2026-08-14 | Codex | Fase 8 — touch targets, validação local | `EM ANDAMENTO` | Baseline Chromium: 33 controles insuficientes em 13 rotas. Após política mobile, 118 controles medidos em 16 rotas e zero abaixo de 44×44; gut-check corrigiu herança indevida do grid em wizard/repository map. Testes PWA/mobile 7/7, typecheck, lint 0 erros/19 avisos, build 20 páginas e diff-check verdes; API/dados condicionais e dispositivos físicos não executados | Implementar toolbar mobile do terminal com teclas especiais e símbolos úteis |
 
 ### Modelo para futuras entradas
 

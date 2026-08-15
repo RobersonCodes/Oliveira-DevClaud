@@ -37,4 +37,11 @@ describe('mobile application navigation', () => {
     expect(styles).toMatch(/padding-top:max\([^)]*safe-area-inset-top/);
     expect(styles).toContain('@media(max-width:380px)');
   });
+
+  it('enforces 44px touch targets across every mobile route shell', () => {
+    expect(styles).toContain('button,input:not([type="hidden"]),select,textarea,summary,[role="button"]{min-width:44px;min-height:44px}');
+    expect(styles).toContain(':where(.dashboard,.content,.page,.simple-page,.wizard-page,.repo-map-page,.ide-page,.sessions-page) a[href]{min-width:44px;min-height:44px');
+    expect(styles).toContain('.wizard-page{display:block;');
+    expect(styles).toContain('.repo-map-page{display:block;');
+  });
 });
