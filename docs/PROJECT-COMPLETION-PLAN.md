@@ -45,8 +45,8 @@ Estas regras valem para qualquer agente ou pessoa que execute uma fase:
 |---|---|
 | Atualizado em | 2026-08-14 |
 | Branch de referência | `feat/security-hardening` |
-| Commit de referência | `973e21d` (`docs(fase8): record PWA shell evidence`) |
-| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA network-only, navegação mobile persistente e layout 320px/safe areas estão implementados e validados localmente; P1-16 permanece parcial até concluir todos os touch targets, toolbar/fluxos touch, retomada e testes físicos |
+| Commit de referência | `3925c51` (`feat(fase8): add persistent mobile navigation`) |
+| Estado conhecido | 15 de 15 P0 corrigidos e sem nenhum aberto; Fases 1, 3, 4, 6 e 7 concluídas; Fase 2 `PARCIAL` aguardando SSH restrito para o deploy real; Fase 5 `PARCIAL` aguardando credencial externa de agente. A Fase 8 está em andamento: shell PWA network-only, navegação mobile persistente e layout 320px/safe areas estão aprovados localmente e nos CIs `31839461813`/`31839464758` e smoke `31839464854`; P1-16 permanece parcial até concluir todos os touch targets, toolbar/fluxos touch, retomada e testes físicos |
 | Etapa ativa | Etapa 8 — experiência mobile-first e PWA |
 | Responsável | Codex — pendências das Etapas 2 e 5 reatribuídas pelo usuário em 2026-08-10 |
 | Status | `EM ANDAMENTO` |
@@ -1046,7 +1046,10 @@ cinco alvos persistentes de `61×48`, onze links no dialog, grupo secundário at
 login sem barra e desktop com barra oculta/sidebar preservado. O único console `500` foi a chamada
 esperada de métricas ao rodar `next start` sem o nginx/API; a renderização permaneceu íntegra. Safe
 areas foram verificadas por CSS/teste automatizado; notch e home indicator reais continuam pendentes
-da matriz física.
+da matriz física. No commit `3925c51`, os CIs Linux/Docker `31839461813`/`31839464758` aprovaram
+**44 arquivos, 330 testes e 2 ignorados**, lint/prova negativa, typecheck, build das 20 páginas e
+audit com zero vulnerabilidades. O smoke limpo `31839464854` também passou migrations/readiness,
+fluxo usuário→terminal, todos os restarts/fault injection, restores isolados e cleanup.
 
 ---
 
@@ -1194,6 +1197,7 @@ Ao terminar uma sessão, acrescente uma linha e atualize o checkpoint da Seção
 | 2026-08-14 | Codex | Fase 8 — shell PWA, CI e encerramento do corte | `EM ANDAMENTO` | Commit `2637473`; CIs `31830093847`/`31830096715` aprovaram 43 arquivos, 327 testes + 2 ignorados, lint/prova negativa, typecheck, build e audit sem vulnerabilidades. Smoke limpo `31830096679` verde com fault injection, restore e cleanup. Primeiros dois itens da Fase 8 concluídos; P1-16 permanece parcial pelos itens mobile ainda abertos | Implementar navegação mobile persistente, layout a partir de 320px e safe areas |
 | 2026-08-14 | Codex | Fase 8 — navegação mobile, início | `EM ANDAMENTO` | Retomada em árvore limpa no commit `973e21d`; escopo restrito aos dois itens ativos: navegação persistente substituta do sidebar, layout desde 320 CSS px e safe areas nas rotas principais. Next 16 confirmou `next/link` para transições e `usePathname` em Client Component isolado para estado ativo | Implementar e testar o shell de navegação mobile global |
 | 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, validação local | `EM ANDAMENTO` | Bottom bar global com quatro destinos + dialog de onze ferramentas, estado ativo, login excluído e safe areas implementados. Testes PWA/mobile 6/6, typecheck, lint 0 erros/19 avisos, build Next 16 e diff-check verdes; Chromium validou 15/15 rotas em 320px sem overflow/overlay, alvos 61×48, menu e fallback desktop. Testes físicos não executados e permanecem pendentes | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
+| 2026-08-14 | Codex | Fase 8 — navegação mobile e 320px, CI | `EM ANDAMENTO` | Commit `3925c51`; CIs `31839461813`/`31839464758` verdes com 44 arquivos, 330 testes + 2 ignorados, build e audit zero. Smoke `31839464854` aprovou host limpo, restarts/fault injection, restores e cleanup. Itens de layout 320px/safe areas e navegação mobile marcados; fase não concluída | Auditar e normalizar todos os alvos de toque essenciais para pelo menos 44×44px |
 
 ### Modelo para futuras entradas
 
